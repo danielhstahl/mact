@@ -40,6 +40,7 @@ DRILLS=(
     "fmt-misformatted-code:fmt"
     "clippy-lint:clippy"
     "doc-broken-intra-doc-link:doc"
+    "doc-link-to-test-only-module:doc"
     "test-failing-assertion:test"
     "schema-broken-schema-file:schema"
     "schema-bad-evidence-record:schema"
@@ -81,6 +82,29 @@ mut_doc_broken_intra_doc_link() {
 #[allow(dead_code)]
 pub fn ci_drill_doc() -> u32 {
     1
+}
+RS
+}
+
+mut_doc_link_to_test_only_module() {
+    # The subtler rot, and the one that actually happened (mact-b81): a doc comment that links
+    # to an item which exists only under `#[cfg(test)]`. The code compiles, `cargo test` is
+    # happy — rustdoc is the only tool that does not build cfg(test) code, so the doc step is
+    # the only place the link can show up as dead. This drill is the proof that it stays an
+    # error instead of quietly turning the sentence into a reference to nothing.
+    cat >> "$1/src/lib.rs" <<'RS'
+
+/// Injected by scripts/ci_drill.sh: a link to a module `#[cfg(test)]` hides from rustdoc
+/// ([`ci_drill_test_only_module`]).
+#[allow(dead_code)]
+pub fn ci_drill_doc_test_only() -> u32 {
+    1
+}
+
+#[cfg(test)]
+mod ci_drill_test_only_module {
+    #[allow(dead_code)]
+    pub fn pinned_by_tests() {}
 }
 RS
 }

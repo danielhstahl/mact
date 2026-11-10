@@ -148,7 +148,7 @@ fn io_failure(path: &Path, reason: impl std::fmt::Display) -> EvidenceError {
 /// re-applies the rest logically (which is exactly how the kernel would interpret it
 /// once created, minus the symlinks that do not exist yet). A `..` is applied to the
 /// resolved prefix, so the result never contains one — that is what makes the
-/// `starts_with` prefix test in [`checked_child`] meaningful.
+/// `starts_with` prefix test in [`EvidenceRoot::checked_child`] meaningful.
 fn resolve_path(path: &Path) -> Result<PathBuf, EvidenceError> {
     let absolute =
         std::path::absolute(path).map_err(|reason| io_failure(path, reason.to_string()))?;

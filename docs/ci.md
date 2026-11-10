@@ -36,7 +36,7 @@ matters on boxes where `pip` and `python3` disagree about where packages live.
 |---|---|---|
 | `fmt` | `cargo fmt --all -- --check` | hand-formatting drift; fix is `cargo fmt --all` |
 | `clippy` | `cargo clippy --all-targets --all-features -- -D warnings` | lints, and — because warnings are fatal — a toolchain bump's new opinions. A suppress carries `reason =` |
-| `doc` | `cargo doc --no-deps --all-features` with `RUSTDOCFLAGS=-D warnings -D rustdoc::broken_intra_doc_links` | a doc link that stopped pointing at the thing it meant. This crate's module docs carry the reasoning for its design, so a dangling link is a lost argument, not cosmetics |
+| `doc` | `cargo doc --no-deps --all-features` with `RUSTDOCFLAGS=-D warnings -D rustdoc::broken_intra_doc_links` | a doc link that stopped pointing at the thing it meant — including a link into a `#[cfg(test)]` module, which rustdoc never builds and therefore can never resolve. This crate's module docs carry the reasoning for its design, so a dangling link is a lost argument, not cosmetics; the fix is to name a linkable path or write the reference as a code span, never to soften the lint |
 | `test` | `cargo test --all-features` | the contract: unit tests, one suite per tool, the MCP 2026-07-28 conformance matrix, and `tests/e2e` (real server, stub `act`, `.evidence` on disk) |
 | `schema` | see below | the JSON Schema of both accepted contracts — ADR-0001's tool contract and ADR-0002's evidence format — and ADR↔schema drift |
 | `supply-chain` | `cargo deny check licenses bans sources` + `... advisories`, then a `cargo tree -d` note | licences, duplicate/wildcard policy, dependency provenance, RUSTSEC |
@@ -149,6 +149,7 @@ check, and asserts that the matching `scripts/ci.sh` step exits non-zero:
 | `fmt-misformatted-code` | valid Rust that rustfmt rejects | `fmt` |
 | `clippy-lint` | `return x;` at the end of a function (`clippy::needless_return`) | `clippy` |
 | `doc-broken-intra-doc-link` | a public doc comment linking to a non-existent item | `doc` |
+| `doc-link-to-test-only-module` | a public doc comment linking to a `#[cfg(test)]` module — it compiles and tests pass, only rustdoc (which never builds `cfg(test)`) can see the link is dead | `doc` |
 | `test-failing-assertion` | a unit test that asserts false | `test` |
 | `schema-broken-schema-file` | `schema/evidence.schema.json` edited into a document the engine refuses to compile | `schema` |
 | `schema-bad-evidence-record` | a record missing the required envelope fields appended to a golden | `schema` |
@@ -169,8 +170,8 @@ default) so it cannot churn yours — and do not make it share one: two source t
 same package name and version under one target directory can convince cargo that the other
 tree's artefact is fresh. The first run pays a cold dependency build, afterwards it is quick.
 
-It is not a step in the pipeline, and that is a cost decision rather than an oversight: eight
-drills means eight compiles of the crate, which would double the check job to guard a file
+It is not a step in the pipeline, and that is a cost decision rather than an oversight: nine
+drills means nine compiles of the crate, which would double the check job to guard a file
 (`ci.sh`) that changes rarely. Running it is part of *changing* `ci.sh`, `ci_drill.sh`, or a
 checker they call — the same rule as re-running a test when you edit the test, not a rule the
 pipeline can enforce for you.
