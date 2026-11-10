@@ -39,12 +39,23 @@
 //! demand; `runs/<run_id>/` and `incoming/` are the runner's and the supervisor's
 //! (mact-f1w.8, mact-f1w.11), not this module's.
 
+/// Coverage extraction: a finished run's coverage payload → coverage records.
+///
+/// POSIX-only for the same reason the runner is: it is built on
+/// [`crate::runner::ActRunOutcome`], and the runner, `--bind` and act are all POSIX.
+#[cfg(unix)]
+pub mod coverage;
 pub mod records;
 pub mod schema;
 pub mod shapes;
 pub mod validate;
 pub mod writer;
 
+#[cfg(unix)]
+pub use coverage::{
+    extract, extract_with, CoverageFormat, CoverageSummary, ExtractContext, ExtractError,
+    ExtractionOutcome,
+};
 pub use records::{
     BenchmarkMetric, BenchmarkRecord, BenchmarkSource, Commit, CoverageCounts, CoverageRecord,
     CoverageSource, Envelope, EvidenceRecord, Kind, MetricValue, RelPath, ReportedMeasure, RunId,

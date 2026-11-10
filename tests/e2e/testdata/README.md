@@ -16,9 +16,16 @@ tests/e2e/testdata/
 │   ├── coverage-log-scrape.jsonl    # last resort: percent_only + low_confidence, no raw counts
 │   └── meta.json                    # run manifest for the coverage.jsonl run
 ├── invalid/                         # each file must be REJECTED, for exactly one reason
-└── tool-io/                         # ADR-0001 tool arguments and structured results (see the last section)
-    ├── valid/                       # each file must validate against the $defs entry in its filename
-    └── invalid/                     # each file must be REJECTED
+├── tool-io/                         # ADR-0001 tool arguments and structured results (see the last section)
+│   ├── valid/                       # each file must validate against the $defs entry in its filename
+│   └── invalid/                     # each file must be REJECTED
+tests/fixtures/coverage/             # the payloads the coverage goldens are re-derived from
+├── lcov.info                        # the tracefile behind coverage.jsonl
+├── lcov-{absolute-sf,repeated-sf}.info # the same run in the other shapes the contract accepts
+├── coverage-summary.json            # the istanbul summary behind coverage-istanbul.jsonl
+├── lcov-malformed.info, lcov-empty.info, coverage-summary-malformed.json # parse_failed / no_coverage_found
+├── coverage.xml                     # Cobertura: recognised, and refused by decision
+└── act-log-{scrape,quiet}.jsonl     # act's captured log, with and without a coverage line
 ```
 
 ## Shape of the goldens
@@ -44,6 +51,23 @@ The harness `MUST` normalise `run_id`, timestamps, `pid` and hostname as an expl
 — not by weakening the assertions. Note that these fixture files sit flat in `expected/`; the harness
 writes the real `.evidence/<kind>/<full-sha>/<run_id>.jsonl` tree, so `expected/*.jsonl` names are
 scenario labels, not layout, and `<run_id>` inside each file must match the file's own records.
+
+## Which goldens the implementation reproduces
+
+The coverage goldens are not merely hand-written any more: `tests/fixtures/coverage/` holds the
+payloads they came from, and `tests/coverage_extraction.rs` re-derives each file byte for byte
+from them (mact-f1w.10).
+
+| golden | fixture that reproduces it | notes |
+|---|---|---|
+| `coverage.jsonl` | `tests/fixtures/coverage/lcov.info` | and four variants of it — CRLF, no final newline, absolute `SF:` paths, and repeated `SF` blocks summed per path — all of which must produce the same bytes |
+| `coverage-istanbul.jsonl` | `tests/fixtures/coverage/coverage-summary.json` | the `total` entry is istanbul's own; two `node_modules` entries in the fixture are counted in that total and get no file record, which is why the total exceeds the sum of the file records |
+| `coverage-log-scrape.jsonl` | `tests/fixtures/coverage/act-log-scrape.jsonl` | only scraped when no payload file exists at all |
+
+`coverage.jsonl`'s total is therefore exactly the sum of its four file records (ADR-0002 §4.3),
+which the original hand-written version — copied from the ADR's illustrative snippet — was not;
+`src/parser/tokenizer.rs` was raised to `2617/2199` lines and `896/708` branches to make the two
+agree. The ADR's snippet itself is untouched: it illustrates one record, not a run.
 
 ## `invalid/` — one violation per file
 

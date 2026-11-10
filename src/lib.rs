@@ -12,7 +12,8 @@
 //! * [`config`] — CLI/env surface and every boot-time validation, so "does this
 //!   workspace make sense" is answered before anything is spawned.
 //! * [`evidence`] — the `.evidence` JSONL contract as code: the record types, the
-//!   atomic append-only writer, and the `validate-evidence` checker (ADR-0002).
+//!   atomic append-only writer, the `validate-evidence` checker, and the coverage
+//!   extractor that turns a finished run's payload into records (ADR-0002).
 //! * [`workspace`] — the pre-start validation gate: turn untrusted `run_workflow`
 //!   arguments plus the environment into a [`workspace::ValidatedRunTarget`], or
 //!   into one typed ADR-0001 error. Nothing here talks to the network or spawns act.

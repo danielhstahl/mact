@@ -1,0 +1,7 @@
+{"Action": "start", "Run": "job"}
+{"Action": "output", "Run": "job", "Output": "running 1 test\n"}
+{"Action": "output", "Run": "job", "Output": "src/parse.js 12 3 75.0%\n"}
+{"Action": "output", "Run": "job", "Output": "pytest exit=0\n"}
+{"Action": "output", "Run": "job", "Output": "Coverage: 87.4%\n"}
+{"Action": "output", "Run": "job", "Output": "done\n"}
+{"Action": "done", "Run": "job"}

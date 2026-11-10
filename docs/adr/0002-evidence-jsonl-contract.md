@@ -311,7 +311,7 @@ One source file (or the total) per line:
 | `statements_found` / `statements_hit` | int ≥ 0 | optional, co-required pair | istanbul statements are a *different unit* from lines; keep them separate, never average the two. |
 | `functions_found` / `functions_hit` | int ≥ 0 | optional, co-required pair | istanbul `functions`. Reserved in v1 so adding it later is additive. |
 | `reported_percent` | number 0..=100 | only for percent-only sources | see 4.3. Forbidden together with any `*_found`/`*_hit`; requires `reported_measure` and `flags:["percent_only"]`. |
-| `reported_measure` | enum | with `reported_percent` | `lines` \| `statements` \| `branches` \| `functions` \| `unknown`. Use `unknown` rather than guessing what a scraped "Coverage: 87.4%" meant. |
+| `reported_measure` | enum | with `reported_percent` | `lines` \| `statements` \| `branches` \| `functions` \| `unknown`. A table column nobody labelled is `unknown`, not a guess; a bare `Coverage: 87.4%` is read as `lines`, because a tool that prints one unqualified percentage prints the one its own threshold gate evaluates, and every reporter observed (coverage.py, `nyc --check-coverage`, `jest --coverage`) means lines there — the shape `expected/coverage-log-scrape.jsonl` pins. |
 | `source` | enum | yes | `lcov` \| `coverage_summary` \| `log_scrape`. |
 | `source_path` | relpath | for `lcov`/`coverage_summary` | omitted for `log_scrape` (its input is `act.jsonl`). |
 
@@ -320,6 +320,13 @@ per path), **istanbul `coverage-summary.json`** (`lines`/`statements`/`branches`
 `covered`/`total`). **Cobertura `coverage.xml` is explicitly unsupported** — `coverage.xml` is not in
 the filename table and mact-f1w.10 returns a clean `unsupported_format` rather than guessing.
 A format that is added later is an additive change.
+
+The total record is the **source's own total**: for lcov the sum over every `SF` block, for
+istanbul its `total` entry. Either can exceed the sum of the run's `scope:"file"` records when the
+tool instrumented files that live outside the workspace (`node_modules` is the everyday case) — no
+`relpath` can name those, so they get no file record while still belonging to what the run
+measured. The extractor reports how many it dropped (`coverage_paths_outside_workspace` in
+`meta.json`'s `warnings[]`) rather than silently renumbering the total.
 
 #### 4.3 Percentages are recomputed by consumers (pinned)
 
@@ -331,7 +338,8 @@ A format that is added later is an additive change.
   file move the number.
 - Cross-run or cross-commit totals are computed by **summing numerators and denominators over file
   records**, never by averaging per-file percentages. The `scope:"total"` record of a run may be used
-  directly as that run's total.
+  directly as that run's total. Within one run the two agree exactly, with the one exception above:
+  source files outside the workspace are in the total and in no file record.
 - A percentage with no raw counts is possible **only** via `reported_percent`, which is possible only
   for `source: "log_scrape"` (last resort), is always flagged `percent_only`, and always names its
   `reported_measure`. Inventing a denominator (`874/1000`) to make a scraped percentage look raw is

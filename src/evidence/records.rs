@@ -607,6 +607,9 @@ impl ReportedMeasure {
 pub const FLAG_UNIT_MISSING: &str = "unit_missing";
 /// The flag stamped on a coverage record that carries a percentage and no raw counts.
 pub const FLAG_PERCENT_ONLY: &str = "percent_only";
+/// The flag stamped on a record derived from text scraping rather than from a
+/// machine-readable file (ADR-0002 §5.1).
+pub const FLAG_LOW_CONFIDENCE: &str = "low_confidence";
 /// The flag stamped on every record of a run whose metric cap was hit.
 pub const FLAG_TRUNCATED: &str = "truncated";
 

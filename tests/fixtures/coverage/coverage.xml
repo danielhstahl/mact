@@ -1,0 +1,4 @@
+<?xml version="1.0"?>
+<coverage line-rate="0.87" branch-rate="0.8" lines-covered="3581" lines-valid="4120" branches-covered="946" branches-valid="1180">
+  <packages><package line-rate="0.87"><classes/></package></packages>
+</coverage>
