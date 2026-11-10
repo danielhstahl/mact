@@ -76,6 +76,9 @@ pub use state::{
     CancelReceipt, Phase, RunError, RunIdentity, RunRecord, RunState, RunSummary, RunView,
     WireStatus, WARNING_ALREADY_TERMINAL, WARNING_PARTIAL_EVIDENCE_DROPPED,
 };
+/// The boxed-future alias the [`Pipeline`] trait returns, exported so an out-of-module pipeline
+/// (mact-f1w.14's) can name the return type without depending on the private `task` module.
+pub use task::BoxFuture;
 pub use task::{Harvest, NoEvidence, Pipeline, PipelineError, RunContext};
 
 /// ADR-0004 §11: `--max-concurrent-runs`, a limit and never a semaphore anyone waits on.
@@ -837,6 +840,22 @@ impl RunSupervisor {
     #[must_use]
     pub fn new_run_id(&self) -> RunId {
         RunId::generate()
+    }
+
+    /// A waitable handle for a run this process already has, `None` for an unknown id.
+    ///
+    /// This is what lets an `idempotency_key` replay wait on a run another request started:
+    /// the run belongs to the supervisor (ADR-0004 §2), so any caller that knows its id can
+    /// subscribe to its terminal commit. Unlike [`Self::status`] this never answers
+    /// `run_not_found` — an unknown id is simply `None`, and the caller decides whether that is
+    /// an error (it is for `run_status`, and for `run_workflow` it means "start a fresh run").
+    #[must_use]
+    pub async fn ticket(&self, run_id: &str) -> Option<RunTicket> {
+        let slot = { self.inner.runs.read().await.get(run_id).cloned() }?;
+        Some(RunTicket {
+            run_id: run_id.to_owned(),
+            receiver: slot.record.subscribe(),
+        })
     }
 }
 

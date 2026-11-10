@@ -52,6 +52,94 @@ pub fn relpath() -> Value {
     })
 }
 
+/// `$defs/workflow_name`.
+///
+/// The `not` + `anyOf` pair is what makes `..`, an absolute path and a leading `-`
+/// inexpressible rather than merely discouraged; the Rust twin of this shape is
+/// `crate::workspace`'s `workflow_shape`, which is what actually gates a call.
+#[must_use]
+pub fn workflow_name() -> Value {
+    json!({
+        "description": "Workflow identity as a caller types it: basename without extension (coverage), \
+                        basename with .yml/.yaml, or the workspace-relative path \
+                        .github/workflows/<file>. Case sensitive. Two consecutive dots are forbidden \
+                        anywhere, so no '..' traversal segment is expressible; a leading '/' or '-' is \
+                        not matchable. ADR-0001 section 2.2.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 255,
+        "not": { "pattern": "\\.\\." },
+        "anyOf": [
+            { "pattern": r"^[A-Za-z0-9][A-Za-z0-9 ._/-]*$" },
+            { "pattern": r"^\.github/workflows/[A-Za-z0-9][A-Za-z0-9 ._/-]*$" }
+        ]
+    })
+}
+
+/// `$defs/commit_input` — the commit **as the caller types it** (7..=40 hex, either case).
+///
+/// Distinct from [`commit_full`], which is what a *result* carries: the request and the
+/// answer are different promises, and only the second one is 40 characters.
+#[must_use]
+pub fn commit_input() -> Value {
+    json!({
+        "description": "Commit as a caller types it: 7 to 40 hex digits, either case, normalized to \
+                        lowercase before resolution. No whitespace, no .., no ~, no leading - \
+                        (ADR-0001 section 2.5).",
+        "type": "string",
+        "minLength": 7,
+        "maxLength": 40,
+        "pattern": r"^[0-9a-fA-F]{7,40}$"
+    })
+}
+
+/// `$defs/input_map` — `act --input`, keys sorted so argv is golden-testable.
+#[must_use]
+pub fn input_map() -> Value {
+    string_map(
+        "workflow_dispatch-style inputs, passed as act --input key=value in sorted key order so argv \
+         is stable and golden-testable.",
+        4096,
+    )
+}
+
+/// `$defs/secret_map` — the `--secret-file` passthrough.
+#[must_use]
+pub fn secret_map() -> Value {
+    string_map(
+        "Secret passthrough. Values never appear in argv, in any file under .evidence, in log_tail, \
+         or in a tool result; the runner redacts them at the source (mact-f1w.8 / .13).",
+        8192,
+    )
+}
+
+/// The two map arguments differ only in prose and in the per-value byte cap, so the shape is
+/// written once; naming the difference is what keeps 4 KiB and 8 KiB from drifting.
+fn string_map(description: &str, max_value_bytes: u64) -> Value {
+    json!({
+        "description": description,
+        "type": "object",
+        "maxProperties": 32,
+        "propertyNames": { "pattern": r"^[A-Za-z_][A-Za-z0-9_]{0,127}$" },
+        "additionalProperties": { "type": "string", "maxLength": max_value_bytes }
+    })
+}
+
+/// `run_workflow`'s `idempotency_key`.
+#[must_use]
+pub fn idempotency_key() -> Value {
+    json!({
+        "description": "Optional caller-side dedup token. A repeat call with the same key and the same \
+                        (workflow, task, category, commit) returns the remembered run instead of \
+                        starting a second one; same key with a different tuple is idempotency_conflict. \
+                        Remembered in memory only, for as long as run state is retained (ADR-0004).",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": r"^[A-Za-z0-9._:-]+$"
+    })
+}
+
 /// `$defs/task_id`.
 #[must_use]
 pub fn task_id() -> Value {

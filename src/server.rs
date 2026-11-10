@@ -1,8 +1,9 @@
 //! The MCP service and the axum mount that serves it.
 //!
-//! The service holds one [`RunSupervisor`] per process and no per-session state: `list_tasks`
-//! (mact-f1w.7) reads files, and `run_status`/`cancel_run` (mact-f1w.11) go to the supervisor,
-//! which owns every run. That sharing is the whole point — a run started by one request is
+//! The service holds one [`Wiring`] per process and no per-session state: `list_tasks`
+//! (mact-f1w.7) reads files, `run_status`/`cancel_run` (mact-f1w.11) go to the supervisor, and
+//! `run_workflow` (mact-f1w.14) drives the whole pipeline through it — validate, isolate, run,
+//! extract, publish, report. That sharing is the whole point — a run started by one request is
 //! pollable and cancellable from any other, and a session going away changes nothing about it.
 //! What else has to be right here is the shell everything else hangs on: the pinned protocol
 //! revision, the loopback-only bind, the shared immutable [`Config`], and a cancellation token
@@ -18,7 +19,11 @@ use axum::{
 };
 use rmcp::{
     handler::server::wrapper::{Json, Parameters},
-    model::{Implementation, JsonObject, ProtocolVersion, ServerCapabilities, ServerConfig},
+    model::{
+        CancelledNotificationParam, Implementation, JsonObject, ProtocolVersion,
+        ServerCapabilities, ServerConfig,
+    },
+    service::{NotificationContext, RequestContext, RoleServer},
     tool, tool_handler, tool_router,
     transport::streamable_http_server::{
         session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
@@ -30,7 +35,9 @@ use tower_http::trace::TraceLayer;
 
 use crate::config::{Config, SESSION_TOKEN_HEADER};
 use crate::registry::RunSupervisor;
-use crate::tools::{cancel_run, list_tasks, run_status, ToolError};
+use crate::tools::{
+    cancel_run, list_tasks, run_status, run_workflow, run_workflow::Wiring, ToolError,
+};
 
 /// Server name reported in `serverInfo` / `discover` responses.
 pub const SERVER_NAME: &str = "act-mcp";
@@ -61,42 +68,48 @@ pub const SUPPORTED_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V_2026_
 
 /// Per-session MCP service.
 ///
-/// Cheap to clone and constructed per request by the service factory, so the
-/// only thing it holds is a shared `Arc<Config>`. Per-session state is `Clone`
-/// by construction; the immutable boot config is shared, not copied.
+/// Cheap to clone and constructed per request by the service factory, so the only thing it holds
+/// is one `Arc` to the process-wide [`Wiring`] (config, supervisor, validator, idempotency
+/// table). Per-session state is `Clone` by construction; the immutable boot config and every
+/// piece of shared mutable state are `Arc`s inside that one struct, which is what makes a run
+/// started by this request visible to every later one.
 #[derive(Debug, Clone)]
 pub struct ActMcp {
-    config: Arc<Config>,
-    supervisor: Arc<RunSupervisor>,
+    wiring: Arc<Wiring>,
 }
 
 impl ActMcp {
-    /// Wrap the shared boot config for one session.
+    /// Wrap the shared runtime for one session.
     ///
-    /// Called by the service factory per request, so this stays cheap: it clones
-    /// an `Arc`, nothing else.
-    pub fn new(config: Arc<Config>, supervisor: Arc<RunSupervisor>) -> Self {
-        Self { config, supervisor }
+    /// Called by the service factory per request, so this stays cheap: it clones one `Arc`.
+    pub fn new(wiring: Arc<Wiring>) -> Self {
+        Self { wiring }
     }
 
-    /// The shared boot config. Tool handlers (mact-f1w.7+) read workspace,
-    /// evidence-dir and act-binary paths through this.
+    /// The shared runtime: config, supervisor, validator and the idempotency table.
+    pub fn wiring(&self) -> &Arc<Wiring> {
+        &self.wiring
+    }
+
+    /// The shared boot config. Tool handlers read workspace, evidence-dir and act-binary paths
+    /// through this.
     pub fn config(&self) -> &Arc<Config> {
-        &self.config
+        &self.wiring.config
     }
 
-    /// The process-wide run supervisor: every session shares it, which is what lets one
-    /// request poll or cancel a run another request started.
+    /// The process-wide run supervisor: every session shares it, which is what lets one request
+    /// poll or cancel a run another request started.
     pub fn supervisor(&self) -> &Arc<RunSupervisor> {
-        &self.supervisor
+        &self.wiring.supervisor
     }
 }
 
 /// The tools this server advertises.
 ///
-/// `list_tasks` (mact-f1w.7), `run_status` and `cancel_run` (mact-f1w.11) are here;
-/// `run_workflow` joins with mact-f1w.14. ADR-0001 §1 pins the names, titles and
-/// annotations each of them must carry.
+/// All four of ADR-0001's: `list_tasks` (mact-f1w.7), `run_status` and `cancel_run`
+/// (mact-f1w.11), and `run_workflow` (mact-f1w.14). ADR-0001 §1 pins the names, titles and
+/// annotations each of them must carry, and `tests/tool_schema_parity.rs` is what keeps the
+/// advertised `inputSchema`/`outputSchema` identical to the checked-in contract.
 #[tool_router]
 impl ActMcp {
     /// Enumerate this workspace's workflows and job ids (ADR-0001 §6.1).
@@ -203,6 +216,44 @@ impl ActMcp {
             .map_err(|not_found| cancel_run::run_not_found(&not_found))?;
         Ok(Json(receipt.to_value()))
     }
+
+    /// Run one workflow job against one commit (ADR-0001 §2, §3, §4).
+    ///
+    /// The headline tool, and the reason the other three exist: validate → isolate → run →
+    /// extract → publish → structured result. All of that lives in
+    /// [`crate::tools::run_workflow::call`]; this handler is the transport seam — argument
+    /// parsing, the notification sink the request's `_meta` asked for, and the cancellation token
+    /// that ties a `$/cancel-request` to the run this request is waiting on.
+    #[tool(
+        name = "run_workflow",
+        title = "Run one workflow job against one commit",
+        description = run_workflow::DESCRIPTION,
+        input_schema = run_workflow::input_schema(),
+        output_schema = run_workflow::output_schema(),
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        ),
+    )]
+    async fn run_workflow(
+        &self,
+        Parameters(arguments): Parameters<JsonObject>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<Json<serde_json::Value>, ToolError> {
+        let args = run_workflow::RunWorkflowArgs::parse(Some(&arguments))?;
+        let call = run_workflow::Call {
+            // Progress only for a request that carried a progress token, logging only for one
+            // that carried a log level: both are the client's choice, expressed per request in
+            // the sessionless 2026-07-28 revision.
+            progress: run_workflow::Progress::for_request(&context.peer, &context.meta),
+            cancel: context.ct.clone(),
+            request_key: request_key(&context.id),
+        };
+        let result = run_workflow::call(Arc::clone(self.wiring()), args, call).await?;
+        Ok(Json(result))
+    }
 }
 
 #[tool_handler]
@@ -217,9 +268,47 @@ impl ServerHandler for ActMcp {
                  Start with list_tasks: it enumerates workflow files, their job ids, and an advisory \n\
                  benchmark/coverage hint, and is safe to call at any time (read-only, no run lock).",
                 env!("CARGO_PKG_VERSION"),
-                self.config.workspace.display(),
-                self.config.evidence_dir.display(),
+                self.config().workspace.display(),
+                self.config().evidence_dir.display(),
             ))
+    }
+
+    /// Honour `$/cancel-request` for a request that is waiting inside `run_workflow`.
+    ///
+    /// ADR-0004 §5.3's mechanism: the notification names a *request*, the waiter map says which
+    /// run that request was waiting on, and the supervisor's cancel path does the rest — for a
+    /// caller-initiated cancel the run is torn down (ADR-0004 §5.1) and ends `cancelled` with
+    /// extraction skipped (§6.2). A notification naming an unknown, already-finished or
+    /// `wait: false` request is ignored, because a notification cannot be answered and ignoring
+    /// it is the whole error handling.
+    ///
+    /// The per-request cancellation token (`context.ct`, which rmcp cancels for the matching
+    /// request id) is the primary path and is unambiguous; this map is the ADR's documented
+    /// fallback. Its key is the JSON-RPC request id, which in the sessionless 2026-07-28 revision
+    /// is per-connection and so can repeat across connections — the worst case is a cancel
+    /// landing on another waiting request's run, which is inside this server's existing model
+    /// (any local process may cancel any run by id; there is no authentication).
+    async fn on_cancelled(
+        &self,
+        notification: CancelledNotificationParam,
+        _context: NotificationContext<RoleServer>,
+    ) {
+        let Some(request_id) = notification.request_id.as_ref() else {
+            return;
+        };
+        let key = request_key(request_id);
+        match self.supervisor().cancel_waiting_request(&key).await {
+            Some(receipt) => tracing::info!(
+                run_id = %receipt.run_id,
+                request = %request_id,
+                status = receipt.status.as_str(),
+                "a cancellation notification cancelled the run its request was waiting on"
+            ),
+            None => tracing::debug!(
+                request = %request_id,
+                "cancellation notification for a request that is not waiting on a run; ignored"
+            ),
+        }
     }
 
     /// Expose exactly one revision.
@@ -236,20 +325,30 @@ impl ServerHandler for ActMcp {
 
 /// Build the streamable-HTTP service for one server instance.
 ///
-/// `cancellation_token` ends live sessions and the streams they hold; [`serve`]
-/// hands it the session token it cancels after the drain window. `supervisor` is shared by
-/// every session in the process — the runs belong to it, not to any session.
+/// `cancellation_token` ends live sessions and the streams they hold; [`serve`] hands it the
+/// session token it cancels after the drain window. `wiring` is shared by every session in the
+/// process — the runs, the validation gate and the idempotency table belong to it, not to any
+/// session, which is why it is passed in rather than assembled per request.
 pub fn mcp_service(
-    config: Arc<Config>,
-    supervisor: Arc<RunSupervisor>,
+    wiring: Arc<Wiring>,
     cancellation_token: CancellationToken,
 ) -> StreamableHttpService<ActMcp, LocalSessionManager> {
-    let http = http_config(Arc::clone(&config), cancellation_token);
+    let http = http_config(Arc::clone(&wiring.config), cancellation_token);
     StreamableHttpService::new(
-        move || Ok(ActMcp::new(Arc::clone(&config), Arc::clone(&supervisor))),
+        move || Ok(ActMcp::new(Arc::clone(&wiring))),
         Arc::new(LocalSessionManager::default()),
         http,
     )
+}
+
+/// The waiter-map key for one JSON-RPC request (ADR-0004 §5.3).
+///
+/// Both halves — registering a waiter inside `run_workflow` and resolving a `$/cancel-request` in
+/// [`ActMcp::on_cancelled`] — must build it the same way from the request id, so it is spelled
+/// once here. See `on_cancelled` for why the id alone is a good-enough key in a server with no
+/// sessions and no authentication.
+fn request_key(id: &rmcp::model::RequestId) -> String {
+    format!("{id}")
 }
 
 /// The axum [`Router`] holding the endpoint.
@@ -261,19 +360,15 @@ pub fn mcp_service(
 /// operator turned it on — the shared-secret check in [`require_session_token`]. Everything
 /// else that refuses a request happens inside rmcp's service, because that is where its
 /// `Host`/`Origin` allowlists and its body-size limit live; see [`http_config`].
-pub fn router(
-    config: Arc<Config>,
-    supervisor: Arc<RunSupervisor>,
-    cancellation_token: CancellationToken,
-) -> axum::Router {
+pub fn router(wiring: Arc<Wiring>, cancellation_token: CancellationToken) -> axum::Router {
     let router = axum::Router::new().nest_service(
         MCP_ROUTE,
-        mcp_service(Arc::clone(&config), supervisor, cancellation_token),
+        mcp_service(Arc::clone(&wiring), cancellation_token),
     );
     // The shared-secret gate goes on first (it is the outermost layer because it is the
     // cheapest answer: no session, no parse, no handler for a request that never proves
     // itself). Tracing wraps everything, so a refused request still gets its trace line.
-    let router = match config.session_token.as_ref() {
+    let router = match wiring.config.session_token.as_ref() {
         Some(token) => router.layer(middleware::from_fn_with_state(
             token.expose().to_owned(),
             require_session_token,
@@ -393,11 +488,11 @@ fn http_config(
 /// The session token is deliberately *not* a child of `shutdown`: if it were, the
 /// signal would kill live sessions at the same instant the listener stopped and
 /// phase 1 would be a lie.
-pub async fn serve(
-    config: Arc<Config>,
-    supervisor: Arc<RunSupervisor>,
-    shutdown: CancellationToken,
-) -> anyhow::Result<()> {
+pub async fn serve(wiring: Arc<Wiring>, shutdown: CancellationToken) -> anyhow::Result<()> {
+    // The body reads the same two handles the wiring was assembled from; taking them apart here
+    // keeps `Wiring` the single thing a caller has to build once per process.
+    let config = Arc::clone(&wiring.config);
+    let supervisor = Arc::clone(&wiring.supervisor);
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     let local = listener.local_addr()?;
     // The second, independent loopback check: `Config::build` already refused a routable
@@ -407,6 +502,23 @@ pub async fn serve(
     guard_resolved_bind(&config, local)?;
     let url = endpoint_url(local);
     log_startup_surface(&config, local, &url);
+    // ADR-0003 §9.2: sweep the run scratch root before anything can be served. Whatever is in it
+    // belongs to a process that is gone, and there is no better moment — nothing is live yet, so
+    // no lock is needed, and the alternative is that every SIGKILL leaks a checked-out worktree
+    // into a runtime directory until the disk fills.
+    let debris = run_workflow::pipeline::sweep_scratch_root(
+        &config.run_scratch,
+        &config.workspace,
+        config.git_timeout,
+    )
+    .await;
+    if debris > 0 {
+        tracing::info!(
+            leftover_run_scratch_dirs = debris,
+            scratch_root = %config.run_scratch.display(),
+            "cleared the leftover scratch directories of a previous process"
+        );
+    }
     tracing::info!(
         %url,
         bind = %local,
@@ -422,11 +534,7 @@ pub async fn serve(
     );
 
     let sessions = CancellationToken::new();
-    let app = router(
-        Arc::clone(&config),
-        Arc::clone(&supervisor),
-        sessions.clone(),
-    );
+    let app = router(Arc::clone(&wiring), sessions.clone());
     let drain_sessions = sessions.clone();
     let sweep_supervisor = Arc::clone(&supervisor);
 

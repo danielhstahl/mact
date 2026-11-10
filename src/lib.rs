@@ -24,7 +24,7 @@
 //!   the ADR-0001 §5 error mapping shared by all of them.
 //! * [`registry`] — the run supervisor (ADR-0004): the run state machine, the in-memory run
 //!   registry with its retention sweep, the workspace run lock, and the act pipeline seam
-//!   that `run_workflow` (mact-f1w.14) drives. `run_status` and `cancel_run` read it.
+//!   that `run_workflow` drives. `run_status` and `cancel_run` read it.
 //! * [`runner`] — the act process runner: the pure argv builder, the log tee with secret
 //!   redaction and its two byte budgets, the process-group timeout/cancel teardown, and
 //!   the terminal [`runner::ActRunOutcome`] the supervisor turns into evidence.

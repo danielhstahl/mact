@@ -33,6 +33,7 @@ pub mod cancel_run;
 pub mod category;
 pub mod list_tasks;
 pub mod run_status;
+pub mod run_workflow;
 pub mod schemas;
 
 use std::collections::BTreeSet;

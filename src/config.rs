@@ -65,6 +65,23 @@ pub const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
 /// The header the opt-in shared secret travels in (`--require-session-token`).
 pub const SESSION_TOKEN_HEADER: &str = "x-act-mcp-token";
 
+/// `--run-scratch`'s default (ADR-0003 §11): `$XDG_RUNTIME_DIR/act-mcp-<uid>`, else
+/// `/tmp/act-mcp-<uid>`.
+///
+/// On the platforms where this crate has no runner there is no per-user runtime directory
+/// convention to honour, so the temp directory stands in; the type, the flag and the rule
+/// (outside the workspace) are the same everywhere.
+#[cfg(unix)]
+fn default_run_scratch_dir() -> PathBuf {
+    crate::runner::default_run_scratch_dir()
+}
+
+/// See the [`default_run_scratch_dir`] above.
+#[cfg(not(unix))]
+fn default_run_scratch_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("act-mcp-{}", std::process::id()))
+}
+
 /// Default `--max-run-dirs`: how many `.evidence/runs/<run_id>/` directories may exist
 /// before a new run is refused. Retention (§ ADR-0004 §7.3) prunes *memory*, never disk,
 /// so without a cap one long-lived server fills the disk a run at a time.
@@ -132,6 +149,10 @@ pub struct Config {
     /// Cap on `.evidence/runs/` directories (`--max-run-dirs`); see
     /// [`crate::registry::RunPolicy::max_run_dirs`].
     pub max_run_dirs: usize,
+    /// `--run-scratch`: the per-run scratch root outside the workspace (act's cwd, the
+    /// `0600` secrets file, and an ADR-0003 worktree). See
+    /// [`Config::resolve_run_scratch`] for the one rule boot enforces.
+    pub run_scratch: PathBuf,
 }
 
 /// The opt-in shared secret, held so it cannot be printed by accident.
@@ -268,6 +289,11 @@ pub enum ConfigError {
 
     #[error("--container-daemon-socket was empty; pass a socket path such as /run/docker.sock, or omit it")]
     ContainerDaemonSocketEmpty,
+
+    #[error(
+        "--run-scratch {path} is inside the workspace {workspace}\n  fix: run scratch must live outside the repository: act's --bind exposes the whole tree to the job, and the job reads secrets from its own scratch directory (ADR-0003 §8, §9.1)"
+    )]
+    RunScratchInsideWorkspace { path: PathBuf, workspace: PathBuf },
 }
 
 /// `act-mcp serve` arguments.
@@ -447,6 +473,15 @@ pub struct ServeArgs {
         help = "Refuse a new run once this many .evidence/runs/<run_id>/ directories exist; run retention prunes memory, never disk, so this is the disk guard."
     )]
     pub max_run_dirs: usize,
+
+    /// `--run-scratch <dir>` (ADR-0003 §11).
+    #[arg(
+        long,
+        value_name = "DIR",
+        env = "ACT_MCP_RUN_SCRATCH",
+        help = "Where per-run scratch lives (act's cwd, secrets.env, and an ADR-0003 worktree): defaults to $XDG_RUNTIME_DIR/act-mcp-<uid>, else /tmp/act-mcp-<uid>. Must be outside --workspace."
+    )]
+    pub run_scratch: Option<PathBuf>,
 }
 
 impl Default for ServeArgs {
@@ -470,6 +505,7 @@ impl Default for ServeArgs {
             require_session_token: false,
             session_token: None,
             max_run_dirs: DEFAULT_MAX_RUN_DIRS,
+            run_scratch: None,
         }
     }
 }
@@ -519,6 +555,7 @@ impl Config {
         if args.max_run_dirs == 0 {
             return Err(ConfigError::MaxRunDirsZero);
         }
+        let run_scratch = Self::resolve_run_scratch(args.run_scratch.as_deref(), &workspace)?;
 
         Ok(Self {
             workspace,
@@ -538,6 +575,7 @@ impl Config {
             max_request_body_bytes: Self::resolve_max_request_body(args.max_request_body_bytes)?,
             session_token,
             max_run_dirs: args.max_run_dirs,
+            run_scratch,
         })
     }
 
@@ -577,10 +615,40 @@ impl Config {
             max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
             session_token: None,
             max_run_dirs: DEFAULT_MAX_RUN_DIRS,
+            // Same default the CLI resolves to, so an embedder that never went through
+            // [`Config::build`] still gets the ADR-0003 §11 scratch root.
+            run_scratch: default_run_scratch_dir(),
         }
     }
 
-    /// The run-supervisor policy this boot configuration implies.
+    /// `--run-scratch`: the per-run scratch root (act's cwd, `secrets.env`, and the
+    /// ADR-0003 worktree of a synthesized tree).
+    ///
+    /// Only one rule is enforceable at boot — it must not live inside the workspace, because
+    /// act's `--bind` hands the whole tree to the job and the job reads `secrets.env` from
+    /// its own scratch directory (ADR-0003 §8/§9.1). Whether it is on a *local* filesystem
+    /// is not something a portable check can establish, so the operator's word is taken.
+    /// The directory itself is created (mode 0700) per run by the pipeline rather than at
+    /// boot: boot must not have filesystem side effects a read-only check would trip over.
+    fn resolve_run_scratch(
+        requested: Option<&Path>,
+        workspace: &Path,
+    ) -> Result<PathBuf, ConfigError> {
+        let scratch = match requested {
+            Some(path) => path.to_path_buf(),
+            None => default_run_scratch_dir(),
+        };
+        // Compare canonically where possible: `--run-scratch ./work/scratch` and a workspace
+        // reached through a symlink should not be two different places.
+        let scratch_canonical = scratch.canonicalize().unwrap_or_else(|_| scratch.clone());
+        if scratch_canonical.starts_with(workspace) || scratch.starts_with(workspace) {
+            return Err(ConfigError::RunScratchInsideWorkspace {
+                path: scratch,
+                workspace: workspace.to_path_buf(),
+            });
+        }
+        Ok(scratch)
+    }
     ///
     /// ADR-0004 §11's defaults, with the one cap this ticket owns overlaid. The other knobs
     /// stay with the ADR defaults on purpose: they are the budgets ADR-0004 pins, and moving
@@ -1112,6 +1180,34 @@ mod tests {
             Config::build(&args).expect_err("0 refuses every run"),
             ConfigError::MaxRunDirsZero
         ));
+
+        // `--run-scratch` (ADR-0003 §11): the one enforceable rule is that it is not inside the
+        // workspace, because act's `--bind` hands the job the whole tree and the job's own
+        // scratch directory holds `secrets.env`.
+        let default_scratch = Config::build(&args_with(workspace.path(), &act))
+            .expect("a scratch root needs no flag")
+            .run_scratch;
+        assert!(
+            !default_scratch.starts_with(workspace.path()),
+            "the default scratch root is a runtime directory, not the repository: {default_scratch:?}"
+        );
+        let mut args = args_with(workspace.path(), &act);
+        args.run_scratch = Some(workspace.path().join("scratch"));
+        assert!(matches!(
+            Config::build(&args)
+                .expect_err("scratch inside the workspace is the leak the ADR forbids"),
+            ConfigError::RunScratchInsideWorkspace { .. }
+        ));
+        let mut args = args_with(workspace.path(), &act);
+        args.run_scratch = Some(tmp.path().join("scratch"));
+        assert_eq!(
+            Config::build(&args)
+                .expect("an explicit scratch root outside the workspace is fine")
+                .run_scratch,
+            std::fs::canonicalize(tmp.path().join("scratch"))
+                .unwrap_or_else(|_| tmp.path().join("scratch")),
+            "the operator's path is taken as given, not moved under a subdirectory"
+        );
 
         // The shared secret: generated on request, supplied by hand, never empty.
         let mut args = args_with(workspace.path(), &act);

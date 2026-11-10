@@ -50,7 +50,7 @@ type ToolRow = (
     fn() -> rmcp::model::Tool,
 );
 
-const TOOLS: [ToolRow; 3] = [
+const TOOLS: [ToolRow; 4] = [
     (
         "list_tasks",
         "list_tasks_args",
@@ -68,6 +68,12 @@ const TOOLS: [ToolRow; 3] = [
         "cancel_run_args",
         "cancel_run_result",
         ActMcp::cancel_run_tool_attr,
+    ),
+    (
+        "run_workflow",
+        "run_workflow_args",
+        "run_workflow_result",
+        ActMcp::run_workflow_tool_attr,
     ),
 ];
 

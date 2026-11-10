@@ -50,7 +50,7 @@ async fn a_stock_client_can_list_tools() {
             .iter()
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
-        vec!["cancel_run", "list_tasks", "run_status"],
+        vec!["cancel_run", "list_tasks", "run_status", "run_workflow"],
         "the tool set is exactly the tools this build registers, in the order rmcp sorts them"
     );
     assert!(
@@ -85,7 +85,7 @@ async fn a_raw_tools_list_request_returns_the_tool_array() {
             .iter()
             .map(|tool| tool["name"].as_str().unwrap_or_default())
             .collect::<Vec<_>>(),
-        vec!["cancel_run", "list_tasks", "run_status"],
+        vec!["cancel_run", "list_tasks", "run_status", "run_workflow"],
         "body: {body}"
     );
     assert!(

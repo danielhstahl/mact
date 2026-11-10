@@ -66,7 +66,7 @@ async fn tools_list_advertises_list_tasks_with_both_schemas() {
     let names: Vec<&str> = tools.tools.iter().map(|tool| tool.name.as_ref()).collect();
     assert_eq!(
         names,
-        vec!["cancel_run", "list_tasks", "run_status"],
+        vec!["cancel_run", "list_tasks", "run_status", "run_workflow"],
         "the tool set is this build's tools; `list_tasks` must be among them"
     );
 

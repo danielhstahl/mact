@@ -8,7 +8,9 @@ use std::{net::SocketAddr, path::Path, sync::Arc};
 
 use act_mcp::{
     config::{ServeArgs, DEFAULT_BIND},
-    server, Config,
+    server,
+    tools::run_workflow::Wiring,
+    Config,
 };
 
 #[allow(unused_imports, reason = "only some test binaries need the supervisor")]
@@ -120,6 +122,11 @@ pub struct TestServer {
     /// The process-wide run supervisor, shared by every session this server opens. The
     /// run-control tests drive it directly and read it back through the wire.
     pub supervisor: Arc<RunSupervisor>,
+    /// Everything the request handlers share: the config, the supervisor above, the validation
+    /// gate and the idempotency table. A test that wants to pre-warm the probe cache, or assert
+    /// what an `idempotency_key` remembered, reaches it here — it is the same `Arc` every request
+    /// in this process sees, which is the property under test.
+    pub wiring: Arc<Wiring>,
     task: JoinHandle<()>,
 }
 
@@ -137,6 +144,17 @@ impl TestServer {
     /// The same server, with a supervisor the test configured — the seam for a short
     /// `--term-grace-secs`, which no test wants to sit through at its shipped value.
     pub async fn with_supervisor(config: Arc<Config>, supervisor: Arc<RunSupervisor>) -> Self {
+        let wiring = Arc::new(Wiring::with_supervisor(
+            Arc::clone(&config),
+            Arc::clone(&supervisor),
+        ));
+        Self::with_wiring(wiring).await
+    }
+
+    /// The same server over an already-assembled [`Wiring`] — the seam for a test that built its
+    /// own validator (a scripted environment, a pinned clock) or its own run policy and wants
+    /// the request handlers to use exactly that.
+    pub async fn with_wiring(wiring: Arc<Wiring>) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind ephemeral loopback port");
@@ -144,7 +162,7 @@ impl TestServer {
         let token = CancellationToken::new();
         let task = {
             let token = token.clone();
-            let app = server::router(config, Arc::clone(&supervisor), token.clone());
+            let app = server::router(Arc::clone(&wiring), token.clone());
             tokio::spawn(async move {
                 let _ = axum::serve(listener, app)
                     .with_graceful_shutdown(async move { token.cancelled().await })
@@ -156,7 +174,8 @@ impl TestServer {
         Self {
             addr,
             token,
-            supervisor,
+            supervisor: Arc::clone(&wiring.supervisor),
+            wiring,
             task,
         }
     }

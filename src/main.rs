@@ -20,8 +20,9 @@ use tokio_util::sync::CancellationToken;
 use act_mcp::{
     config::ServeArgs,
     evidence::{self, EvidenceRoot},
-    registry::RunSupervisor,
-    server, Config,
+    server,
+    tools::run_workflow,
+    Config,
 };
 
 #[derive(Parser)]
@@ -123,18 +124,18 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
     let config = Arc::new(Config::build(&args)?);
     tracing::debug!(?config, "configuration accepted");
 
-    // One supervisor per process: it owns every run, so a run outlives the request that
-    // started it and is visible to every session (ADR-0004 §2, D-1). Built from the boot
-    // config so `--max-run-dirs` (mact-f1w.13) reaches the cap that actually enforces it.
-    let supervisor = std::sync::Arc::new(
-        RunSupervisor::with_policy(config.run_policy())
-            .context("the built-in run-lifecycle defaults are unusable")?,
-    );
+    // One `Wiring` per process: the run supervisor that owns every run (so a run outlives the
+    // request that started it and is visible to every session, ADR-0004 §2, D-1), plus the
+    // validation gate and the idempotency table `run_workflow` runs everything through. Built
+    // from the boot config, so `--max-run-dirs` (mact-f1w.13) reaches the cap that actually
+    // enforces it and two requests carrying the same `idempotency_key` answer to one table.
+    let wiring = run_workflow::Wiring::build(config)
+        .context("the built-in run-lifecycle defaults are unusable")?;
 
     let shutdown = CancellationToken::new();
     install_signal_handlers(&shutdown);
 
-    server::serve(config, supervisor, shutdown)
+    server::serve(wiring, shutdown)
         .await
         .context("server terminated with an error")
 }
