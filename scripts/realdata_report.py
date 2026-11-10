@@ -36,6 +36,7 @@ import json
 import re
 import sys
 import difflib
+import tempfile
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -455,9 +456,8 @@ def cmd_selftest(args: argparse.Namespace) -> int:
     )
 
     # --- shape: synthetic captures through the real manifest.
-    def report(entries: list) -> tuple[int, str]:
+    def report(entries: list, manifest_path: Path | None = None) -> tuple[int, str]:
         import contextlib
-        import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "act.jsonl"
@@ -468,7 +468,7 @@ def cmd_selftest(args: argparse.Namespace) -> int:
             path.write_text(body + "\n", encoding="utf-8")
             buffer = io.StringIO()
             options = argparse.Namespace(
-                capture=str(path), manifest=str(manifest), json_out=None,
+                capture=str(path), manifest=str(manifest_path or manifest), json_out=None,
                 max_lines=None, samples=1, strict=True,
             )
             with contextlib.redirect_stdout(buffer):
@@ -493,8 +493,38 @@ def cmd_selftest(args: argparse.Namespace) -> int:
     code, out = report(complete)
     check("a complete capture raises no divergence", code == 0)
     check("an unclaimed field is reported as NEW", "brand_new_field" in out and "NEW" in out)
-    check("a phantom field's absence is a note, not a divergence",
-          "Output" in out and "DIVERGENCE" not in out)
+
+    # A `phantom` row is a field this crate once mistook for one of act's. The committed
+    # manifest has none since mact-dfu deleted the `Output`/`Error` rows together with the
+    # read that made them look claimed (see its `resolved_gaps`), so this branch is pinned
+    # with a manifest of its own: what is under test is the checker's rule — an absent
+    # phantom is a note about our dead code, an absent depended-on field is a divergence —
+    # and that rule must not quietly rot into "always red" or "never red".
+    with tempfile.TemporaryDirectory() as tmp:
+        ghostly = json.loads(manifest.read_text(encoding="utf-8"))
+        ghostly["fields"]["ghost_output"] = {
+            "group": "phantom",
+            "type": "string",
+            "required": False,
+            "assumed_by": ["a read no released act can satisfy"],
+        }
+        ghost_manifest = Path(tmp) / "ghost-shape.json"
+        ghost_manifest.write_text(json.dumps(ghostly), encoding="utf-8")
+
+        code, out = report(complete, ghost_manifest)
+        check(
+            "a phantom field's absence is a note, not a divergence",
+            "ghost_output" in out and "never act's" in out and code == 0
+            and "DIVERGENCE" not in out,
+        )
+        settled = [
+            {k: v for k, v in e.items() if k != "brand_new_field"} for e in complete
+        ] + [entry(ghost_output="surprise")]
+        code, out = report(settled, ghost_manifest)
+        check(
+            "a phantom field that does appear is judged on its type, not as something new",
+            code == 0 and "NEW" not in out,
+        )
 
     def without(field: str, entries: list) -> list:
         return [{k: v for k, v in e.items() if k != field} for e in entries]

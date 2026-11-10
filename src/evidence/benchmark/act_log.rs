@@ -22,10 +22,18 @@
 //! `Duration.String()` prints and what act writes into `msg`) is accepted too, because a
 //! formatter change is a plausible upgrade and the two spell the same duration.
 //!
-//! `Output` and `Error` are read as message fields as well: they are the spellings the log
-//! shape this repo's earlier coverage fixtures use carry, and a marker may arrive in either.
-//! A line that is not JSON at all is searched as plain text, so a run captured without
-//! `--json` still yields its markers (just none of its timings).
+//! `msg` is the only message field there is, and `Output`/`Error` are deliberately **not**
+//! read. They used to be, as alternative spellings — but no act in the supported range emits
+//! either one as a log field (checked against the released tags; the `phantom-message-fields`
+//! entry under `resolved_gaps` in `tests/realdata/golden/act-shape.json` keeps the evidence), so
+//! those arms could only ever fire on a fixture this repo wrote for itself. A read that looks like
+//! compatibility and is really a tautology is worse than no read: it makes the extractor look
+//! more tolerant than act is, and it keeps a field that does not exist in the shape tables.
+//!
+//! What is left is the two cases a real log has: a JSON line with `msg`, and everything else.
+//! A line that is not JSON at all — or is JSON that carries no `msg` — is searched as plain
+//! text, so a run captured without `--json` still yields its markers (just none of its
+//! timings).
 //!
 //! ## Which act versions emit `executionTime` — and what happens on the ones that do not
 //!
@@ -239,20 +247,15 @@ fn is_step_completion(entry: &Value, raw_line: &str) -> bool {
 
 /// The texts on one entry that can carry a marker.
 ///
-/// `msg` is where act puts a step's stdout; `Output`/`Error` are the other spellings this
-/// log has used. When an entry has none of them the raw line is searched instead — same rule
-/// [`crate::evidence::coverage`] applies when it scrapes a log for a percentage.
+/// `msg` is where act puts a step's stdout and is the only message field logrus' JSON
+/// formatter ever writes for it (module doc, "the field names, pinned"), so one field is all
+/// a JSON entry has to offer. When it carries no `msg` the raw line is searched instead —
+/// same rule [`crate::evidence::coverage`] applies when it scrapes a log for a percentage.
 fn messages(entry: &Value, raw_line: &str) -> Vec<String> {
-    let mut texts: Vec<String> = Vec::new();
-    for key in ["msg", "Output", "Error"] {
-        if let Some(text) = entry.get(key).and_then(Value::as_str) {
-            texts.extend(text.split('\n').map(str::to_owned));
-        }
+    match entry.get("msg").and_then(Value::as_str) {
+        Some(text) => text.split('\n').map(str::to_owned).collect(),
+        None => vec![raw_line.to_owned()],
     }
-    if texts.is_empty() {
-        texts.push(raw_line.to_owned());
-    }
-    texts
 }
 
 /// One line of log text, as a possible marker.
@@ -515,6 +518,30 @@ mod tests {
         ]);
         assert!(scan.steps.is_empty());
         assert_eq!(scan.span_ms, Some(91_000));
+    }
+
+    /// `msg` is the only message field act's log has, and the only one this extractor reads.
+    ///
+    /// `Output` and `Error` were read here as well until mact-dfu deleted the fallback: no act
+    /// in the supported range emits either of them (the `phantom-message-fields` entry under
+    /// `resolved_gaps` in `tests/realdata/golden/act-shape.json`), so the arms could only ever
+    /// fire on a fixture this repo wrote for itself. This test is the reason nobody re-adds them
+    /// by accident.
+    #[test]
+    fn only_msg_is_a_message_field_and_no_other_name_is() {
+        let marker = r#"ACTMCP_BENCHMARK {"name":"x","value":1}"#.replace('"', "\\\"");
+        let scan = scan_of(&[
+            &format!(r#"{{"jobID":"{JOB}","raw_output":true,"msg":"{marker}"}}"#),
+            &format!(r#"{{"jobID":"{JOB}","raw_output":true,"Output":"{marker}"}}"#),
+            &format!(r#"{{"jobID":"{JOB}","raw_output":true,"Error":"{marker}"}}"#),
+        ]);
+        assert_eq!(scan.markers.len(), 1, "one marker, the one in `msg`");
+        assert_eq!(
+            scan.marker_malformed, 0,
+            "a marker buried in a JSON string is not a marker line at all rather than a \
+            broken one: §5.2 anchors the grammar at the line start, so the raw-line \
+            fallback cannot match it either"
+        );
     }
 
     #[test]

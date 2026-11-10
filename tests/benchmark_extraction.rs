@@ -743,27 +743,36 @@ fn malformed_marker_lines_are_counted_and_never_fail_the_run() {
 }
 
 /// §5.2: the marker lives in act's log, so it is found in the JSON `msg` field and in a
-/// plain-text log alike.
+/// plain-text log alike — and nowhere else.
+///
+/// The `Output` line is in this test as a **negative**. No released act writes a step's output
+/// to an `Output` (or `Error`) field — `logrus`' JSON formatter writes `msg` — and
+/// `act_log::messages()` used to read them anyway, on the strength of a fixture rather than of
+/// act (mact-dfu; see the `phantom-message-fields` entry under `resolved_gaps` in
+/// `tests/realdata/golden/act-shape.json`). Reading them was not merely useless: it made a
+/// field that does not exist look like part of the log's contract.
 #[test]
-fn a_marker_is_found_wherever_the_log_put_the_step_output() {
+fn a_marker_is_found_where_the_log_actually_puts_the_step_output() {
     let harness = Harness::new(RUN_ID);
-    let in_output_field = format!(
+    let in_a_field_act_never_writes = format!(
         r#"{{"job":"hyperfine-bench","level":"info","Output":"ACTMCP_BENCHMARK {}"}}"#,
         escaped(r#"{"name":"from_output","value":2}"#)
     );
     harness.log_text(&format!(
         "{}\n{}\n{}\n{}\n",
         raw_marker(r#"{"name":"from_msg","value":1}"#),
-        in_output_field,
+        in_a_field_act_never_writes,
         r#"ACTMCP_BENCHMARK {"name":"from_plain_text","value":3}"#,
         r#"{"job":"hyperfine-bench","level":"info","msg":"a line with no marker at all"}"#,
     ));
     let summary = harness.extract();
+    assert_eq!(names(&summary), vec!["from_msg", "from_plain_text"]);
     assert_eq!(
-        names(&summary),
-        vec!["from_msg", "from_output", "from_plain_text"]
+        summary.malformed, 0,
+        "the `Output` line is not a marker line either: nothing reads that field, and the \
+        raw-line fallback cannot half-read a marker out of it because §5.2 anchors the \
+        grammar at the start of the line"
     );
-    assert_eq!(summary.malformed, 0);
 }
 
 /// §5.2's marker cap: the excess is not collected, and the run says so — while the timings

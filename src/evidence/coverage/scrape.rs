@@ -9,13 +9,20 @@
 //!
 //! ## What is scanned
 //!
-//! `act.jsonl` is act's `--json` log: one event object per line, whose `Output` field
-//! carries the job's stdout. Coverage text lives in there, so each line is parsed as JSON
-//! and its `Output`/`Error` strings are searched (split again on newlines, because one
-//! `Output` may hold a whole table); a line that is not JSON is searched as itself, which
-//! is what makes the scraper work on a log written by `--nocolor`-style plain act output
-//! too. Redaction already happened at the log's source (mact-f1w.8), so nothing here can
-//! launder a secret into evidence.
+//! `act.jsonl` is act's `--json` log: one event object per line. A step's stdout arrives in
+//! its `msg` field (on the lines that also carry `raw_output: true`) — the two names this
+//! scanner looks up first, `Output` and `Error`, are **not act's**: no release in the supported
+//! range emits either (the same finding mact-dfu deleted from `benchmark::act_log`; the
+//! `resolved_gaps` entry in `tests/realdata/golden/act-shape.json` has the detail). They stay
+//! here because they are not load-bearing in either direction — a JSON line carrying neither
+//! name is searched as whole-line text, which is exactly how a real act line reaches this
+//! scanner — and taking them out changes what a published `scraped_line` quotes, so that is a
+//! change this module makes with its own fixtures and goldens, not as a drive-by.
+//!
+//! Coverage text is therefore searched per line, split again on newlines because one field may
+//! hold a whole table; a line that is not JSON is searched as itself, which is what makes the
+//! scraper work on a log written by `--nocolor`-style plain act output too. Redaction already
+//! happened at the log's source (mact-f1w.8), so nothing here can launder a secret into evidence.
 //!
 //! ## The three shapes recognised
 //!

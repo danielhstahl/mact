@@ -55,7 +55,7 @@
       "required": true,
       "assumed_by": [
         "src/evidence/benchmark/act_log.rs (the in-band ACTMCP_BENCHMARK marker rides in here)",
-        "src/evidence/coverage.rs (log scrape)"
+        "src/evidence/coverage.rs (log scrape — it reaches `msg` through its whole-line text fallback rather than by field name; see that module's doc)"
       ],
       "provenance": "source",
       "note": "A step's stdout arrives here one line per entry, on the lines that also carry raw_output:true (pkg/runner/run_context.go rawLogger)."
@@ -174,22 +174,6 @@
       "provenance": "source",
       "note": "THE FIELD TO WATCH. It does not exist in every act in the supported range: pkg/runner/step.go gained it between v0.2.75 and v0.2.76 (absent at v0.2.62..=0.2.75, present through v0.2.97). On an older act the extractor finds no timings at all and now says so — the run carries the named warning act_step_timings_unavailable instead of publishing a silent zero; see known_gaps and docs/benchmark-inputs.md §3."
     },
-    "Output": {
-      "group": "phantom",
-      "type": "string",
-      "required": false,
-      "assumed_by": ["src/evidence/benchmark/act_log.rs messages() reads msg, Output and Error"],
-      "provenance": "source",
-      "note": "NOT ACT'S. No tag in the supported range emits `Output` or `Error` as log fields; the fallback in messages() came from a fixture, not from act. Harmless today (the read is a fallback behind msg), listed here so that the smoke's 'fields no one claimed' and 'fields we claimed that never appear' reports stay honest."
-    },
-    "Error": {
-      "group": "phantom",
-      "type": "string",
-      "required": false,
-      "assumed_by": ["src/evidence/benchmark/act_log.rs messages()"],
-      "provenance": "source",
-      "note": "See Output."
-    },
     "command": {
       "group": "unclaimed",
       "type": "string",
@@ -239,13 +223,16 @@
       "settled_by": "source: pkg/runner/step.go at v0.2.75 (absent) and v0.2.76 (present)",
       "decided": "mact-s3l: the floor stays 0.2.62 and the case is named, not silent. A run whose step-completion lines carried no executionTime carries the warning act_step_timings_unavailable plus a detail line naming v0.2.76 and what job_duration_s fell back to. Reasoning and operator options: docs/benchmark-inputs.md §3.",
       "what_to_do": "Still check it against a live log: a log with stepResult Success/Failure lines and no executionTime on any of them is this gap, and the run must then carry act_step_timings_unavailable (scripts/smoke-real-act.sh checks for exactly that). If a live act >= v0.2.76 ever omits executionTime, that is a NEW divergence and this gap no longer explains it."
-    },
+    }
+  ],
+  "resolved_gaps": [
     {
+      "$comment": "Retired claims, kept so a retired claim is not quietly re-adopted. scripts/realdata_report.py does not read this list: a retired claim is not an assumption, and printing it as a triggered gap on every capture would train everyone to ignore the gaps that do trigger.",
       "id": "phantom-message-fields",
       "field": "Output / Error",
-      "gap": "messages() reads two fields no released act emits. They are dead code masquerading as compatibility.",
-      "settled_by": "source across the whole supported range",
-      "what_to_do": "Delete the fallback or say why it stays. The smoke reports them as claimed-but-never-observed."
+      "was": "This file claimed `Output` and `Error` as message fields act_log::messages() reads, and they are not act's: logrus' JSONFormatter writes `msg`, and act's rawLogger puts a step's stdout there with raw_output:true. Nothing in the supported range (v0.2.63, v0.2.75, v0.2.76, v0.2.97) emits either name. The rows are gone from `fields` because a field nothing reads is not an assumption this crate makes, and reading them was not harmless: it kept a field that does not exist in the shape tables, so a live act that ever printed one would have looked like us agreeing it was real.",
+      "settled": "mact-dfu deleted the two arms and the test that fed them a hand-made `Output` line. act_log::messages() now reads `msg` and, when an entry carries no `msg`, the raw line — which is everything a real log can offer. Pinned by act_log's `only_msg_is_a_message_field_and_no_other_name_is` and by `a_marker_is_found_where_the_log_actually_puts_the_step_output` in tests/benchmark_extraction.rs, both of which assert that an `Output` line is NOT read. Re-adding a name here needs a tag number and a line of act source, not a fixture.",
+      "see_also": "src/evidence/coverage/scrape.rs::candidate_lines still looks up `Output` and `Error` by name (and never `msg`), so a real act line reaches it as whole-line text through that function's own fallback. That works — a percentage in `msg` is still found — but it is the same mistaken shape of claim, and it is coverage's finding to make, not this ticket's."
     }
   ]
 }

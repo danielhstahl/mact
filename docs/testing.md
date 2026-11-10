@@ -360,8 +360,8 @@ DIVERGENCE — a field something in this crate reads did not hold up
 open the follow-up ticket it offers, read the named extractor, and *then* decide whether act
 changed or the assumption was wrong. Do not edit the manifest to match the log: the file exists
 so a silent third-party change surfaces as a named gap instead of as a plausible number in
-`.evidence` for a year. Two gaps are already recorded there from reading act's source across the
-supported range, and the smoke prints them whenever a capture triggers them:
+`.evidence` for a year. One gap is recorded there from reading act's source across the
+supported range, and the smoke prints it whenever a capture triggers it:
 
 * `executionTime` — the only source of step timings — exists from act **v0.2.76**; this server's
   floor is `MINIMUM_ACT_VERSION` **0.2.62**, so on `0.2.62 … 0.2.75` a benchmark run publishes
@@ -370,8 +370,15 @@ supported range, and the smoke prints them whenever a capture triggers them:
   `tests/fixtures/benchmark/act-pre-0.2.76.jsonl` and asserted in `tests/benchmark_extraction.rs`
   — the reasoning is [docs/benchmark-inputs.md §3](benchmark-inputs.md#3-acts-own-timings-need-act-0276-or-newer),
   and what the smoke adds is confirming it against a live log.
-* `Output`/`Error` — read by `act_log::messages()` as alternative message fields — are not act
-  fields in any released version. Dead code wearing a compatibility costume.
+
+A **retired** claim in that file lives under `resolved_gaps`, not in `fields` and not in
+`known_gaps`. `Output`/`Error` are that entry: `act_log::messages()` used to read them as
+alternative message fields although no released act emits either — dead code wearing a
+compatibility costume — and mact-dfu deleted the read instead of explaining it. They are no longer
+assumptions this crate makes, so they are no longer rows a live capture is checked against; what
+the file keeps is the reasoning and the two tests that assert the phantom field is *not* read.
+Nothing prints them on a run — a gap that fires on every capture trains nobody to read the ones
+that matter.
 
 The checker distinguishes three verdicts, and `scripts/realdata_report.py selftest` pins all
 three (the Rust test runs it, so the checker is not itself the untested thing):
@@ -379,7 +386,7 @@ three (the Rust test runs it, so the checker is not itself the untested thing):
 | what happened | verdict | red in the nightly? |
 |---|---|---|
 | a field something in this crate reads **went missing** or **changed type** | `DIVERGENCE` | yes — act broke a claim we depend on |
-| a field that was **never act's** (`Output`, `Error`) is absent, as ever | a note about our dead code | no — cleanup, not a regression |
+| a manifest row marked `phantom` (a field we once mistook for act's) is absent, as ever | a note about our dead code | no — cleanup, not a regression |
 | act emitted a field no manifest row claims | `NEW` | no — documentation debt, add a row when a human agrees it is real |
 
 In `--stub` mode the shape step runs against the stub's log fixture

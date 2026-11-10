@@ -49,12 +49,16 @@ Once `act.jsonl` is committed:
 The shape step in the smoke script diff this manifest against a live capture and prints the
 difference. `act-shape.json` says, per field, its type, who reads it, how the claim was
 established (`source` = read out of act at a named tag, `capture` = seen in a committed log),
-and — for the fields act has *changed* across its version range — where that happened. Two
-gaps are already recorded from reading act's source across the supported range:
+and — for the fields act has *changed* across its version range — where that happened. One
+gap is recorded from reading act's source across the supported range:
 
 * `executionTime` exists only from act **v0.2.76**; the extractors' step timings come from
   that field and nothing else, while this server's floor is 0.2.62.
-* `Output`/`Error` are read by `act_log.rs` as message fields and are not act's fields at all.
+
+A retired claim — one this crate made and no longer makes — goes under `resolved_gaps`, where it
+stays readable without being reported as a finding on every capture. `Output`/`Error` are the
+first entry there: `act_log.rs` read them as message fields and no released act emits either, so
+mact-dfu deleted the read rather than write down why it stayed.
 
 When the smoke prints `DIVERGENCE`, open the follow-up it offers (that is the ticket the log
 shape owed, not a nuisance), read the named extractor, and *then* decide whether act changed or

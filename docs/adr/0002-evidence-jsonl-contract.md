@@ -414,8 +414,13 @@ Rules:
   secret can never be laundered into evidence via a marker line.
 - Where the scan looks: act writes a step's stdout into the JSON log's `msg` field (one line per
   process write, but a single `msg` may hold several), so the grammar is applied to each line of
-  `msg` — and of the `Output`/`Error` spellings this log has used — rather than to the JSON log line,
-  which never starts with the literal. A log captured without `--log-format=json` is scanned line by
+  `msg` rather than to the JSON log line, which never starts with the literal.
+  *(Correction, mact-dfu: this clause originally read "… each line of `msg` — and of the
+  `Output`/`Error` spellings this log has used —". Checked against the released tags, no act in
+  the supported range emits either name: logrus' JSON formatter writes `msg` and act puts the
+  step's stdout there. The extractor's fallback for the two names is deleted rather than
+  specified, and nothing else here changes: the grammar, its anchoring and where the marker
+  rides are as written.)* A log captured without `--log-format=json` is scanned line by
   line instead, which is why the scan must never depend on the JSON form.
 - Malformed marker lines are counted (`malformed_metric`) and ignored; they never fail a run. Cap
   5000 marker lines per run (`marker_cap_reached`). A line that starts with the literal and carries

@@ -67,10 +67,12 @@
 # with the field, the extractor that reads it, and a ready-to-run `bd create` line. Open that
 # ticket. Do not edit act-shape.json to match the log before reading the extractor: the file
 # exists so that a silent third-party change becomes a named gap instead of a plausible number.
-# Two gaps are already recorded there from source inspection (act emits `executionTime` only
-# from v0.2.76, and `Output`/`Error` are not act's fields at all); the script prints them when
-# a capture triggers them. A divergence does not fail the run unless --strict-shape is given:
-# it is a follow-up ticket, not a broken build.
+# One gap is already recorded there from source inspection (act emits `executionTime` only from
+# v0.2.76); the script prints it when a capture triggers it. A retired claim sits in the
+# manifest's `resolved_gaps` instead of `known_gaps` — `Output`/`Error` are not act's fields in
+# any release, and act_log stopped reading them (mact-dfu) — because a gap that fires on every
+# capture is noise that hides the ones that are not. A divergence does not fail the run unless
+# --strict-shape is given: it is a follow-up ticket, not a broken build.
 #
 # The golden log: --capture-golden copies the coverage run's act.jsonl to
 # tests/realdata/golden/act.jsonl plus a provenance sidecar. Nothing is committed here yet
