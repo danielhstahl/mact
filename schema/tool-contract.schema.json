@@ -1180,7 +1180,7 @@
           "$ref": "#/$defs/timestamp"
         },
         "kill": {
-          "description": "How the act process group was taken down (ADR-0004 owns the mechanics). Absent for a queued run that never started a process and for an already_terminal run.",
+          "description": "How the act process group was taken down (ADR-0004 owns the mechanics). method 'none' for a run cancelled before act was exec'd; this object is absent only for an already_terminal run (ADR-0004 section 16.2).",
           "type": "object",
           "additionalProperties": false,
           "required": ["method"],

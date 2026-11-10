@@ -449,7 +449,8 @@ definition unclassified.
 
 `warnings` (and `meta.json.warnings`) is an **open** vocabulary of caveats that never change `status`:
 `unknown_category`, `deduplicated`, `exit_nonzero`, `process_group_killed`, `partial_evidence_dropped`,
-`already_terminal`, `parse_error`, plus every ADR-0002 §5.1 code (`no_coverage_found`, `parse_failed`,
+`already_terminal`, `orphaned_containers` (added by ADR-0004 §5.6), `parse_error`, plus every
+ADR-0002 §5.1 code (`no_coverage_found`, `parse_failed`,
 `unsupported_format`, `payload_too_large`, `payload_unreadable`, `payload_transport_unavailable`,
 `coverage_source_shadowed`, `malformed_metric`, `marker_cap_reached`, `truncated`). Unknown warning codes are
 ignored, never fatal. Extraction problems are warnings, never run failures (ADR-0002 §5.1); write failures
@@ -516,7 +517,9 @@ records `{method: term | kill | none, took_ms?}` — how the process group went 
   dequeues it (`kill.method: "none"`). The one error is `run_not_found`.
 - A `cancel_run` for a run that is mid-kill returns the same shape; the second caller sees
   `status: "cancelled"` with `terminal: false` while the teardown finishes, then `terminal: true` from
-  `run_status`.
+  `run_status`. In that same window `run_status`/`run_view` reports `status: "running"` with
+  `phase: "cancelling"`, because `run_view`'s schema forces `terminal: true` for any terminal status and
+  cannot express a non-terminal `cancelled`; ADR-0004 §16.1 pins this and the mechanics.
 
 ### 7. Protocol and version policy
 

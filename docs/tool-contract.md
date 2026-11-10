@@ -210,7 +210,12 @@ Unknown or evicted id ⇒ error `run_not_found` (`isError: true`); the durable t
 ```
 
 Already-terminal ⇒ `already_terminal: true`, the old `status`, no `cancel_requested_at`, no `kill`, and it is
-**not** an error. Queued run ⇒ `kill.method: "none"`. Only error: `run_not_found`.
+**not** an error. Queued run (cancelled before `act` was exec'd) ⇒ `kill.method: "none"`. Mid-kill (second
+caller) ⇒ `status: "cancelled"`, `terminal: false`, no `kill` — the same window reads as `status:
+"running"` + `phase: "cancelling"` through `run_status`, which cannot express a non-terminal `cancelled`
+(ADR-0004 §5.2, §16.1). A cancel arriving after `act` exited is a no-op: current status, warning
+`already_terminal`. Only error: `run_not_found`. The kill mechanics (process group, SIGTERM → 20 s grace →
+SIGKILL, container cleanup) and the partial-evidence policy are ADR-0004 §5–§6.
 
 ## 7. Errors
 
@@ -272,10 +277,10 @@ The `isError: false` rows live in `run_view.error` on a `status: "error"` run; t
 
 Open vocabulary in `warnings[]` (and in `.evidence/runs/<run_id>/meta.json`); a warning never changes
 `status`: `unknown_category`, `deduplicated`, `exit_nonzero`, `process_group_killed`,
-`partial_evidence_dropped`, `already_terminal`, `parse_error`, plus the ADR-0002 §5.1 set
-(`no_coverage_found`, `parse_failed`, `unsupported_format`, `payload_too_large`, `payload_unreadable`,
-`payload_transport_unavailable`, `coverage_source_shadowed`, `malformed_metric`, `marker_cap_reached`,
-`truncated`). Unknown warnings are ignored, never fatal.
+`partial_evidence_dropped`, `already_terminal`, `orphaned_containers`, `parse_error`, plus the
+ADR-0002 §5.1 set (`no_coverage_found`, `parse_failed`, `unsupported_format`, `payload_too_large`,
+`payload_unreadable`, `payload_transport_unavailable`, `coverage_source_shadowed`, `malformed_metric`,
+`marker_cap_reached`, `truncated`). Unknown warnings are ignored, never fatal.
 
 ## 8. Limits
 
