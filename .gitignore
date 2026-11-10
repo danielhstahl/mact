@@ -1,0 +1,15 @@
+.transcripts/
+.fathom/*
+!.fathom/reviews/
+!.fathom/ratchet.toml
+!.fathom/LAYOUT.md
+.fathom/**/*.tmp
+.fathom/**/*.sqlite3-*
+__pycache__/
+*.pyc
+
+# act-mcp evidence (local only)
+# Local runs of act-mcp write .evidence/ into whatever workspace they point at,
+# including this repo when it is used as a fixture workspace. Layout and rules:
+# docs/adr/0002-evidence-jsonl-contract.md §6.4
+.evidence/

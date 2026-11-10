@@ -1,0 +1,701 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evidence.schema.json",
+  "title": "act-mcp .evidence JSONL record (schema_version 1)",
+  "description": "One line of a <workspace>/.evidence/{benchmark,coverage}/<full-sha>/<run_id>.jsonl file: exactly one compact JSON object per line, LF-terminated. This schema describes a SINGLE LINE (one record), not a file. Normative prose lives in docs/adr/0002-evidence-jsonl-contract.md; if the two disagree, the ADR is wrong and must be fixed in the same change. Policy: a field is either present with the correct type or ABSENT. Explicit JSON null is never written and never valid, except where a property is declared with type [x, null] (currently: none). 'unknown' is expressed by omission, never by a sentinel value.",
+  "$defs": {
+    "relpath": {
+      "description": "Workspace-relative path with '/' separators. No leading '/', no '~', and no '.' or '..' segments (a segment may start with up to two dots only if a non-dot character follows, so '.evidence' is fine and '..' is not). Absolute host paths must never appear in evidence.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[.]{0,2}[A-Za-z0-9][A-Za-z0-9 ._+-]*(/[.]{0,2}[A-Za-z0-9][A-Za-z0-9 ._+-]*)*$"
+    }
+  },
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "run_id",
+    "commit",
+    "workflow",
+    "task",
+    "category",
+    "run_status",
+    "tool",
+    "started_at",
+    "host"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "description": "Record contract version. Writers only ever emit the version they were built with; readers MUST refuse a version they do not know how to read (see ADR-0002 section 7).",
+      "const": 1
+    },
+    "kind": {
+      "description": "CLOSED enum: the record variant, and therefore the directory the record is filed under. Unknown kind is a hard validation error, never a tolerated unknown value.",
+      "enum": [
+        "benchmark",
+        "coverage"
+      ]
+    },
+    "run_id": {
+      "description": "The act-mcp run this record came from. Lexicographically sortable: the UTC timestamp prefix is what makes .evidence/<kind>/<sha>/<run_id>.jsonl list in chronological order. Generated per ADR-0004; the shape is pinned here because the layout depends on it. Example: 20261110T004203Z-a1b2c3",
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$"
+    },
+    "commit": {
+      "description": "Full lowercase hex object id of the commit the run is attributed to (ADR-0003). Always 40 chars (or 64 for sha256 repos); short SHAs are forbidden because the path and this field are the join key the cross-commit scan relies on.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "workflow": {
+      "description": "Workflow identity as resolved by the workspace validator: the workflow file basename without its .yml/.yaml extension (e.g. 'benchmark' for .github/workflows/benchmark.yml). Never an absolute or host path.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._/-]*$"
+    },
+    "task": {
+      "description": "Job id inside the workflow that was run (act -j <job>). Never re-derived from logs; it is the resolved value from the tool call.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._/-]*$"
+    },
+    "category": {
+      "description": "OPEN vocabulary: the classification that caused evidence to be written at all (only benchmark and coverage produce evidence). Consumers MUST tolerate values they do not know. In v1 category always equals kind.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "run_status": {
+      "description": "Outcome of the act run that produced this record: success (act exited 0), failed (act ran, workflow exited non-zero), cancelled, timed_out, error (act could not be run / internal failure). Evidence from non-success runs is written, not suppressed; aggregators filter on this field.",
+      "enum": [
+        "success",
+        "failed",
+        "cancelled",
+        "timed_out",
+        "error"
+      ]
+    },
+    "tool": {
+      "description": "Producer identity. Optional act_version records the nektos/act version that ran, because an act upgrade moves timings and log shapes.",
+      "type": "object",
+      "required": [
+        "name",
+        "version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": [
+            "act-mcp"
+          ]
+        },
+        "version": {
+          "description": "act-mcp server version (CARGO_PKG_VERSION), e.g. 0.1.0",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "act_version": {
+          "description": "First version token of 'act --version', e.g. 0.2.68. Omitted when act did not report a version.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "started_at": {
+      "description": "UTC start of the act run, RFC 3339 instant, always 'Z' (never '+00:00'), fractional seconds optional. Writers canonicalise to millisecond precision.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$"
+    },
+    "duration_ms": {
+      "description": "Wall duration of the whole act run in milliseconds. Omitted when the run never started or the duration is unknown; never 0 as a stand-in for unknown.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 259200000
+    },
+    "exit_code": {
+      "description": "act process exit status (wait(2) code, 0..=255). Omitted when act produced no exit status (killed by signal before exit, spawn failure).",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 255
+    },
+    "host": {
+      "description": "Hostname of the machine that ran act (gethostname, lowercased). Advisory: useful for telling two workstations apart, never used as a join key.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "flags": {
+      "description": "OPEN vocabulary of machine-readable caveats. Consumers MUST ignore flags they do not know; each known flag is listed in ADR-0002 section 5. 'unit_missing' is mandatory on a benchmark record whose job reported no unit.",
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 8,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 32,
+        "pattern": "^[a-z][a-z0-9_]*$"
+      }
+    },
+    "name": {
+      "description": "benchmark: the metric name, verbatim from the job (or one of the built-in act-log names job_duration_s / step_duration_s). coverage: optional human label ('total' for a total record); the identity of a file record is 'path', not 'name'.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z][A-Za-z0-9_.:/-]*$"
+    },
+    "value": {
+      "description": "benchmark: the measured value. Any finite JSON number; negative values are allowed for deltas but never for *_s durations (that is an extractor rule, not a schema rule). NaN/Infinity are not expressible in JSON and must be rejected before serialization.",
+      "type": "number"
+    },
+    "unit": {
+      "description": "benchmark: measurement unit, passed through VERBATIM from the job; act-mcp never converts or invents units. Omitted (and flags MUST contain 'unit_missing') when the job did not report one, so consumers can tell 'dimensionless/not reported' from a real unit and MUST NOT combine values with differing units. Preferred vocabulary is advisory: s, ms, us, ns, B, %, count, ops/s.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "pattern": "^[A-Za-z0-9_%/.^+-]+$"
+    },
+    "labels": {
+      "description": "benchmark: flat, ordered-by-convention grouping keys. Values are ALWAYS strings (numbers and booleans are stringified) so downstream group-by never has to type-switch. Known keys: job, step, os, runner, matrix, attempt, workflow, task. Open key set.",
+      "type": "object",
+      "maxProperties": 16,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 128
+      }
+    },
+    "sample": {
+      "description": "benchmark: 1-based sample index, present ONLY when a job legitimately emitted more than one sample for the same (name, labels) pair. Two records with an identical (name, labels, value, source) tuple and no sample field is a writer bug: within one run the writer de-duplicates accidental repeats and numbers real ones.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+    },
+    "scope": {
+      "description": "coverage: aggregation level of this record. 'total' is the workspace/run total, 'file' is one source file.",
+      "enum": [
+        "total",
+        "file"
+      ]
+    },
+    "path": {
+      "description": "coverage (scope=file): the source file this record describes, workspace-relative with forward slashes, no leading '/', no '.' or '..' segments, no home or absolute host paths. Container-side paths (act mounts the workspace at /srv) are normalised back to workspace-relative before writing.",
+      "$ref": "#/$defs/relpath"
+    },
+    "lines_found": {
+      "description": "coverage: denominator for line coverage. Present on every record parsed from a real coverage file; 0 means 'no measurable lines', which is NOT 0% coverage (ADR-0002 section 4 pins the consumer rule). Omitted only on percent-only scraped records.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100000000
+    },
+    "lines_hit": {
+      "description": "coverage: numerator for line coverage. MUST be <= lines_found.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100000000
+    },
+    "branches_found": {
+      "description": "coverage: branch denominator. Optional, but always paired with branches_hit (a source format that reports one reports both).",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100000000
+    },
+    "branches_hit": {
+      "description": "coverage: branch numerator. MUST be <= branches_found.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100000000
+    },
+    "statements_found": {
+      "description": "coverage: statement denominator. Istanbul statements are a different unit from lines; keep them in their own pair and never average the two.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100000000
+    },
+    "statements_hit": {
+      "description": "coverage: statement numerator. MUST be <= statements_found.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100000000
+    },
+    "functions_found": {
+      "description": "coverage: function denominator (istanbul 'functions'). Reserved for formats that report it; optional and always paired with functions_hit.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100000000
+    },
+    "functions_hit": {
+      "description": "coverage: function numerator. MUST be <= functions_found.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100000000
+    },
+    "reported_percent": {
+      "description": "coverage: ONLY for sources that report a percentage and no raw counts (last-resort log scraping). Raw numerators are the contract; a denominator must never be invented to go with a scraped ratio, so a record carrying reported_percent MUST NOT carry any *_found/*_hit pair, and MUST carry flag 'percent_only'. Consumers MUST NOT silently mix percent-only records into raw history (ADR-0002 section 4).",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "reported_measure": {
+      "description": "coverage: which measure reported_percent refers to, because a scraped 'Coverage: 87.4%' line does not always say. Required with reported_percent; use 'unknown' rather than guessing.",
+      "enum": [
+        "lines",
+        "statements",
+        "branches",
+        "functions",
+        "unknown"
+      ]
+    },
+    "source": {
+      "description": "How this record was produced. benchmark: job_file (payload file the job wrote through the bind mount), in_band_stdout (ACTMCP_BENCHMARK marker scraped from act's JSON log), act_log (timing derived from act's own job/step timings). coverage: lcov, coverage_summary (istanbul coverage-summary.json), log_scrape (last-resort percentage scraped from act's log; low confidence). File-based sources always outrank log scraping for the same scope.",
+      "enum": [
+        "job_file",
+        "in_band_stdout",
+        "act_log",
+        "lcov",
+        "coverage_summary",
+        "log_scrape"
+      ]
+    },
+    "source_path": {
+      "description": "Where the extractor read this number from, as a workspace-relative path (never an absolute host path). Required when source is job_file / lcov / coverage_summary; omitted for act_log, in_band_stdout and log_scrape (whose input is the act JSON log).",
+      "$ref": "#/$defs/relpath"
+    },
+    "extra": {
+      "description": "Advisory passthrough: whatever the job or the parser kept for humans (tool output snippets, parser notes, percentage-only markers). Nothing in act-mcp or in downstream scanners may depend on a key here; anything load-bearing must become a real field.",
+      "type": "object",
+      "maxProperties": 32
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "benchmark"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "required": [
+          "name",
+          "value",
+          "source"
+        ],
+        "properties": {
+          "source": {
+            "enum": [
+              "job_file",
+              "in_band_stdout",
+              "act_log"
+            ]
+          },
+          "scope": false,
+          "path": false,
+          "lines_found": false,
+          "lines_hit": false,
+          "branches_found": false,
+          "branches_hit": false,
+          "statements_found": false,
+          "statements_hit": false,
+          "functions_found": false,
+          "functions_hit": false,
+          "name": {
+            "$ref": "#/properties/name"
+          },
+          "value": {
+            "$ref": "#/properties/value"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "coverage"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "required": [
+          "scope",
+          "source"
+        ],
+        "anyOf": [
+          {
+            "required": [
+              "lines_found",
+              "lines_hit"
+            ],
+            "properties": {
+              "lines_found": {
+                "$ref": "#/properties/lines_found"
+              },
+              "lines_hit": {
+                "$ref": "#/properties/lines_hit"
+              }
+            }
+          },
+          {
+            "required": [
+              "statements_found",
+              "statements_hit"
+            ],
+            "properties": {
+              "statements_found": {
+                "$ref": "#/properties/statements_found"
+              },
+              "statements_hit": {
+                "$ref": "#/properties/statements_hit"
+              }
+            }
+          },
+          {
+            "required": [
+              "reported_percent"
+            ],
+            "properties": {
+              "reported_percent": {
+                "$ref": "#/properties/reported_percent"
+              }
+            }
+          }
+        ],
+        "properties": {
+          "source": {
+            "enum": [
+              "lcov",
+              "coverage_summary",
+              "log_scrape"
+            ]
+          },
+          "value": false,
+          "unit": false,
+          "labels": false,
+          "sample": false,
+          "scope": {
+            "$ref": "#/properties/scope"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "coverage"
+          },
+          "scope": {
+            "const": "file"
+          }
+        },
+        "required": [
+          "kind",
+          "scope"
+        ]
+      },
+      "then": {
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "$ref": "#/properties/path"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "coverage"
+          },
+          "scope": {
+            "const": "total"
+          }
+        },
+        "required": [
+          "kind",
+          "scope"
+        ]
+      },
+      "then": {
+        "properties": {
+          "path": false
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "source": {
+            "enum": [
+              "job_file",
+              "lcov",
+              "coverage_summary"
+            ]
+          }
+        },
+        "required": [
+          "source"
+        ]
+      },
+      "then": {
+        "required": [
+          "source_path"
+        ],
+        "properties": {
+          "source_path": {
+            "$ref": "#/properties/source_path"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "source": {
+            "const": "log_scrape"
+          }
+        },
+        "required": [
+          "source"
+        ]
+      },
+      "then": {
+        "properties": {
+          "source_path": false
+        }
+      }
+    },
+    {
+      "description": "A benchmark metric with no unit must say so, so consumers can tell 'no unit reported' from a real unit instead of guessing.",
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "benchmark"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "if": {
+          "not": {
+            "required": [
+              "unit"
+            ],
+            "properties": {
+              "unit": true
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "flags"
+          ],
+          "properties": {
+            "flags": {
+              "type": "array",
+              "contains": {
+                "const": "unit_missing"
+              }
+            }
+          },
+          "description": "flags must be present and must name the caveat; 'absent flags' never means 'no caveats'."
+        }
+      }
+    },
+    {
+      "description": "A percent-only coverage record must be flagged, must name the measure it scraped, and must not smuggle in raw counts that would contradict it.",
+      "if": {
+        "required": [
+          "reported_percent"
+        ],
+        "properties": {
+          "reported_percent": {
+            "$ref": "#/properties/reported_percent"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "reported_measure",
+          "flags"
+        ],
+        "properties": {
+          "flags": {
+            "type": "array",
+            "contains": {
+              "const": "percent_only"
+            }
+          },
+          "lines_found": false,
+          "lines_hit": false,
+          "branches_found": false,
+          "branches_hit": false,
+          "statements_found": false,
+          "statements_hit": false,
+          "functions_found": false,
+          "functions_hit": false,
+          "reported_measure": {
+            "$ref": "#/properties/reported_measure"
+          }
+        },
+        "description": "flags must be present and must carry 'percent_only'."
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "statements_found"
+        ],
+        "properties": {
+          "statements_found": {
+            "$ref": "#/properties/statements_found"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "statements_hit"
+        ],
+        "properties": {
+          "statements_hit": {
+            "$ref": "#/properties/statements_hit"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "statements_hit"
+        ],
+        "properties": {
+          "statements_hit": {
+            "$ref": "#/properties/statements_hit"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "statements_found"
+        ],
+        "properties": {
+          "statements_found": {
+            "$ref": "#/properties/statements_found"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "branches_found"
+        ],
+        "properties": {
+          "branches_found": {
+            "$ref": "#/properties/branches_found"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "branches_hit"
+        ],
+        "properties": {
+          "branches_hit": {
+            "$ref": "#/properties/branches_hit"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "branches_hit"
+        ],
+        "properties": {
+          "branches_hit": {
+            "$ref": "#/properties/branches_hit"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "branches_found"
+        ],
+        "properties": {
+          "branches_found": {
+            "$ref": "#/properties/branches_found"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "functions_found"
+        ],
+        "properties": {
+          "functions_found": {
+            "$ref": "#/properties/functions_found"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "functions_hit"
+        ],
+        "properties": {
+          "functions_hit": {
+            "$ref": "#/properties/functions_hit"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "functions_hit"
+        ],
+        "properties": {
+          "functions_hit": {
+            "$ref": "#/properties/functions_hit"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "functions_found"
+        ],
+        "properties": {
+          "functions_found": {
+            "$ref": "#/properties/functions_found"
+          }
+        }
+      }
+    }
+  ]
+}
