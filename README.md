@@ -545,6 +545,22 @@ The GitHub workflow is `.github/workflows/ci.yml`: a `check` job that calls
 for `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`. It contains no check logic —
 logic lives in `scripts/`, which is also what makes it runnable before you push.
 
+Everything above runs with no docker and no `act`. The one check that needs the real thing is
+a manual/nightly step, because a stub can never contradict an assumption about the tool it
+stands in for:
+
+```sh
+scripts/smoke-real-act.sh --help     # what it checks, and how to run it
+scripts/smoke-real-act.sh            # real act + real container runtime
+scripts/smoke-real-act.sh --stub     # the same steps against the stubs, in seconds
+```
+
+It proves the argv act is given is act's argv, captures `act --json`'s real field names against
+the table the extractors assume, checks that a job-written file really crosses the bind mount,
+measures a trivial run against ADR-0004's timeout defaults, and reports PASS/FAIL per step.
+[docs/testing.md §7](docs/testing.md#7-the-real-act-smoke-manual--nightly) is the when-and-why,
+and `.github/workflows/nightly-real-act.yml` runs it nightly where docker exists.
+
 ## Layout
 
 | path | what it is |
@@ -556,6 +572,7 @@ logic lives in `scripts/`, which is also what makes it runnable before you push.
 | `src/evidence/` | the `.evidence` JSONL contract as code: records, writer, extractors, the checker |
 | `schema/` | the machine-readable contract: `evidence`, `run-meta`, `tool-contract` |
 | `tests/` | one suite per tool, the protocol conformance matrix, `tests/e2e` (the whole pipeline) |
+| `tests/realdata/` | the trivial two-workflow fixture, the `act --json` shape table and its captured goldens (when there are any), and the record goldens — see `tests/realdata/fixture/README.md` |
 | `scripts/` | the CI scripts, the ADR/schema consistency checkers, and the runbook helpers (`mcp_call.sh`, `sample_evidence.py`, `evidence_recipes.sh`) |
 
 ## Further reading

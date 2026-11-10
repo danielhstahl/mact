@@ -1,0 +1,66 @@
+# tests/realdata/fixture/.github/workflows/benchmark.yml — the trivial benchmark job of the
+# real-act smoke (scripts/smoke-real-act.sh, docs/testing.md §7).
+#
+# Two jobs, and the second one needs the first, for one reason: the runner selects a job with
+# `--job <id>` (ADR-0003 §7.2), and "does `-j` also run the job's `needs:` chain, or only the
+# named job?" is an act behaviour nobody in this repo had confirmed. If act skips `warmup`,
+# the proof file is missing and the first step of `benchmark` fails the run — which is the
+# smoke telling us the answer in the loudest available way.
+#
+# It is also the cheapest possible live test of the benchmark extractor's attribution rule:
+# the captured `act.jsonl` contains two jobs' worth of log lines, and only `benchmark`'s may
+# become `job_duration_s` (src/evidence/benchmark/act_log.rs).
+name: realdata-smoke-benchmark
+"on":
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  warmup:
+    name: warmup
+    runs-on: ubuntu-latest
+    steps:
+      # Written into the tree, not into $ACTMCP_EVIDENCE_OUT: the payload directory is
+      # per-run scratch that the server deletes, and this file is a claim about the *tree* —
+      # that the sibling job ran in the same bind-mounted directory (ADR-0003 F8).
+      - name: leave a proof that this job ran
+        run: |
+          printf 'warmup ran: run_id=%s host=%s\n' \
+            "${ACTMCP_RUN_ID:-unset}" "$(hostname)" >.smoke-warmup-proof
+          cat .smoke-warmup-proof
+
+  benchmark:
+    name: benchmark
+    needs: [warmup]
+    runs-on: ubuntu-latest
+    steps:
+      - name: prove the needs chain ran
+        run: |
+          if [ ! -s .smoke-warmup-proof ]; then
+            echo "::error::act ran --job benchmark without its needs: dependency 'warmup'"
+            exit 1
+          fi
+          cat .smoke-warmup-proof
+
+      # Two shapes on purpose: one metric with labels and a unit, one with neither
+      # (ADR-0002 §5.2 accepts both, and the second is the one a sloppy job actually prints).
+      - name: emit the in-band benchmark markers
+        run: |
+          echo 'ACTMCP_BENCHMARK {"name":"smoke_latency_ms","value":12.5,"unit":"ms","labels":{"kind":"warm"}}'
+          echo 'ACTMCP_BENCHMARK {"name":"smoke_queue_depth","value":3}'
+
+      # The out-of-band channel (ADR-0002 §3.1 / §5.1): a file in the payload directory.
+      - name: write the benchmark payload
+        run: |
+          out="${ACTMCP_EVIDENCE_OUT:?ACTMCP_EVIDENCE_OUT did not reach the job}"
+          mkdir -p "$out"
+          cat >"$out/benchmark.json" <<'JSON'
+          {
+            "metrics": [
+              { "name": "smoke_throughput", "value": 2048.5, "unit": "ops/s", "labels": { "case": "tiny" } },
+              { "name": "smoke_startup_ms", "value": 41.25, "unit": "ms" }
+            ]
+          }
+          JSON
+          ls -l "$out"

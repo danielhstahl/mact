@@ -13,7 +13,9 @@
 # Usage:
 #   scripts/mcp_call.sh list_tasks                       # no arguments
 #   scripts/mcp_call.sh list_tasks '{"workflow":"coverage"}'
-#   scripts/mcp_call.sh run_workflow '{"workflow":"coverage","task":"coverage","category":"coverage","commit":"HEAD"}'
+#   scripts/mcp_call.sh run_workflow '{"workflow":"coverage","task":"coverage","category":"coverage","commit":"'"$(git rev-parse HEAD)"'"}'
+#     `commit` is a commit abbreviation (7–40 hex), not a ref name: `"commit":"HEAD"` is refused
+#     with `invalid_arguments`, so resolve HEAD in the shell (see the README's tour).
 #   scripts/mcp_call.sh run_status '{"run_id":"20261110T004203Z-a1b2c3"}'
 #   scripts/mcp_call.sh --tools-list                     # tools/list instead of tools/call
 #   scripts/mcp_call.sh -u http://127.0.0.1:9000/mcp run_status '{}'

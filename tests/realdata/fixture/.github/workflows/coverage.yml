@@ -1,0 +1,67 @@
+# tests/realdata/fixture/.github/workflows/coverage.yml — the trivial coverage job of the
+# real-act smoke (scripts/smoke-real-act.sh, docs/testing.md §7).
+#
+# Deliberately dull. Every step is `sh` + coreutils, so the job runs on whatever image the
+# local act maps `ubuntu-latest` to (act's own default mapping is the small
+# `node:16-buster-slim`, and no toolchain has to exist inside the container), which keeps the
+# whole smoke inside a couple of minutes so that it actually gets run.
+#
+# What it exists to prove, and which assumption each line is the evidence for:
+#
+#   * `ACTMCP_EVIDENCE_OUT` reaches the job and names a directory that exists on the **host**
+#     — ADR-0002 §3.1's payload transport, and ADR-0003 F8's "under `--bind` the container
+#     path is the host path" (V1). A written file is the proof; the smoke script reads it
+#     back on the host.
+#   * step stdout arrives in act's `--json` log as `raw_output` lines (ADR-0003 F7/V2) — the
+#     marker echo below is what the script greps the captured log for.
+#   * the lcov numbers are constants of this file, so the emitted coverage records are
+#     checkable rather than merely present.
+name: realdata-smoke-coverage
+"on":
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      # The in-band channel (ADR-0002 §5.2). Harmless for a coverage run — the coverage
+      # extractor ignores it — but it is the line the log-shape check looks for, so the smoke
+      # can say "step output reached act's JSON log" instead of hoping.
+      - name: print the smoke marker
+        run: |
+          echo "ACTMCP_SMOKE_MARKER coverage job run_id=${ACTMCP_RUN_ID:-unset}"
+
+      # A tracefile with two SF blocks and arithmetic a human can do in their head:
+      # mod.rs LF:4 LH:3 BRF:2 BRH:1, util.rs LF:2 LH:1 BRF:0 BRH:0 → totals LF:6 LH:4 BRF:2 BRH:1.
+      - name: write a trivial lcov tracefile
+        run: |
+          out="${ACTMCP_EVIDENCE_OUT:?ACTMCP_EVIDENCE_OUT did not reach the job}"
+          mkdir -p "$out"
+          cat >"$out/lcov.info" <<'LCOV'
+          TN:
+          SF:src/smoke/mod.rs
+          DA:1,5
+          DA:2,5
+          DA:3,0
+          DA:4,2
+          LF:4
+          LH:3
+          BRDA:1,0,0,3
+          BRDA:1,0,1,0
+          BRF:2
+          BRH:1
+          end_of_record
+          TN:
+          SF:src/smoke/util.rs
+          DA:1,7
+          DA:2,0
+          LF:2
+          LH:1
+          BRF:0
+          BRH:0
+          end_of_record
+          LCOV
+          ls -l "$out"

@@ -1,0 +1,23 @@
+# The smoke's own artefacts, never part of the fixture commit.
+#
+# `.evidence/` is where the server puts a run's evidence (the default root is inside the
+# workspace); `.act-mcp.lock` is ADR-0003 §6's workspace lock; `.smoke-warmup-proof` is what
+# benchmark.yml's `warmup` job leaves behind to prove act ran its `needs:` chain.
+#
+# The first two are listed here rather than left untracked because of a trap worth knowing
+# about, and this fixture is where it is written down:
+#
+#   ADR-0002 §6.4 makes the evidence writer append `.evidence/` and `.act-mcp.lock` to the
+#   repository's `.gitignore`. If that `.gitignore` is a *tracked* file and does not already
+#   list them, the append is a tracked modification — and ADR-0003 G5's
+#   `git status --porcelain --untracked-files=no` then reads the workspace as `dirty_worktree`,
+#   so the *second* run in that workspace is refused until the change is committed. Listing
+#   them here (the state a repo reaches once someone commits the writer's block) makes the
+#   append a no-op: `update_gitignore` finds the patterns already listed and writes nothing.
+#
+# A repository that has not done that yet hits the trap; scripts/smoke-real-act.sh recognises
+# the failure and says so instead of looking like a flaky server. Follow-up: reconcile
+# ADR-0002 §6.4 with ADR-0003 G5.
+.evidence/
+.act-mcp.lock
+.smoke-warmup-proof

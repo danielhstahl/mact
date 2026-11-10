@@ -1,0 +1,182 @@
+# Nightly real-act smoke — the checks no other job in this repository can make.
+#
+# `ci.yml` is deliberately docker-free (`docs/testing.md` §1): every test in the tree runs
+# against a stub `act`, which means every assumption *about act* is untested there. This job is
+# where those assumptions meet a real `act` on a real container runtime: argv acceptance, the
+# `--json` log field names the extractors read, whether `--bind` really puts a job-written file
+# on the host, `--job` honouring a `needs:` chain, whether act honours SIGTERM, and how long a
+# trivial job actually takes (`docs/testing.md` §7).
+#
+# All of the logic is in the script it calls, per this repo's convention:
+# `scripts/smoke-real-act.sh` is runnable by a human on a laptop with the same flags, and
+# `cargo test --test realdata_smoke` covers the script's own plumbing without docker. This file
+# is therefore only setup, one call, and the plumbing that makes a failure impossible to miss.
+#
+# FAILURE POLICY — allowed to fail, required to be loud.
+#
+# Nothing branches off this job: it gates no merge, protects no branch, and blocks no release.
+# A nightly that blocks a merge because a third party changed an image is a nightly people
+# silence. But "not blocking" must not become "unread":
+#
+#   * no `continue-on-error` anywhere. A red job is the report.
+#   * a shape divergence is a failure here (`--strict-shape`), because that is the one finding
+#     this job exists to make, and a green run that quietly disagrees with the extractors is
+#     exactly the silence this policy forbids.
+#   * every run writes a job-summary table (wall time, sizes, verdict per step) and uploads the
+#     evidence, the captured `act.jsonl`, and the raw log as artefacts — `if: always()`, so a
+#     red run still carries its evidence.
+#   * the divergence and the failing step are re-printed as `::error::` annotations, so they
+#     are on the run page and in the mail, not only in a 900-line log.
+#
+# The artefacts are candidates, never commits: the nightly does not push. A human reviews
+# `act.jsonl` and the normalised records and commits them per
+# `tests/realdata/golden/README.md` and `tests/realdata/expected/README.md`.
+
+name: Nightly real-act smoke
+
+on:
+  schedule:
+    # 04:00 UTC. Once a day is enough to notice an upstream change within a day, and each run
+    # pulls a container image, which is not something to do on every push.
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+    inputs:
+      act_version:
+        description: nektos/act version to install
+        default: '0.2.97'
+        required: false
+      skip_worktree:
+        description: skip the --isolation worktree step (V1)
+        type: boolean
+        default: false
+
+# Read-only on the repository: this job runs workflows and reads logs, and never writes back.
+permissions:
+  contents: read
+
+# One nightly at a time; a second run would compete for the same image cache.
+concurrency:
+  group: nightly-real-act
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: real act + docker (scripts/smoke-real-act.sh)
+    runs-on: ubuntu-24.04
+    # An image pull on a cold cache is the long part; the rest is seconds. Generous, because a
+    # nightly that times out mid-pull tells us nothing.
+    timeout-minutes: 45
+    env:
+      ACT_VERSION: ${{ inputs.act_version || '0.2.97' }}
+      # Inside the workspace: actions/upload-artifact refuses paths outside it, and the smoke's
+      # own git work happens in $OUT/repo, not in this checkout.
+      OUT: ${{ github.workspace }}/.nightly-out
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: nightly-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: nightly-cargo-
+
+      # rust-toolchain.toml is the pin; `rustup show` is what makes rustup act on it.
+      - name: toolchain
+        run: rustup show
+
+      # Pinned version, checksum verified against the release's own checksums.txt. The nightly
+      # installs third-party software onto the runner; it does not take that on trust from a
+      # floating `install.sh`, and it does not let act drift by itself — a version bump here is
+      # a deliberate, reviewable change, which is what makes the smoke's claims reproducible.
+      - name: install act ${{ env.ACT_VERSION }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "https://github.com/nektos/act/releases/download/v${ACT_VERSION}/act_Linux_x86_64.tar.gz"
+          curl -fsSLO "https://github.com/nektos/act/releases/download/v${ACT_VERSION}/checksums.txt"
+          grep "  act_Linux_x86_64.tar.gz\$" checksums.txt | sha256sum --check
+          tar xzf act_Linux_x86_64.tar.gz act
+          mkdir -p "$HOME/.local/bin"
+          install -m 0755 act "$HOME/.local/bin/act"
+          echo "$HOME/.local/bin" >>"$GITHUB_PATH"
+          "$HOME/.local/bin/act" --version
+          docker version --format 'docker daemon {{.Server.Version}}'
+
+      - name: build release binary
+        run: cargo build --release
+
+      # The deliverable, with the flags a human would use. `--strict-shape` because a shape
+      # divergence is the finding this job exists to catch; `--with-cancel` for the SIGTERM and
+      # orphaned-container question (ADR-0003 V3); `--capture-golden` so the nightly produces
+      # the capture a human then reviews. Output is tee'd so the log, the summary and the
+      # artefact all come from the same run.
+      - name: smoke
+        run: |
+          set -uo pipefail
+          args=(
+            --bin "$GITHUB_WORKSPACE/target/release/act-mcp"
+            --out "$OUT"
+            --keep
+            --capture-golden
+            --strict-shape
+            --with-cancel
+          )
+          if [ '${{ inputs.skip_worktree }}' = 'true' ]; then args+=(--skip-worktree); fi
+          scripts/smoke-real-act.sh "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/smoke.log"
+          status=${PIPESTATUS[0]}
+          {
+            echo '## Nightly real-act smoke'
+            echo
+            echo "- act: \`$(act --version 2>&1 | head -n1)\`"
+            echo "- smoke exit status: **$status**"
+            echo
+            echo '### steps'
+            echo '```text'
+            sed -n '/^summary$/,/^PASS$\|^FAILED$/p' "$RUNNER_TEMP/smoke.log" || tail -n 60 "$RUNNER_TEMP/smoke.log"
+            echo '```'
+            if grep -q 'DIVERGENCE' "$RUNNER_TEMP/smoke.log"; then
+              echo
+              echo '### ⚠ act `--json` shape diverged from `tests/realdata/golden/act-shape.json'
+              echo '```text'
+              grep -A 12 'DIVERGENCE' "$RUNNER_TEMP/smoke.log" | head -60
+              echo '```'
+              echo 'Open the follow-up the script offers, and read the named extractor before touching the manifest.'
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            # The annotation is what makes a nightly failure show up on the run page and in the
+            # notification, rather than only in a log nobody opens.
+            echo "::error::nightly real-act smoke exited $status — see the job summary and the smoke-artefacts upload"
+          fi
+          exit "$status"
+
+      # Everything a follow-up needs, from a green run or a red one: the evidence tree, act's
+      # own logs, meta.json, the MCP responses, and the candidate golden the script captured.
+      - name: upload artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-artefacts-${{ github.run_number }}
+          path: |
+            .nightly-out
+            tests/realdata/golden/act.jsonl
+            tests/realdata/golden/act.jsonl.provenance.json
+            ${{ runner.temp }}/smoke.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      # A red run should say where to look, in the log, before the reader scrolls.
+      - name: where the evidence is
+        if: failure()
+        run: |
+          echo "tail of the smoke log:"
+          tail -n 40 "$RUNNER_TEMP/smoke.log" || true
+          echo
+          echo "the whole world (evidence tree, act logs, MCP responses) is in the smoke-artefacts upload."
