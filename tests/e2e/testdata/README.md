@@ -24,7 +24,12 @@ tests/e2e/testdata/
 ## Shape of the goldens
 
 Every record is one compact JSON object per line, LF-terminated, keys in envelope-then-payload order
-so a byte-for-byte golden diff is stable. Volatile fields are pinned to fixed values so the e2e harness
+so a byte-for-byte golden diff is stable. That order is normative in
+[ADR-0002 §6.1](../../../docs/adr/0002-evidence-jsonl-contract.md): top-level keys follow the ADR's
+table order, and keys *inside* an object (`labels`, `extra`) are written in ascending code-point
+order, so a fixture that sorts its top-level keys but not its nested ones cannot be reproduced by any
+writer — `coverage-log-scrape.jsonl` was amended for exactly that reason (its `extra` members were
+reordered; no value changed). Volatile fields are pinned to fixed values so the e2e harness
 (mact-f1w.15) can normalise them before diffing:
 
 | field | pinned value |

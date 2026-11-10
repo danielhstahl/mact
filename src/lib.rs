@@ -11,6 +11,8 @@
 //!
 //! * [`config`] — CLI/env surface and every boot-time validation, so "does this
 //!   workspace make sense" is answered before anything is spawned.
+//! * [`evidence`] — the `.evidence` JSONL contract as code: the record types, the
+//!   atomic append-only writer, and the `validate-evidence` checker (ADR-0002).
 //! * [`workspace`] — the pre-start validation gate: turn untrusted `run_workflow`
 //!   arguments plus the environment into a [`workspace::ValidatedRunTarget`], or
 //!   into one typed ADR-0001 error. Nothing here talks to the network or spawns act.
@@ -36,14 +38,19 @@
 //! [`nektos/act`]: https://github.com/nektos/act
 
 // Production code is audited for `unsafe` rather than forbidden from it, because exactly
-// one module needs it: `runner::process` has to reach `killpg(2)` and `prctl(2)`, for
-// which `std` has no safe API (see that file's header for the audit). `deny` rather than
-// `allow` at the crate root means any *new* unsafe outside that one module still fails a
-// build. The integration tests are their own crates and use `libc::kill` freely.
+// two modules need it, each with a `// SAFETY:` note at the call:
+//   * `runner::process` has to reach `killpg(2)` and `prctl(2)`, for which `std` has no
+//     safe API;
+//   * `evidence::writer` has to reach `gethostname(2)` for the record envelope's `host`
+//     field, which `std` does not expose at all (ADR-0002 §2.2 names that call).
+// `deny` rather than `allow` at the crate root means any *new* unsafe outside those two
+// modules still fails a build. The integration tests are their own crates and use
+// `libc::kill` freely.
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod config;
+pub mod evidence;
 pub mod fixtures;
 pub mod server;
 pub mod tools;
@@ -61,5 +68,6 @@ pub mod workspace;
 pub mod runner;
 
 pub use config::{Config, ConfigError, ServeArgs};
+pub use evidence::{EvidenceError, EvidenceRoot};
 pub use server::ActMcp;
 pub use workspace::{RunRequest, ValidatedRunTarget, ValidationError, ValidationPolicy, Validator};

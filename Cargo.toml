@@ -36,6 +36,11 @@ tokio = { version = "1", features = [
     # io-util: line-oriented reading of act's stdout/stderr pipes (mact-f1w.8).
     "sync",
     "io-util",
+    # fs: the runner's teardown removes the run's secret file with tokio::fs rather than
+    # blocking a worker on it (mact-f1w.8, runner::run). Only `cargo build` notices this
+    # is needed: `cargo test` got the feature from the dev-dependency's `full` set and
+    # never asked for it on the library build.
+    "fs",
 ] }
 axum = "0.8"
 tower = "0.5"
@@ -83,6 +88,15 @@ yaml-rust2 = { version = "0.13", default-features = false }
 # `finished_at` on a run outcome. `clock` is what gives `Utc::now()`; default features are
 # off so no serde/time formatting bloat rides along (rmcp's own features keep what it needs).
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# The `.evidence` contract's machine-readable half is `schema/evidence.schema.json`, and
+# `act-mcp validate-evidence` (mact-f1w.9) is the CI guard that checks real trees against
+# it. Validating against the *pinned schema file* rather than a hand-written lookalike is
+# the whole anti-rot story (ADR-0002 §7), so the engine is a runtime dependency, not a
+# dev-dependency. Default features are off so nothing pulls a HTTP client to resolve
+# remote `$ref`s: both our schemas are self-contained and embedded with `include_str!`.
+# This is also the "second, stricter implementation" ADR-0002's verification table asks
+# the schema to compile under.
+jsonschema = { version = "0.61", default-features = false }
 
 # The runner (mact-f1w.8) is the only code in this crate that signals a process, and
 # signalling a *process group* has no `std` API: `killpg(2)`/`prctl(2)` come from libc.

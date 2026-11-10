@@ -1,16 +1,27 @@
-//! `act-mcp` CLI: `act-mcp serve --workspace <path>`.
+//! `act-mcp` CLI: `act-mcp serve --workspace <path>`, `act-mcp validate-evidence [paths…]`.
 //!
-//! Deliberately thin: parse args → validate them ([`Config::build`]) → serve.
-//! Errors are printed to stderr with a `fix:` hint and exit non-zero; stdout is
-//! never written to.
+//! Deliberately thin: parse args → run → report. Errors are printed to stderr with a
+//! `fix:` hint and exit non-zero; stdout is never written to by *logs*. The one
+//! exception is `validate-evidence`, which is a checker: its findings go to stderr like
+//! a compiler's, and its one-line summary and `--stats` table go to stdout so a CI step
+//! can `validate-evidence | tee` them.
 
-use std::{io::IsTerminal as _, process::ExitCode, sync::Arc};
+use std::{
+    io::IsTerminal as _,
+    path::{Path, PathBuf},
+    process::ExitCode,
+    sync::Arc,
+};
 
 use anyhow::Context as _;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use tokio_util::sync::CancellationToken;
 
-use act_mcp::{config::ServeArgs, server, Config};
+use act_mcp::{
+    config::ServeArgs,
+    evidence::{self, EvidenceRoot},
+    server, Config,
+};
 
 #[derive(Parser)]
 #[command(
@@ -31,6 +42,50 @@ struct Cli {
 enum Command {
     /// Serve the MCP endpoint (streamable HTTP at /mcp).
     Serve(ServeArgs),
+
+    /// Validate .evidence JSONL against the ADR-0002 contract (exit 1 on any bad line).
+    ValidateEvidence(ValidateEvidenceArgs),
+}
+
+/// `act-mcp validate-evidence` arguments.
+///
+/// The exit codes are the Python checker's, so CI can point at either implementation:
+/// `0` clean, `1` findings, `2` the command could not run (nothing matched the paths,
+/// or a schema was unreadable).
+#[derive(Debug, Clone, Args)]
+struct ValidateEvidenceArgs {
+    /// Files or directories to check. Defaults to the evidence root.
+    #[arg(value_name = "PATH")]
+    paths: Vec<PathBuf>,
+
+    /// Evidence root to fall back to when no PATH is given; ADR-0002 §1.1's `--evidence-dir`.
+    #[arg(
+        long,
+        value_name = "PATH",
+        env = "EVIDENCE_DIR",
+        help = "Evidence root used when no PATH is given; defaults to ./.evidence."
+    )]
+    evidence_dir: Option<PathBuf>,
+
+    /// Record schema to validate against instead of the one built into the binary.
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Validate records against this schema file rather than the embedded schema/evidence.schema.json."
+    )]
+    schema: Option<PathBuf>,
+
+    /// `meta.json` schema to validate against instead of the embedded one.
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Validate runs/<run_id>/meta.json against this schema file rather than the embedded schema/run-meta.schema.json."
+    )]
+    meta_schema: Option<PathBuf>,
+
+    /// Print per-kind, per-commit record counts.
+    #[arg(long, help = "Print counts per kind and commit after the findings.")]
+    stats: bool,
 }
 
 #[tokio::main]
@@ -41,20 +96,25 @@ async fn main() -> ExitCode {
 
     let Cli { command } = Cli::parse();
     let result = match command {
-        Command::Serve(args) => run_serve(args).await,
+        Command::Serve(args) => run_serve(args).await.map(|()| ExitCode::SUCCESS),
+        Command::ValidateEvidence(args) => run_validate_evidence(&args),
     };
 
-    if let Err(err) = result {
-        // Print the chain rather than the Debug blob: the top line is the
-        // failure, each cause below it is context, and `ConfigError` already
-        // carries its own `fix:` line.
-        eprintln!("act-mcp: {err}");
-        for cause in err.chain().skip(1) {
-            eprintln!("  caused by: {cause}");
+    match result {
+        // `validate-evidence` decides its own status (0 clean, 1 findings, 2 could not
+        // run); `serve` only ever reaches here with SUCCESS.
+        Ok(code) => code,
+        Err(err) => {
+            // Print the chain rather than the Debug blob: the top line is the
+            // failure, each cause below it is context, and `ConfigError` already
+            // carries its own `fix:` line.
+            eprintln!("act-mcp: {err}");
+            for cause in err.chain().skip(1) {
+                eprintln!("  caused by: {cause}");
+            }
+            ExitCode::FAILURE
         }
-        return ExitCode::FAILURE;
     }
-    ExitCode::SUCCESS
 }
 
 async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
@@ -67,6 +127,58 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
     server::serve(config, shutdown)
         .await
         .context("server terminated with an error")
+}
+
+/// `act-mcp validate-evidence`: walk the tree, check every line, report, and decide the
+/// exit code here so the process status is the contract (ADR-0002 §7 makes this command
+/// the strict reader, and a guard nobody can branch on is not a guard).
+fn run_validate_evidence(args: &ValidateEvidenceArgs) -> anyhow::Result<ExitCode> {
+    let paths = if args.paths.is_empty() {
+        // No PATH: the evidence root, which is `--evidence-dir` (clap already folded
+        // `$EVIDENCE_DIR` into it) and otherwise `.evidence` in the current directory.
+        let root = EvidenceRoot::resolve(Path::new("."), args.evidence_dir.as_deref())?;
+        vec![root.path().to_path_buf()]
+    } else {
+        args.paths.clone()
+    };
+
+    let options = evidence::ValidateOptions {
+        paths,
+        schema: args.schema.as_deref(),
+        meta_schema: args.meta_schema.as_deref(),
+    };
+    let report = match evidence::validate_tree(&options) {
+        Ok(report) => report,
+        Err(evidence::ValidateError::NothingToValidate { paths }) => {
+            // Exit 2, the Python checker's "the command was asked about nothing".
+            eprintln!(
+                "act-mcp: nothing to validate under {}\n  fix: pass a path, or run the server once to create the evidence tree",
+                paths
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            return Ok(ExitCode::from(2));
+        }
+        Err(other) => {
+            // Everything else that stopped the command from running is exit 2 too: a
+            // checker that exits 1 says "the data is bad", which would be a lie here.
+            eprintln!("act-mcp: validate-evidence could not run: {other}");
+            return Ok(ExitCode::from(2));
+        }
+    };
+
+    // Findings on stderr (the compiler convention); the summary and the stats table on
+    // stdout, so `validate-evidence --stats > counts.tsv` does the obvious thing.
+    for problem in &report.problems {
+        eprintln!("{problem}");
+    }
+    if args.stats {
+        print!("{}", report.stats.to_string_pretty());
+    }
+    println!("{}", report.summary());
+    Ok(ExitCode::from(report.exit_code()))
 }
 
 fn init_tracing() {

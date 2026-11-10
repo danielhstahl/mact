@@ -4,7 +4,10 @@
 - **Date:** 2026-11-10
 - **Ticket:** mact-f1w.1
 - **Machine-readable form:** [`schema/evidence.schema.json`](../../schema/evidence.schema.json) (JSON Schema 2020-12, `schema_version: 1`), [`schema/run-meta.schema.json`](../../schema/run-meta.schema.json)
-- **Checked by:** [`scripts/validate_evidence.py`](../../scripts/validate_evidence.py) and the fixtures under [`tests/e2e/testdata`](../../tests/e2e/testdata)
+- **Checked by:** [`scripts/validate_evidence.py`](../../scripts/validate_evidence.py) and the fixtures
+  under [`tests/e2e/testdata`](../../tests/e2e/testdata), plus `act-mcp validate-evidence` (mact-f1w.9),
+  which implements the same rules and the same exit codes so CI can run either; the two are required to
+  reach the same verdict, and `tests/evidence_contract.rs` holds them to it
 - **Related:** ADR-0001 (tool contract), ADR-0003 (commit isolation / worktrees), ADR-0004 (run lifecycle)
 - **Consumers inside the epic:** mact-f1w.9 (writer + `validate-evidence`), mact-f1w.10 (coverage extraction), mact-f1w.12 (benchmark extraction), mact-f1w.15 (e2e harness), mact-f1w.18 (human-facing format doc)
 
@@ -433,6 +436,21 @@ metric is self-describing.
 
 - One compact JSON object per line, no insignificant whitespace, key order stable per record type
   (stable enough that a golden-file test is meaningful).
+  "Stable" needs a definition, or two writers produce different bytes for the same record and the
+  golden test is meaningless; it is given one here rather than left to the first implementation.
+  - **Top-level keys** appear in the order this ADR lists them: the §2.2 envelope fields in table
+    order (`schema_version`, `kind`, `run_id`, `commit`, `workflow`, `task`, `category`,
+    `run_status`, `tool`, `started_at`, then `duration_ms`/`exit_code` when present, then `host`),
+    then that `kind`'s payload fields in the order §4 presents them, with `source`, `source_path`,
+    `flags`, `extra` last in that order. An absent optional field is omitted, not nulled (§2.1), so
+    the order is of *present* fields.
+  - **Keys inside an object** (`labels`, `extra`, `tool`'s members) are written in ascending
+    code-point order. A JSON object's members are unordered, so the writer does not preserve a
+    producer's insertion order there; sorting is what makes the output a function of the record and
+    nothing else.
+  - Consequences, both of which a test pins: the order is a property of the record type and not of
+    whoever wrote the file, and re-parsing a published file and re-serializing it yields identical
+    bytes.
 - UTF-8, no BOM, LF only (no CR, ever), no NULs, no embedded raw newlines, trailing LF at EOF
   **required** — a file whose last byte is not LF is a torn write by definition and a checker `MUST`
   fail it.
@@ -533,9 +551,9 @@ record and on `meta.json`.
 
 | check | owner | command |
 |---|---|---|
-| schema is a valid 2020-12 schema; every fixture line validates; layout rules | mact-f1w.1 (this ADR), then mact-f1w.17 CI | `python3 scripts/validate_evidence.py tests/e2e/testdata/expected` (`--stats` for counts) |
+| schema is a valid 2020-12 schema; every fixture line validates; layout rules | mact-f1w.1 (this ADR), then mact-f1w.17 CI | `python3 scripts/validate_evidence.py tests/e2e/testdata/expected` (`--stats` for counts), or `act-mcp validate-evidence tests/e2e/testdata/expected` |
 | schema compiles under a second, stricter implementation | mact-f1w.17 | `ajv` (draft 2020-12, `strict: true`) or the Rust `jsonschema` crate in a unit test |
-| every negative fixture is rejected | mact-f1w.9 (`validate-evidence` must disagree with them) | `python3 scripts/validate_evidence.py tests/e2e/testdata/invalid` → exit 1 |
+| every negative fixture is rejected | mact-f1w.9 (`validate-evidence` must disagree with them) | `act-mcp validate-evidence tests/e2e/testdata/invalid` → exit 1, and the same from `python3 scripts/validate_evidence.py` |
 | the writer produces byte-exact goldens | mact-f1w.9 / .10 / .12 / .15 | golden tests against `tests/e2e/testdata/expected/{benchmark,coverage}.jsonl` |
 | argv actually carries `--bind` and the `ACTMCP_*` env vars | mact-f1w.8 / .15 | stub-act argv assertion |
 
