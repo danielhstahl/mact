@@ -319,7 +319,7 @@ before you "fix" either directory. Both are empty of captured data on purpose:
 
 Until then the smoke makes **value** assertions instead (the coverage arithmetic in the fixture,
 the four benchmark metric names and their producers), which need no golden and still catch a
-producer quietly stopping work.
+producer quietly stopping work. Committing the two real artifacts is **mact-n8n**.
 
 ### What a `DIVERGENCE` means
 
