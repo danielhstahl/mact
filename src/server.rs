@@ -457,6 +457,12 @@ fn secrets_equal(presented: &str, expected: &str) -> bool {
 /// * `max_request_body_bytes` from `--max-request-body-bytes`: an oversized POST is
 ///   answered 413 while the body streams, so it does not matter that HTTP/1.1 chunking or
 ///   a lying `Content-Length` could otherwise size the buffer.
+/// * `stateless_protocol_metadata_required = true`. In the pinned revision the protocol
+///   version travels per request (`MCP-Protocol-Version`, plus the `_meta` entry); left at
+///   rmcp's default a request that names *no* version is silently read as `2025-03-26`, i.e.
+///   this server would answer a dialect it says it does not speak. ADR-0001 §7 and
+///   `docs/tool-contract.md` §1 both pin the strict answer — refuse, and say why — and
+///   `tests/protocol_conformance.rs` asserts it on the wire rather than in source.
 /// * `sse_keep_alive` is [`SSE_KEEP_ALIVE`], explained there.
 fn http_config(
     config: Arc<Config>,
@@ -470,6 +476,7 @@ fn http_config(
         .with_allowed_origins(config.allowed_origins.iter().map(String::as_str))
         .enforce_origin_validation()
         .with_max_request_body_bytes(config.max_request_body_bytes)
+        .with_stateless_protocol_metadata_required(true)
         .with_sse_keep_alive(Some(SSE_KEEP_ALIVE))
 }
 

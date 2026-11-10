@@ -141,13 +141,15 @@ a_named_origin_is_accepted_when_the_operator_allows_it, an_extra_allowed_host_is
 | `sse_keep_alive` | **15 s**, explicit (`server::SSE_KEEP_ALIVE`) | not inherited by accident. On loopback the point of a keep-alive is not beating a proxy timeout — it is noticing a half-closed client at all, so the stream, its session, and its buffers go away instead of lingering until the run's own deadline |
 | protocol versions | exactly one (`SUPPORTED_PROTOCOL_VERSION`) | negotiation, discovery, and session rules are rmcp's; this server narrows the set and hand-rolls nothing |
 
-`stateless_protocol_metadata_required` is left **off**: the pinned revision already demands
-its per-request metadata in the handler, and the stricter header rule would only change
-which error a malformed request sees — see `tests/protocol.rs` for the refusals that are
-already exercised.
+`stateless_protocol_metadata_required` is **on**: in the pinned revision the protocol version
+travels per request, and at `rmcp`'s default a request that names no version at all is read as
+`2025-03-26` — a silent downgrade through the front door by a client that never asked for that
+dialect. Refusing it (`400`, JSON-RPC `-32020`) is what ADR-0001 §7 and `docs/tool-contract.md` §1
+pin, and it is asserted on the wire rather than in source.
 
 Tests: `tests/hardening.rs::an_oversized_request_body_is_413` (both framed and chunked),
-`tests/protocol.rs` for the protocol-shape refusals.
+`tests/protocol.rs` and `tests/protocol_conformance.rs` for the protocol-shape refusals
+(`a_request_that_omits_the_protocol_version_is_refused_not_assumed` is the one above).
 
 ---
 

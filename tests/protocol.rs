@@ -4,6 +4,11 @@
 //! assertions live in `tests/list_tasks.rs`, `tests/run_status_tool.rs` and
 //! `tests/cancel_run_tool.rs`; these stay focused on the protocol.
 //!
+//! This is the small smoke set — the four things that have to work for any client at all. The
+//! full MCP 2026-07-28 conformance matrix (transport headers, error mapping, cancellation,
+//! shutdown) is `tests/protocol_conformance.rs`; when you are about to add a case here, check
+//! whether it belongs there instead.
+//!
 //! Half of these use rmcp's own client (the "stock MCP client" in the ticket's
 //! definition of done); the other half speak raw JSON-RPC over HTTP, because they
 //! deliberately do the wrong thing on purpose.

@@ -539,9 +539,9 @@ records `{method: term | kill | none, took_ms?}` — how the process group went 
 
   | knob | value | why |
   |---|---|---|
-  | listener | `--listen 127.0.0.1:7788` default, non-loopback bind refused at startup | loopback-only, no auth (epic non-goal) |
+  | listener | `--bind 127.0.0.1:8080` default, non-loopback bind refused at startup | loopback-only, no auth (epic non-goal) |
   | endpoint | `POST /mcp` (rmcp `StreamableHttpService`, `nest_service("/mcp", …)`) | one path, one method in v1 |
-  | `allowed_hosts` | `{127.0.0.1:7788, localhost:7788}` (whatever `--listen` says) | DNS-rebinding guard |
+  | `allowed_hosts` | `{localhost, 127.0.0.1, ::1}` (extended per `--allow-host`) | DNS-rebinding guard |
   | `allowed_origins` | empty by default | no browser client is expected; operators add explicitly |
   | `max_request_body_bytes` | 1048576 | worst-case args are 32×8 KiB secrets ≈ 300 KiB |
   | `json_response` | `true` | responses are `application/json`; v1 sends no server-initiated streams — `run_status` polling is the progress channel |

@@ -19,24 +19,36 @@ field sets drift apart between the ADR, this file and
 
 | item | value |
 |---|---|
-| URL | `http://127.0.0.1:7788/mcp` (`--listen`, default port 7788) |
-| methods | `POST` only in v1 (`tools/list`, `tools/call`) |
-| `MCP-Protocol-Version` | required on every request, must be `2026-07-28`; a request without it is rejected |
-| other protocol versions | rejected at negotiation by rmcp; there is no downgrade path |
-| `Accept` | `application/json` (server runs with `json_response = true`; no SSE streams) |
+| URL | `http://127.0.0.1:8080/mcp` (`--bind`, default `127.0.0.1:8080`) |
+| methods | `POST` only in v1 (`tools/list`, `tools/call`); every other method on `/mcp` is a `405` with `Allow: POST` |
+| `MCP-Protocol-Version` | required on every request, must be `2026-07-28`; a request without it is rejected (`400`, `-32020`) rather than assumed to be an older dialect |
+| `params._meta` | must carry `io.modelcontextprotocol/protocolVersion` (plus client info and capabilities) on every request; it must agree with the header |
+| other protocol versions | rejected at negotiation by rmcp (`-32022`, with the supported set attached); there is no downgrade path and no `initialize` handshake |
+| `Accept` | must name **both** `application/json` and `text/event-stream` (`406` if either is missing) — whether an answer is one JSON body or a stream is the server's call. Answers are `application/json`: the server runs with `json_response = true` and opens no server-initiated stream |
+| `Content-Type` | `application/json`, `; charset=` allowed; anything else is `415` |
+| `Mcp-Method` / `Mcp-Name` | SEP-2243 routing headers, required at this revision and must match the body |
 | `Host` / `Origin` | `Host` must be `127.0.0.1:<port>` or `localhost:<port>`; `Origin` denied unless added via `--allow-origin` |
 | body limit | 1 MiB |
 | auth | none; the listener refuses to bind anywhere but loopback |
 
 ```console
-$ curl -sS http://127.0.0.1:7788/mcp \
+$ curl -sS http://127.0.0.1:8080/mcp \
     -H 'Content-Type: application/json' \
-    -H 'Accept: application/json' \
+    -H 'Accept: application/json, text/event-stream' \
     -H 'MCP-Protocol-Version: 2026-07-28' \
+    -H 'Mcp-Method: tools/call' \
+    -H 'Mcp-Name: run_workflow' \
     -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
           "name":"run_workflow",
-          "arguments":{"workflow":"coverage","task":"coverage","category":"coverage","commit":"2f7c1a4"}}}'
+          "arguments":{"workflow":"coverage","task":"coverage","category":"coverage","commit":"2f7c1a4"},
+          "_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",
+                   "io.modelcontextprotocol/clientInfo":{"name":"curl","version":"0"},
+                   "io.modelcontextprotocol/clientCapabilities":{}}}}'
 ```
+
+All of the above is asserted request by request in [`tests/protocol_conformance.rs`](../tests/protocol_conformance.rs),
+and [`docs/testing.md`](testing.md) §4 is the hand-reproduction path (Inspector, or the `curl`
+above when an Inspector cannot speak `2026-07-28`).
 
 Every result carries `structuredContent` (the JSON objects below) *and* a one-line human-readable `content`
 text block. The text block of an error result starts with `<tool>: <code>: ` so the code survives a client

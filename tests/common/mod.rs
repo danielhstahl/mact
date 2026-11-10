@@ -525,6 +525,37 @@ impl ServeProcess {
         self.addr
     }
 
+    /// The child's pid, for a test that signals the server itself instead of blocking in
+    /// [`ServeProcess::stop`] — the shutdown-under-load test has to SIGTERM and then keep
+    /// watching the wire.
+    pub fn pid(&self) -> u32 {
+        self.child
+            .as_ref()
+            .expect("the child is alive until terminate() runs")
+            .id()
+    }
+
+    /// Send SIGTERM and return immediately, leaving the exit to the caller to observe.
+    ///
+    /// `stop` is the polite full teardown; this is the one a test uses when the *timing* of
+    /// the exit is what is under test.
+    pub fn signal_term(&self) {
+        if let Some(child) = self.child.as_ref() {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+            }
+        }
+    }
+
+    /// Has the process exited yet (without waiting for it).
+    pub fn has_exited(&mut self) -> bool {
+        match self.child.as_mut() {
+            Some(child) => child.try_wait().ok().flatten().is_some(),
+            None => true,
+        }
+    }
+
     /// Everything the server has logged so far.
     pub fn transcript(&self) -> String {
         self.transcript
