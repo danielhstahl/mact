@@ -29,7 +29,10 @@
 //! — never the tool's own `outputSchema` shape, which clients only validate on
 //! `isError: false`.
 
+pub mod cancel_run;
 pub mod list_tasks;
+pub mod run_status;
+pub mod schemas;
 
 use std::collections::BTreeSet;
 

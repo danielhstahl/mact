@@ -204,7 +204,7 @@ async fn stops_promptly(signal: libc::c_int, signal_name: &str) {
             .iter()
             .map(|tool| tool["name"].as_str().unwrap_or_default())
             .collect::<Vec<_>>(),
-        vec!["list_tasks"],
+        vec!["cancel_run", "list_tasks", "run_status"],
         "body: {body}"
     );
 

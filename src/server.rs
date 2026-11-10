@@ -1,10 +1,12 @@
 //! The MCP service and the axum mount that serves it.
 //!
-//! The service holds no run state: the only tool so far is the read-only
-//! `list_tasks` (mact-f1w.7), and there is no `act` invocation yet (mact-f1w.8 …
-//! mact-f1w.14). What has to be right here is the shell everything else hangs on —
-//! the pinned protocol revision, the loopback-only bind, the shared immutable
-//! [`Config`], and a cancellation token that actually drains.
+//! The service holds one [`RunSupervisor`] per process and no per-session state: `list_tasks`
+//! (mact-f1w.7) reads files, and `run_status`/`cancel_run` (mact-f1w.11) go to the supervisor,
+//! which owns every run. That sharing is the whole point — a run started by one request is
+//! pollable and cancellable from any other, and a session going away changes nothing about it.
+//! What else has to be right here is the shell everything else hangs on: the pinned protocol
+//! revision, the loopback-only bind, the shared immutable [`Config`], and a cancellation token
+//! that actually drains.
 
 use std::{borrow::Cow, net::SocketAddr, sync::Arc, time::Duration};
 
@@ -22,7 +24,8 @@ use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
 
 use crate::config::Config;
-use crate::tools::{list_tasks, ToolError};
+use crate::registry::RunSupervisor;
+use crate::tools::{cancel_run, list_tasks, run_status, ToolError};
 
 /// Server name reported in `serverInfo` / `discover` responses.
 pub const SERVER_NAME: &str = "act-mcp";
@@ -48,6 +51,7 @@ pub const SUPPORTED_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V_2026_
 #[derive(Debug, Clone)]
 pub struct ActMcp {
     config: Arc<Config>,
+    supervisor: Arc<RunSupervisor>,
 }
 
 impl ActMcp {
@@ -55,8 +59,8 @@ impl ActMcp {
     ///
     /// Called by the service factory per request, so this stays cheap: it clones
     /// an `Arc`, nothing else.
-    pub fn new(config: Arc<Config>) -> Self {
-        Self { config }
+    pub fn new(config: Arc<Config>, supervisor: Arc<RunSupervisor>) -> Self {
+        Self { config, supervisor }
     }
 
     /// The shared boot config. Tool handlers (mact-f1w.7+) read workspace,
@@ -64,13 +68,19 @@ impl ActMcp {
     pub fn config(&self) -> &Arc<Config> {
         &self.config
     }
+
+    /// The process-wide run supervisor: every session shares it, which is what lets one
+    /// request poll or cancel a run another request started.
+    pub fn supervisor(&self) -> &Arc<RunSupervisor> {
+        &self.supervisor
+    }
 }
 
 /// The tools this server advertises.
 ///
-/// `list_tasks` is the first (mact-f1w.7); `run_workflow`, `run_status` and
-/// `cancel_run` (mact-f1w.11/.14) join it here. ADR-0001 §1 pins the names, titles
-/// and annotations each of them must carry.
+/// `list_tasks` (mact-f1w.7), `run_status` and `cancel_run` (mact-f1w.11) are here;
+/// `run_workflow` joins with mact-f1w.14. ADR-0001 §1 pins the names, titles and
+/// annotations each of them must carry.
 #[tool_router]
 impl ActMcp {
     /// Enumerate this workspace's workflows and job ids (ADR-0001 §6.1).
@@ -119,6 +129,64 @@ impl ActMcp {
         }
         Ok(Json(result))
     }
+
+    /// Poll one run, or list this server's recent runs (ADR-0001 §6.2, ADR-0004 §10).
+    ///
+    /// Purely a read of supervisor state: no lock, no disk, no act, no wait. That is the
+    /// contract (`run_status` is the progress channel for a server with no streams), so the
+    /// handler's only jobs are argument validation and error mapping.
+    #[tool(
+        name = "run_status",
+        title = "Poll a run, or list this server's recent runs",
+        description = run_status::DESCRIPTION,
+        input_schema = run_status::input_schema(),
+        output_schema = run_status::output_schema(),
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+    )]
+    async fn run_status(
+        &self,
+        Parameters(arguments): Parameters<JsonObject>,
+    ) -> Result<Json<serde_json::Value>, ToolError> {
+        let args = run_status::RunStatusArgs::parse(Some(&arguments))?;
+        let result = run_status::run(self.supervisor(), &args)
+            .await
+            .map_err(|not_found| run_status::run_not_found(&not_found))?;
+        Ok(Json(result))
+    }
+
+    /// Cancel a run (ADR-0001 §6.3, ADR-0004 §5.2).
+    ///
+    /// The only control tool that can block, and its block is bounded by
+    /// `--cancel-wait-secs`. Annotated `idempotent_hint = true` because §5.2 makes a repeat
+    /// cancel a report of what was already true rather than a second teardown.
+    #[tool(
+        name = "cancel_run",
+        title = "Cancel a run by id (idempotent)",
+        description = cancel_run::DESCRIPTION,
+        input_schema = cancel_run::input_schema(),
+        output_schema = cancel_run::output_schema(),
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+    )]
+    async fn cancel_run(
+        &self,
+        Parameters(arguments): Parameters<JsonObject>,
+    ) -> Result<Json<serde_json::Value>, ToolError> {
+        let args = cancel_run::CancelRunArgs::parse(Some(&arguments))?;
+        let receipt = cancel_run::run(self.supervisor(), &args)
+            .await
+            .map_err(|not_found| cancel_run::run_not_found(&not_found))?;
+        Ok(Json(receipt.to_value()))
+    }
 }
 
 #[tool_handler]
@@ -153,13 +221,15 @@ impl ServerHandler for ActMcp {
 /// Build the streamable-HTTP service for one server instance.
 ///
 /// `cancellation_token` ends live sessions and the streams they hold; [`serve`]
-/// hands it the session token it cancels after the drain window.
+/// hands it the session token it cancels after the drain window. `supervisor` is shared by
+/// every session in the process — the runs belong to it, not to any session.
 pub fn mcp_service(
     config: Arc<Config>,
+    supervisor: Arc<RunSupervisor>,
     cancellation_token: CancellationToken,
 ) -> StreamableHttpService<ActMcp, LocalSessionManager> {
     StreamableHttpService::new(
-        move || Ok(ActMcp::new(Arc::clone(&config))),
+        move || Ok(ActMcp::new(Arc::clone(&config), Arc::clone(&supervisor))),
         Arc::new(LocalSessionManager::default()),
         http_config(cancellation_token),
     )
@@ -172,9 +242,16 @@ pub fn mcp_service(
 ///
 /// The only layer so far is request tracing (`RUST_LOG=debug` turns it on).
 /// mact-f1w.13 adds the Host/Origin guards here.
-pub fn router(config: Arc<Config>, cancellation_token: CancellationToken) -> axum::Router {
+pub fn router(
+    config: Arc<Config>,
+    supervisor: Arc<RunSupervisor>,
+    cancellation_token: CancellationToken,
+) -> axum::Router {
     axum::Router::new()
-        .nest_service(MCP_ROUTE, mcp_service(config, cancellation_token))
+        .nest_service(
+            MCP_ROUTE,
+            mcp_service(config, supervisor, cancellation_token),
+        )
         .layer(ServiceBuilder::new().layer(TraceLayer::new_for_http()))
 }
 
@@ -211,7 +288,11 @@ fn http_config(cancellation_token: CancellationToken) -> StreamableHttpServerCon
 /// The session token is deliberately *not* a child of `shutdown`: if it were, the
 /// signal would kill live sessions at the same instant the listener stopped and
 /// phase 1 would be a lie.
-pub async fn serve(config: Arc<Config>, shutdown: CancellationToken) -> anyhow::Result<()> {
+pub async fn serve(
+    config: Arc<Config>,
+    supervisor: Arc<RunSupervisor>,
+    shutdown: CancellationToken,
+) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     let local = listener.local_addr()?;
     let url = endpoint_url(local);
@@ -226,23 +307,39 @@ pub async fn serve(config: Arc<Config>, shutdown: CancellationToken) -> anyhow::
     );
 
     let sessions = CancellationToken::new();
-    let app = router(Arc::clone(&config), sessions.clone());
+    let app = router(
+        Arc::clone(&config),
+        Arc::clone(&supervisor),
+        sessions.clone(),
+    );
     let drain_sessions = sessions.clone();
+    let sweep_supervisor = Arc::clone(&supervisor);
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown.cancelled().await;
+            // ADR-0004 §9.2 steps 1–2, in this order: refuse new runs and ask every active
+            // one to come down *concurrently* (separate process groups, so wall time is one
+            // grace period rather than N) before the HTTP side starts counting its own
+            // budget. A `wait: true` request is released by its run's terminal commit, which
+            // is why the sweep runs first and the answers arrive normally.
+            sweep_supervisor.begin_shutdown();
             tracing::info!(
                 drain_budget = ?SHUTDOWN_DRAIN_BUDGET,
                 "shutdown signal received; draining in-flight requests"
             );
             tokio::time::sleep(SHUTDOWN_DRAIN_BUDGET).await;
+            // Step 3: the bounded window for the terminal commits (evidence publish and
+            // `meta.json` included), so a run that can finish cleanly gets to.
+            sweep_supervisor.drain().await;
             tracing::debug!("end of drain window; ending live sessions");
             drain_sessions.cancel();
         })
         .await?;
 
-    // `serve` can also return on an internal error with sessions still alive.
+    // `serve` can also return on an internal error with sessions still alive, and with runs
+    // that were never asked to stop. Both mean the same thing now: sweep, then leave.
+    supervisor.shutdown().await;
     sessions.cancel();
     tracing::info!("act-mcp stopped");
     Ok(())

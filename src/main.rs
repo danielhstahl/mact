@@ -20,6 +20,7 @@ use tokio_util::sync::CancellationToken;
 use act_mcp::{
     config::ServeArgs,
     evidence::{self, EvidenceRoot},
+    registry::RunSupervisor,
     server, Config,
 };
 
@@ -121,10 +122,16 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
     let config = Arc::new(Config::build(&args)?);
     tracing::debug!(?config, "configuration accepted");
 
+    // One supervisor per process: it owns every run, so a run outlives the request that
+    // started it and is visible to every session (ADR-0004 §2, D-1).
+    let supervisor = std::sync::Arc::new(
+        RunSupervisor::new().context("the built-in run-lifecycle defaults are unusable")?,
+    );
+
     let shutdown = CancellationToken::new();
     install_signal_handlers(&shutdown);
 
-    server::serve(config, shutdown)
+    server::serve(config, supervisor, shutdown)
         .await
         .context("server terminated with an error")
 }

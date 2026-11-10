@@ -1,6 +1,8 @@
 //! Protocol-surface tests: what a client can and cannot negotiate, and what
-//! `tools/list` answers. There is one tool (`list_tasks`, mact-f1w.7); the tool-specific
-//! assertions live in `tests/list_tasks.rs`, and these stay focused on the protocol.
+//! `tools/list` answers. The tools are `list_tasks` (mact-f1w.7), `run_status` and
+//! `cancel_run` (mact-f1w.11) — `run_workflow` joins with mact-f1w.14 — and the tool-specific
+//! assertions live in `tests/list_tasks.rs`, `tests/run_status_tool.rs` and
+//! `tests/cancel_run_tool.rs`; these stay focused on the protocol.
 //!
 //! Half of these use rmcp's own client (the "stock MCP client" in the ticket's
 //! definition of done); the other half speak raw JSON-RPC over HTTP, because they
@@ -48,8 +50,8 @@ async fn a_stock_client_can_list_tools() {
             .iter()
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
-        vec!["list_tasks"],
-        "the tool set is exactly the tools this build registers"
+        vec!["cancel_run", "list_tasks", "run_status"],
+        "the tool set is exactly the tools this build registers, in the order rmcp sorts them"
     );
     assert!(
         tools.next_cursor.is_none(),
@@ -83,7 +85,7 @@ async fn a_raw_tools_list_request_returns_the_tool_array() {
             .iter()
             .map(|tool| tool["name"].as_str().unwrap_or_default())
             .collect::<Vec<_>>(),
-        vec!["list_tasks"],
+        vec!["cancel_run", "list_tasks", "run_status"],
         "body: {body}"
     );
     assert!(

@@ -68,7 +68,10 @@ pub use log::{
     REDACTION_MARKER,
 };
 pub use process::{default_run_scratch_dir, group_exists};
-pub use run::{ActRunOutcome, KillMethod, KillReport, RunningActRun, TerminateInitiator};
+pub use run::{
+    ActRunOutcome, KillMethod, KillReport, RunHandle as ActRunHandle, RunningActRun,
+    TerminateInitiator,
+};
 
 use std::{
     collections::BTreeMap,

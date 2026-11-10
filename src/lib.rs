@@ -20,6 +20,11 @@
 //! * [`workflow_yaml`] — the minimal YAML view of a workflow file (declared name
 //!   and job ids) that validation needs.
 //! * [`server`] — the [`server::ActMcp`] service and the axum mount.
+//! * [`tools`] — one module per MCP tool: its advertised schemas, its argument parsing, and
+//!   the ADR-0001 §5 error mapping shared by all of them.
+//! * [`registry`] — the run supervisor (ADR-0004): the run state machine, the in-memory run
+//!   registry with its retention sweep, the workspace run lock, and the act pipeline seam
+//!   that `run_workflow` (mact-f1w.14) drives. `run_status` and `cancel_run` read it.
 //! * [`runner`] — the act process runner: the pure argv builder, the log tee with secret
 //!   redaction and its two byte budgets, the process-group timeout/cancel teardown, and
 //!   the terminal [`runner::ActRunOutcome`] the supervisor turns into evidence.
@@ -53,6 +58,13 @@
 pub mod config;
 pub mod evidence;
 pub mod fixtures;
+/// The run supervisor: state machine, registry, workspace lock and the control tools'
+/// backing logic (ADR-0004).
+///
+/// POSIX-only for the same reason [`runner`] is: the workspace lock is `flock`, the
+/// teardown signals process groups, and both are the supervisor's only OS interaction.
+#[cfg(unix)]
+pub mod registry;
 pub mod server;
 pub mod tools;
 pub mod workflow_yaml;

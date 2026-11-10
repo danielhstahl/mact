@@ -41,9 +41,43 @@ fn contract() -> Value {
     serde_json::from_str(&text).expect("the contract schema is JSON")
 }
 
-/// The advertised `list_tasks` tool, as `tools/list` would render it.
-fn advertised() -> rmcp::model::Tool {
-    ActMcp::list_tasks_tool_attr()
+/// The tools this build registers, each with the `$defs` its schemas must equal.
+/// `(tool name, $defs for its args, $defs for its result, how to render it)`.
+type ToolRow = (
+    &'static str,
+    &'static str,
+    &'static str,
+    fn() -> rmcp::model::Tool,
+);
+
+const TOOLS: [ToolRow; 3] = [
+    (
+        "list_tasks",
+        "list_tasks_args",
+        "list_tasks_result",
+        ActMcp::list_tasks_tool_attr,
+    ),
+    (
+        "run_status",
+        "run_status_args",
+        "run_status_result",
+        ActMcp::run_status_tool_attr,
+    ),
+    (
+        "cancel_run",
+        "cancel_run_args",
+        "cancel_run_result",
+        ActMcp::cancel_run_tool_attr,
+    ),
+];
+
+/// The advertised tool `name`, as `tools/list` would render it.
+fn advertised(name: &str) -> rmcp::model::Tool {
+    TOOLS
+        .iter()
+        .find(|(tool, ..)| *tool == name)
+        .unwrap_or_else(|| panic!("`{name}` is one of the tools under parity"))
+        .3()
 }
 
 /// The pinned `$defs/<name>`, normalized against the whole document.
@@ -56,15 +90,15 @@ fn pinned(name: &str) -> Value {
     normalize(&definition, &document)
 }
 
-/// The advertised schema for `name` (`inputSchema` or `outputSchema`), normalized.
-fn advertised_schema(name: &str) -> Value {
-    let tool = advertised();
-    let raw = match name {
+/// The advertised schema for `tool` (`inputSchema` or `outputSchema`), normalized.
+fn advertised_schema(name: &str, which: &str) -> Value {
+    let tool = advertised(name);
+    let raw = match which {
         "input" => Value::Object(tool.input_schema.as_ref().clone()),
         "output" => Value::Object(
             tool.output_schema
                 .as_ref()
-                .expect("list_tasks advertises an outputSchema")
+                .unwrap_or_else(|| panic!("`{name}` advertises an outputSchema"))
                 .as_ref()
                 .clone(),
         ),
@@ -140,28 +174,33 @@ fn normalize(value: &Value, root: &Value) -> Value {
     }
 }
 
-/// `$defs/list_tasks_args` is the advertised `inputSchema`, member for member.
+/// Every registered tool's `inputSchema` is `$defs/<tool>_args`, member for member.
 #[test]
-fn list_tasks_input_schema_matches_the_pinned_contract() {
-    assert_eq!(
-        advertised_schema("input"),
-        pinned("list_tasks_args"),
-        "inputSchema drifted from $defs/list_tasks_args"
-    );
+fn every_input_schema_matches_the_pinned_contract() {
+    for (tool, args, ..) in TOOLS {
+        assert_eq!(
+            advertised_schema(tool, "input"),
+            pinned(args),
+            "`{tool}` inputSchema drifted from $defs/{args}"
+        );
+    }
 }
 
-/// `$defs/list_tasks_result` is the advertised `outputSchema`, member for member.
+/// Every registered tool's `outputSchema` is `$defs/<tool>_result`, member for member.
 ///
-/// This is the check that keeps `parse_error.code` to the four members the contract
-/// pins: a fifth code added in Rust without a coordinated spec bump fails here rather
-/// than in a client's schema validation.
+/// This is the check that keeps the closed sets closed — `parse_error.code`'s four
+/// members, `run_status`'s `status`/`phase` words, `cancel_run`'s kill receipt: a fifth
+/// member added in Rust without a coordinated spec bump fails here rather than in a
+/// client's schema validation.
 #[test]
-fn list_tasks_output_schema_matches_the_pinned_contract() {
-    assert_eq!(
-        advertised_schema("output"),
-        pinned("list_tasks_result"),
-        "outputSchema drifted from $defs/list_tasks_result"
-    );
+fn every_output_schema_matches_the_pinned_contract() {
+    for (tool, _args, result, _) in TOOLS {
+        assert_eq!(
+            advertised_schema(tool, "output"),
+            pinned(result),
+            "`{tool}` outputSchema drifted from $defs/{result}"
+        );
+    }
 }
 
 /// The advertised schemas are not just equal to the contract; they are sane on their
@@ -169,31 +208,33 @@ fn list_tasks_output_schema_matches_the_pinned_contract() {
 /// (ADR-0002 §2.1's no-null rule, which the schemas express by omission).
 #[test]
 fn advertised_schemas_are_self_consistent() {
-    let tool = advertised();
-    let input = Value::Object(tool.input_schema.as_ref().clone());
-    let output = tool
-        .output_schema
-        .as_ref()
-        .expect("outputSchema is advertised");
-    let output = Value::Object(output.as_ref().clone());
-    for schema in [("input", &input), ("output", &output)] {
-        assert_eq!(
-            schema.1.get("type"),
-            Some(&json!("object")),
-            "{} schema must have an object root",
-            schema.0
-        );
-        assert_eq!(
-            schema.1.get("additionalProperties"),
-            Some(&json!(false)),
-            "{} must reject unknown members",
-            schema.0
-        );
-        let text = schema.1.to_string();
-        assert!(
-            !text.contains("\"null\""),
-            "{} advertises a nullable type somewhere: {text}",
-            schema.0
-        );
+    for (name, ..) in TOOLS {
+        let tool = advertised(name);
+        let input = Value::Object(tool.input_schema.as_ref().clone());
+        let output = tool
+            .output_schema
+            .as_ref()
+            .unwrap_or_else(|| panic!("`{name}` advertises an outputSchema"));
+        let output = Value::Object(output.as_ref().clone());
+        for schema in [("input", &input), ("output", &output)] {
+            assert_eq!(
+                schema.1.get("type"),
+                Some(&json!("object")),
+                "{} schema must have an object root",
+                schema.0
+            );
+            assert_eq!(
+                schema.1.get("additionalProperties"),
+                Some(&json!(false)),
+                "{} must reject unknown members",
+                schema.0
+            );
+            let text = schema.1.to_string();
+            assert!(
+                !text.contains("\"null\""),
+                "{} advertises a nullable type somewhere: {text}",
+                schema.0
+            );
+        }
     }
 }

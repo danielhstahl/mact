@@ -12,6 +12,9 @@ use act_mcp::{
     workspace::{SemVer, DEFAULT_GIT_TIMEOUT},
     Config,
 };
+
+#[allow(unused_imports, reason = "only some test binaries need the supervisor")]
+use act_mcp::registry::RunSupervisor;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
@@ -127,13 +130,26 @@ pub fn config_at(workspace: &Path, act_binary: &Path) -> Arc<Config> {
 pub struct TestServer {
     pub addr: SocketAddr,
     pub token: CancellationToken,
+    /// The process-wide run supervisor, shared by every session this server opens. The
+    /// run-control tests drive it directly and read it back through the wire.
+    pub supervisor: Arc<RunSupervisor>,
     task: JoinHandle<()>,
 }
 
 impl TestServer {
     /// Mount the real router (the same code path `serve` uses) on port 0 so the
-    /// test never has to guess a free port.
+    /// test never has to guess a free port, with a default-policy supervisor.
     pub async fn start(config: Arc<Config>) -> Self {
+        Self::with_supervisor(
+            config,
+            Arc::new(RunSupervisor::new().expect("the shipped run-policy defaults are valid")),
+        )
+        .await
+    }
+
+    /// The same server, with a supervisor the test configured — the seam for a short
+    /// `--term-grace-secs`, which no test wants to sit through at its shipped value.
+    pub async fn with_supervisor(config: Arc<Config>, supervisor: Arc<RunSupervisor>) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind ephemeral loopback port");
@@ -141,7 +157,7 @@ impl TestServer {
         let token = CancellationToken::new();
         let task = {
             let token = token.clone();
-            let app = server::router(config, token.clone());
+            let app = server::router(config, Arc::clone(&supervisor), token.clone());
             tokio::spawn(async move {
                 let _ = axum::serve(listener, app)
                     .with_graceful_shutdown(async move { token.cancelled().await })
@@ -150,7 +166,12 @@ impl TestServer {
         };
         // Wait until the socket actually answers, so no test races the spawn.
         wait_until_listening(addr).await;
-        Self { addr, token, task }
+        Self {
+            addr,
+            token,
+            supervisor,
+            task,
+        }
     }
 
     pub fn url(&self) -> String {
