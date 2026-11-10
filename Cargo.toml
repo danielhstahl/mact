@@ -32,6 +32,10 @@ tokio = { version = "1", features = [
     "process",
     "signal",
     "time",
+    # sync: run-state handoff (watch/mutex) between the run task and cancel_run (mact-f1w.8/.11).
+    # io-util: line-oriented reading of act's stdout/stderr pipes (mact-f1w.8).
+    "sync",
+    "io-util",
 ] }
 axum = "0.8"
 tower = "0.5"
@@ -59,9 +63,12 @@ which = "8"
 #
 # Deferred deps, deliberately not listed yet so `cargo build` stays honest about
 # what this scaffold actually links; each lands with the ticket that consumes it:
-#   uuid (v7)     - run ids, `YYYYMMDDTHHMMSSZ-<6 hex>` per ADR-0002 §1.2 -> mact-f1w.8/.11
-#   chrono        - timestamps; decided here: chrono (UTC everywhere), because
-#                   rmcp already pulls it into the tree -> mact-f1w.9
+#   chrono        - landed in mact-f1w.8 (run timestamps); the evidence writer (.9) reuses it.
+#   uuid          - NOT wanted after all: the ADR-0002 §1.2 run_id shape is
+#                   `YYYYMMDDTHHMMSSZ-<6 hex>`, which `runner::RunId::generate` builds from
+#                   chrono plus 3 bytes of /dev/urandom. A v7 UUID adds a dependency to
+#                   produce 6 hex characters; if a later ticket wants a real UUID, it is
+#                   additive inside `RunId`.
 
 # YAML: needed to read `.github/workflows/*.yml` (the `name:` key and the `jobs:`
 # map) during workflow/task resolution — mact-f1w.6. Deliberately yaml-rust2 and
@@ -70,6 +77,17 @@ which = "8"
 # = false` drops encoding_rs; the loader reads &str. mact-f1w.7 (`list_tasks`)
 # builds its richer job index on the same crate rather than adding a second parser.
 yaml-rust2 = { version = "0.13", default-features = false }
+
+# Timestamps: UTC everywhere (ADR-0002 §2.2). Chosen in the scaffold's Cargo.toml comment
+# because rmcp already pulls chrono into the tree; mact-f1w.8 uses it for `started_at` /
+# `finished_at` on a run outcome. `clock` is what gives `Utc::now()`; default features are
+# off so no serde/time formatting bloat rides along (rmcp's own features keep what it needs).
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+
+# The runner (mact-f1w.8) is the only code in this crate that signals a process, and
+# signalling a *process group* has no `std` API: `killpg(2)`/`prctl(2)` come from libc.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 # Same rmcp, plus the client half so the tests can be a real MCP client (a stock
@@ -88,6 +106,6 @@ tempfile = "3"
 reqwest = { version = "0.13", default-features = false, features = ["json"] }
 tokio = { version = "1", features = ["full", "macros"] }
 
-[target.'cfg(unix)'.dev-dependencies]
-libc = "0.2"
+# libc is a regular (unix) dependency since mact-f1w.8; integration tests keep using it for
+# `libc::kill`, which is why the crate attribute is `deny(unsafe_code)` and not `forbid`.
 

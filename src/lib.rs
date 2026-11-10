@@ -17,6 +17,9 @@
 //! * [`workflow_yaml`] — the minimal YAML view of a workflow file (declared name
 //!   and job ids) that validation needs.
 //! * [`server`] — the [`server::ActMcp`] service and the axum mount.
+//! * [`runner`] — the act process runner: the pure argv builder, the log tee with secret
+//!   redaction and its two byte budgets, the process-group timeout/cancel teardown, and
+//!   the terminal [`runner::ActRunOutcome`] the supervisor turns into evidence.
 //! * [`fixtures`] — throwaway-git-repository builders shared by the unit tests and
 //!   the integration tests (one definition, so the e2e suite reuses the same ones).
 //!
@@ -32,10 +35,12 @@
 //!
 //! [`nektos/act`]: https://github.com/nektos/act
 
-// Production code never needs `unsafe`; the integration tests use `libc::kill`
-// to deliver SIGTERM, which is why this is a crate attribute rather than a
-// `[lints]` entry in Cargo.toml.
-#![forbid(unsafe_code)]
+// Production code is audited for `unsafe` rather than forbidden from it, because exactly
+// one module needs it: `runner::process` has to reach `killpg(2)` and `prctl(2)`, for
+// which `std` has no safe API (see that file's header for the audit). `deny` rather than
+// `allow` at the crate root means any *new* unsafe outside that one module still fails a
+// build. The integration tests are their own crates and use `libc::kill` freely.
+#![deny(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod config;
@@ -45,6 +50,15 @@ pub mod tools;
 pub mod workflow_yaml;
 pub mod workflows;
 pub mod workspace;
+
+/// The act process runner.
+///
+/// POSIX-only, and deliberately so: process groups, `--bind`, `flock` and act itself are
+/// all POSIX, and the ADR-0003 checker already treats the lock protocol as "POSIX-only by
+/// decision". A non-POSIX build of this crate therefore has no runner to offer rather than
+/// a silently weaker one.
+#[cfg(unix)]
+pub mod runner;
 
 pub use config::{Config, ConfigError, ServeArgs};
 pub use server::ActMcp;
