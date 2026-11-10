@@ -357,3 +357,8 @@ $ pip install jsonschema
 $ python3 scripts/validate_tool_contract.py --stats
 $ python3 scripts/validate_evidence.py tests/e2e/testdata/expected   # the sibling contract, unchanged by this
 ```
+
+`scripts/ci.sh schema` runs the first of those three on every build, so drift between these
+files and the schema is a red build rather than a chore someone forgets; the fixtures it
+checks are indexed in [`tests/e2e/testdata/README.md`](../tests/e2e/testdata/README.md), and
+a fixture with no row there fails the same step.

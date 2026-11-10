@@ -43,6 +43,7 @@ DRILLS=(
     "test-failing-assertion:test"
     "schema-broken-schema-file:schema"
     "schema-bad-evidence-record:schema"
+    "schema-undocumented-tool-io-fixture:schema"
     "supply-chain-disallowed-licence:supply-chain"
 )
 
@@ -115,6 +116,23 @@ mut_schema_bad_evidence_record() {
     # A record that satisfies nothing: a JSONL line missing the required envelope fields.
     printf '%s\n' '{"schema_version":1,"kind":"benchmark"}' \
         >> "$1/tests/e2e/testdata/expected/benchmark.jsonl"
+}
+
+mut_schema_undocumented_tool_io_fixture() {
+    # Delete the README row that names one tool-io fixture. The contract checker refuses an
+    # undocumented fixture, because a contract rule nobody can look up is a rule that will be
+    # broken by accident; this proves that refusal is fatal and not advice.
+    python3 - "$1/tests/e2e/testdata/README.md" <<'PY'
+import sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+lines = [line for line in text.splitlines(keepends=True)
+         if "run_workflow.result.status-succeeded.json" not in line]
+if len(lines) == len(text.splitlines(keepends=True)):
+    sys.exit("drill setup: the fixture row this drill deletes is not in the README")
+open(path, "w", encoding="utf-8").write("".join(lines))
+PY
 }
 
 mut_supply_chain_disallowed_licence() {

@@ -21,16 +21,17 @@
 #                act). Nothing in here needs docker or act — if a test needs them it is the
 #                wrong test, and it belongs behind `#[ignore]` with the reason in its
 #                `reason =` (see docs/testing.md).
-#   schema       the JSON Schema half of ADR-0002: every file in schema/ has to be a legal
-#                schema for the dialect it declares, `schema/evidence.schema.json` has to
-#                compile in the engine the binary embeds, and the committed e2e evidence
-#                tree has to validate against it (the e2e suite re-validates the *trees it
-#                generates*; this validates the ones in the repo, so the check runs without
-#                running the suite). Then the two ADR↔schema checkers docs/testing.md calls
-#                CI's (`validate_run_lifecycle.py`, `validate_isolation.py`), and python's
-#                own jsonschema over the same tree as a second, independent implementation.
-#                `validate_tool_contract.py` is deliberately not here yet: docs/ci.md says
-#                what it is waiting on.
+#   schema       the JSON Schema contract, both accepted contracts. ADR-0002 first: every file
+#                in schema/ has to be a legal schema for the dialect it declares,
+#                `schema/evidence.schema.json` has to compile in the engine the binary
+#                embeds, and the committed e2e evidence tree has to validate against it (the
+#                e2e suite re-validates the *trees it generates*; this validates the ones in
+#                the repo, so the check runs without running the suite). Then the three
+#                ADR↔schema checkers docs/testing.md calls CI's — ADR-0001's tool contract
+#                (`validate_tool_contract.py`), ADR-0004's run lifecycle
+#                (`validate_run_lifecycle.py`), ADR-0003's isolation protocol
+#                (`validate_isolation.py`) — and python's own jsonschema over the same
+#                evidence tree as a second, independent implementation.
 #   supply-chain cargo-deny: licences, duplicate/wildcard policy and sources always, RUSTSEC
 #                advisories when the network is allowed (`--offline` skips exactly that
 #                part and says so). `cargo tree -d` is printed alongside as a note.
@@ -232,8 +233,13 @@ step_schema() {
 
     # 2. the ADR↔schema checkers docs/testing.md names as CI's: no python packages needed,
     #    milliseconds each, and they fail when an accepted ADR and the schema implementing it
-    #    stop agreeing with one another.
+    #    stop agreeing with one another. validate_tool_contract.py belongs here rather than
+    #    with the jsonschema checks below because the half of it that matters most — ADR-0001's
+    #    error-code and status tables, the schema, and the fixture index in
+    #    tests/e2e/testdata/README.md — needs no package at all; it skips its own
+    #    fixture-validating half, and says so, when jsonschema is absent.
     echo "--- ADR <-> schema checkers ($py)"
+    "$py" scripts/validate_tool_contract.py
     "$py" scripts/validate_run_lifecycle.py
     "$py" scripts/validate_isolation.py
 
@@ -242,8 +248,9 @@ step_schema() {
     #    as a client bug report). Skipped loudly when the package is missing: these two are
     #    second opinions, and the hard checks above are the verdict.
     if ! "$py" -c 'import jsonschema' >/dev/null 2>&1; then
-        note "$py has no 'jsonschema' package: skipping the two second-opinion checks below."
-        note "the hard checks above still ran; install it with scripts/install_ci_tools.sh"
+        note "$py has no 'jsonschema' package: skipping the two second-opinion checks below"
+        note "and the fixture-validating half of validate_tool_contract.py above."
+        note "the hard checks still ran; install it with scripts/install_ci_tools.sh"
         note "or point PYTHON at an interpreter that has it."
         return 0
     fi

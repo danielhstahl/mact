@@ -263,7 +263,7 @@ impl ActMcp {
 /// what to call first, what the paths in the answers mean, and — the question that decides
 /// whether a run is worth starting at all — which categories write evidence and where it
 /// lands. Kept as a pure function of three values so a test can pin it without booting a
-/// server ([`crate::server::tests`]).
+/// server (the `server::tests` module, which is `#[cfg(test)]` and so not a linkable path).
 #[must_use]
 pub fn server_instructions(version: &str, workspace: &Path, evidence_dir: &Path) -> String {
     format!(

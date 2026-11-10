@@ -619,7 +619,7 @@ the checker; an implementation that finds a hole fixes all three in one change.
 
 | check | owner | command / test |
 |---|---|---|
-| schema is a legal 2020-12 schema; all 21 valid fixtures accepted; all 34 invalid fixtures rejected | mact-f1w.2 (this ADR), then mact-f1w.17 CI | `python3 scripts/validate_tool_contract.py --stats` |
+| schema is a legal 2020-12 schema; every fixture under `tests/e2e/testdata/tool-io/valid` accepted, every one under `invalid/` rejected | mact-f1w.2 (this ADR), then mact-f1w.17 CI | `python3 scripts/validate_tool_contract.py --stats` |
 | error-code table identical in the ADR, in `docs/tool-contract.md`, in `$defs/error_code` and in `x-error-codes` (including the `isError` / `retryable` columns) | mact-f1w.2 | same command, check 5; the same command fails on a one-word edit |
 | status vocabulary agrees with ADR-0002's schema files; `succeeded` nowhere | mact-f1w.2 | same command, check 4; fixture `run_workflow.result.status-succeeded.json` |
 | `run_workflow` result field set is `run_view` + `deduplicated` | mact-f1w.2 | same command, check 3 |

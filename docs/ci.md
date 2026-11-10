@@ -38,7 +38,7 @@ matters on boxes where `pip` and `python3` disagree about where packages live.
 | `clippy` | `cargo clippy --all-targets --all-features -- -D warnings` | lints, and — because warnings are fatal — a toolchain bump's new opinions. A suppress carries `reason =` |
 | `doc` | `cargo doc --no-deps --all-features` with `RUSTDOCFLAGS=-D warnings -D rustdoc::broken_intra_doc_links` | a doc link that stopped pointing at the thing it meant. This crate's module docs carry the reasoning for its design, so a dangling link is a lost argument, not cosmetics |
 | `test` | `cargo test --all-features` | the contract: unit tests, one suite per tool, the MCP 2026-07-28 conformance matrix, and `tests/e2e` (real server, stub `act`, `.evidence` on disk) |
-| `schema` | see below | the JSON Schema half of ADR-0002, and ADR↔schema drift |
+| `schema` | see below | the JSON Schema of both accepted contracts — ADR-0001's tool contract and ADR-0002's evidence format — and ADR↔schema drift |
 | `supply-chain` | `cargo deny check licenses bans sources` + `... advisories`, then a `cargo tree -d` note | licences, duplicate/wildcard policy, dependency provenance, RUSTSEC |
 | `release` | `cargo build --release` + `scripts/smoke_binary.sh` | that the artefact exists, reports its version, answers `--help`, refuses a bad flag, and validates evidence with its embedded schemas |
 
@@ -55,20 +55,30 @@ that needs a container daemon belongs behind `#[ignore]` with the reason in its
    (`jsonschema-rs`, `include_str!` of the same bytes) compiles the schema *files* and
    validates the committed evidence tree. This is the hard one: it fails if the schema stops
    compiling or a record stops satisfying it, with no python involved.
-2. `scripts/validate_run_lifecycle.py` and `scripts/validate_isolation.py` — the ADR↔schema
-   checkers docs/testing.md calls CI's.
+2. `scripts/validate_tool_contract.py`, `scripts/validate_run_lifecycle.py` and
+   `scripts/validate_isolation.py` — the three ADR↔schema checkers docs/testing.md calls CI's:
+   ADR-0001's tool contract, ADR-0004's run lifecycle and ADR-0003's isolation protocol, each
+   checked against the schema that implements it. (ADR-0002's checker is
+   `validate_evidence.py`, which is check (1) above and check (3) below.) Of the three,
+   `validate_tool_contract.py` is the one that keeps ADR-0001's error-code table, the run
+   status vocabulary and the fixture index in
+   [`tests/e2e/testdata/README.md`](../tests/e2e/testdata/README.md) in step with
+   `schema/tool-contract.schema.json`; its fixture-validating half needs `jsonschema` (see 3)
+   and says so when the package is missing, while its docs-parity half — the half that catches
+   a renamed error code or an undocumented fixture — always runs.
 3. Only when `$PYTHON` can `import jsonschema`: every `schema/*.json` against the meta-schema
    it declares, and `scripts/validate_evidence.py` over the same tree as a second,
    independent implementation. When the package is missing these two are **reported as
    skipped** — they are second opinions; the verdict is (1) and (2). `scripts/install_ci_tools.sh`
    installs it, or set `PYTHON=` to an interpreter that has it.
 
-`scripts/validate_tool_contract.py` — the third checker docs/testing.md names — is **not in
-CI yet, on purpose**: it currently reports 56 findings, all of them
-`tests/e2e/testdata/tool-io/{valid,invalid}/*.json: not documented in
-tests/e2e/testdata/README.md`, which is a documentation task on the fixtures rather than a
-CI wiring task. Reproduce with `python3 scripts/validate_tool_contract.py`; when it exits 0
-it belongs in this step.
+The fixture index rule is worth naming because it is the one a newcomer trips: every file in
+`tests/e2e/testdata/tool-io/{valid,invalid}/` has to be named in
+`tests/e2e/testdata/README.md`, which is the human-readable statement of what the schema
+forbids. Add a fixture without a row and `schema` goes red; the row is the documentation, and
+an undocumented fixture is a contract rule nobody can look up. Fixtures themselves come from
+`scripts/gen_tool_contract_fixtures.py`, which is idempotent — edit the generator, re-run it,
+never hand-edit a fixture.
 
 ## 3. The pipeline
 
@@ -142,6 +152,7 @@ check, and asserts that the matching `scripts/ci.sh` step exits non-zero:
 | `test-failing-assertion` | a unit test that asserts false | `test` |
 | `schema-broken-schema-file` | `schema/evidence.schema.json` edited into a document the engine refuses to compile | `schema` |
 | `schema-bad-evidence-record` | a record missing the required envelope fields appended to a golden | `schema` |
+| `schema-undocumented-tool-io-fixture` | the `tests/e2e/testdata/README.md` row naming one tool-io fixture, deleted | `schema` |
 | `supply-chain-disallowed-licence` | `MIT` removed from `deny.toml`'s allow list | `supply-chain` |
 
 Run it after changing `ci.sh` itself, and before trusting a "green" that arrived after
@@ -158,8 +169,8 @@ default) so it cannot churn yours — and do not make it share one: two source t
 same package name and version under one target directory can convince cargo that the other
 tree's artefact is fresh. The first run pays a cold dependency build, afterwards it is quick.
 
-It is not a step in the pipeline, and that is a cost decision rather than an oversight: seven
-drills means seven compiles of the crate, which would double the check job to guard a file
+It is not a step in the pipeline, and that is a cost decision rather than an oversight: eight
+drills means eight compiles of the crate, which would double the check job to guard a file
 (`ci.sh`) that changes rarely. Running it is part of *changing* `ci.sh`, `ci_drill.sh`, or a
 checker they call — the same rule as re-running a test when you edit the test, not a rule the
 pipeline can enforce for you.
