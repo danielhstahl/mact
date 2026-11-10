@@ -9,7 +9,7 @@
 //! revision, the loopback-only bind, the shared immutable [`Config`], and a cancellation token
 //! that actually drains.
 
-use std::{borrow::Cow, net::SocketAddr, sync::Arc, time::Duration};
+use std::{borrow::Cow, net::SocketAddr, path::Path, sync::Arc, time::Duration};
 
 use axum::{
     extract::{Request, State},
@@ -256,20 +256,38 @@ impl ActMcp {
     }
 }
 
+/// The `instructions` field an agent reads before it calls anything.
+///
+/// The per-tool descriptions each describe one tool; this is the only place the
+/// *sequence* is stated, and it is written for the caller that has not read the source:
+/// what to call first, what the paths in the answers mean, and — the question that decides
+/// whether a run is worth starting at all — which categories write evidence and where it
+/// lands. Kept as a pure function of three values so a test can pin it without booting a
+/// server ([`crate::server::tests`]).
+#[must_use]
+pub fn server_instructions(version: &str, workspace: &Path, evidence_dir: &Path) -> String {
+    format!(
+        "act-mcp {version} — runs one job of one GitHub Actions workflow with act, and writes what the run produced as `.evidence` JSONL. Workspace {workspace}; evidence root {evidence} (every path a tool returns is relative to it).\n\
+         Use the tools in this order:\n\
+         1. list_tasks — workflow names, their job ids (the `task` argument) and an advisory benchmark/coverage category hint. Read-only, takes no run lock, safe to call at any time.\n\
+         2. run_workflow(workflow, task, category, commit) — starts a run and by default waits for the terminal result; `wait: false` returns a `run_id` immediately, which you poll with run_status and stop with cancel_run. One run at a time per workspace and there is no queue: a second call answers `workspace_busy` naming the run in flight. A workflow that ran and failed is a normal answer (`status: failed`), not an error.\n\
+         3. Read the evidence. A terminal run's `evidence_files` lists what it wrote: `category: \"benchmark\"` → benchmark/<commit>/<run_id>.jsonl (one metric per line), `category: \"coverage\"` → coverage/<commit>/<run_id>.jsonl (one source file or the run total per line). Any other category runs normally and writes NO evidence file (`evidence_files: []`). Every run also writes runs/<run_id>/act.jsonl and, once terminal, runs/<run_id>/meta.json; those two are audit paths and are never in `evidence_files`.\n\
+         Evidence is append-only and never aggregated — no mean, no percentile, no dedup across runs, those are the consumer's job — it stores raw counts so percentages are recomputed, and a published file is never rewritten.",
+        workspace = workspace.display(),
+        evidence = evidence_dir.display(),
+    )
+}
+
 #[tool_handler]
 impl ServerHandler for ActMcp {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(SUPPORTED_PROTOCOL_VERSION)
             .with_server_info(Implementation::new(SERVER_NAME, env!("CARGO_PKG_VERSION")))
-            .with_instructions(format!(
-                "act-mcp {} — runs GitHub Actions workflows via act and writes .evidence JSONL.\n\
-                 Workspace: {} (evidence: {})\n\
-                 Start with list_tasks: it enumerates workflow files, their job ids, and an advisory \n\
-                 benchmark/coverage hint, and is safe to call at any time (read-only, no run lock).",
+            .with_instructions(server_instructions(
                 env!("CARGO_PKG_VERSION"),
-                self.config().workspace.display(),
-                self.config().evidence_dir.display(),
+                &self.config().workspace,
+                &self.config().evidence_dir,
             ))
     }
 
@@ -653,4 +671,72 @@ pub fn endpoint_url(bind: SocketAddr) -> String {
         std::net::IpAddr::V6(v6) => format!("[{v6}]"),
     };
     format!("http://{host}:{}{MCP_ROUTE}", bind.port())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::server_instructions;
+    use crate::tools::{cancel_run, list_tasks, run_status, run_workflow};
+    use std::path::Path;
+
+    /// The `instructions` text is the only place an agent is told the *sequence* and where
+    /// evidence lands, so the parts of it a caller would act on are pinned here rather than
+    /// left to whoever last liked the wording. (mact-f1w.18: "the server's instructions field
+    /// explains the workflow: list_tasks → run_workflow → read evidence paths".)
+    #[test]
+    fn instructions_state_the_workflow_and_where_evidence_lands() {
+        let text = server_instructions(
+            "9.9.9",
+            Path::new("/srv/work/repo"),
+            Path::new("/srv/work/repo/.evidence"),
+        );
+
+        for fact in [
+            "9.9.9",
+            "/srv/work/repo",
+            "/srv/work/repo/.evidence",
+            // the order, in order
+            "1. list_tasks",
+            "2. run_workflow",
+            "3. Read the evidence",
+            // the three things that change what a caller does next
+            "workspace_busy",
+            "wait: false",
+            "status: failed",
+            // what each category writes, and that anything else writes nothing
+            "benchmark/<commit>/<run_id>.jsonl",
+            "coverage/<commit>/<run_id>.jsonl",
+            "writes NO evidence file",
+            "runs/<run_id>/meta.json",
+            // the two consumer-facing guarantees of ADR-0002 §4.3/§4.4
+            "never aggregated",
+            "percentages are recomputed",
+        ] {
+            assert!(
+                text.contains(fact),
+                "instructions must state {fact:?}, got:\n{text}"
+            );
+        }
+    }
+
+    /// Every tool's description is written for an agent (ADR-0001 §1), which includes saying
+    /// what it does to `.evidence` — including "nothing", in `list_tasks`' case.
+    #[test]
+    fn every_tool_description_names_evidence() {
+        for (tool, description) in [
+            ("list_tasks", list_tasks::DESCRIPTION),
+            ("run_workflow", run_workflow::DESCRIPTION),
+            ("run_status", run_status::DESCRIPTION),
+            ("cancel_run", cancel_run::DESCRIPTION),
+        ] {
+            assert!(
+                description.len() > 200,
+                "{tool}'s description is too short to be a contract"
+            );
+            assert!(
+                description.contains(".evidence"),
+                "{tool}'s description must say what it does to `.evidence`"
+            );
+        }
+    }
 }

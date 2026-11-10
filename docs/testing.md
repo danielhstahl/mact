@@ -178,3 +178,33 @@ curl -sS http://127.0.0.1:8080/mcp \
 Drop any one of the four `MCP-Protocol-Version` / `_meta` / `Mcp-Method` signals and you should get
 a `400` refusal that says which one — never a result, never a hang. `Accept` must name both media
 types (406 if you name one); `Content-Type` must be `application/json` (415 otherwise).
+
+The same requests, without the curl flags: `scripts/mcp_call.sh` is the checked-in hand client
+(the one the [README runbook](../README.md#the-five-minute-tour) drives), and it exits non-zero
+when the tool answered `isError: true`, so it composes in a shell loop.
+
+```sh
+scripts/mcp_call.sh --tools-list
+scripts/mcp_call.sh list_tasks '{"workflow":"coverage","include_steps":true}'
+scripts/mcp_call.sh run_status '{"limit":5}' | jq .result.structuredContent
+scripts/mcp_call.sh --url http://127.0.0.1:9000/mcp cancel_run '{"run_id":"20261110T004203Z-a1b2c3"}'
+```
+
+## 5. Reproducing the on-disk contract without a run
+
+`docs/evidence-format.md` is the reader's contract, and its recipes are meant to be run, not
+admired. Two scripts keep them honest, and both work with no docker and no act:
+
+```sh
+scripts/sample_evidence.py            # lay the e2e goldens out as a real .evidence tree (3 commits, 5 runs)
+scripts/evidence_recipes.sh           # every jq recipe in that doc, in order, against that tree
+scripts/evidence_recipes.sh <your>/.evidence   # the same recipes against a real evidence root
+```
+
+They need `jq` (verified against 1.7.1) and are **not wired into CI**, because CI does not install
+jq and adding a pinned third-party binary is a supply-chain change that does not belong in a docs
+ticket. Run them by hand before touching anything under `src/evidence/`, `schema/evidence.schema.json`,
+or `docs/evidence-format.md`: a recipe that no longer parses, or that prints nothing, means the
+document and the writer have parted company. `scripts/sample_evidence.py` also stamps two
+re-stamped "later" commits into the sample tree, because one commit cannot exercise a cross-commit
+scan; `--no-extra-commits` leaves them out.

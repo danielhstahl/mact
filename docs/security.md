@@ -38,6 +38,10 @@ Attack surface, in the order this document takes it:
 container escape gives an attacker. If you can run a workflow here you already own the
 machine; nothing below pretends otherwise.
 
+Surface 6 has a second document: what a *reader* of what a run writes back may assume — the
+evidence layout, the record fields, what is guaranteed and what is advisory — is
+[evidence-format.md](evidence-format.md). This file covers only what makes writing it safe.
+
 ---
 
 ## 1. The socket

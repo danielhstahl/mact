@@ -11,6 +11,8 @@ field sets drift apart between the ADR, this file and
 - Schemas: [`schema/tool-contract.schema.json`](../schema/tool-contract.schema.json) — every `*_args`,
   `*_result`, `run_view`, `tool_error` and the `x-error-codes` registry live there.
 - Fixtures (the e2e oracle): [`tests/e2e/testdata/tool-io`](../tests/e2e/testdata/tool-io).
+- Reader's contract for what `evidence_files` points at: [docs/evidence-format.md](evidence-format.md)
+  (the on-disk layout, the record fields, and jq recipes for whoever writes a scanner).
 - Related decisions: [ADR-0002](adr/0002-evidence-jsonl-contract.md) (the on-disk contract, already
   accepted), [ADR-0003](adr/0003-commit-isolation-and-serialization.md) (commit isolation and the workspace
   lock), [ADR-0004](adr/0004-run-lifecycle.md) (run lifecycle).
@@ -141,7 +143,7 @@ environment probes → isolation → capacity/lock → register the run and star
 | `started_at` / `finished_at` | UTC `Z` instant | started / terminal | `finished_at` present exactly when terminal |
 | `duration_ms` | int ≥ 0 | when known | total when terminal, elapsed while running |
 | `exit_code` | int 0..=255 | when act had one | absent for `pending`/`running` |
-| `evidence_files` | relpath[] | always | JSONL published this run, relative to the evidence root; `[]` is normal |
+| `evidence_files` | relpath[] | always | JSONL published this run, relative to the evidence root; `[]` is normal. What is inside them: [evidence-format.md](evidence-format.md) |
 | `evidence_record_count` | int ≥ 0 | always | records across those files |
 | `log_tail` | string | always | redacted; `<WORKSPACE>` / `<EVIDENCE>` substituted for absolute roots; ≤ `log_tail_bytes` |
 | `warnings` | string[] | always | open vocabulary, §7 |

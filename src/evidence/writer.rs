@@ -658,9 +658,10 @@ pub enum GitignoreOutcome {
 ///   `git check-ignore`, so publishing never spawns a subprocess; ADR-0002 §6.4 names
 ///   `check-ignore` as the equivalent check for a human or CI that wants git's own
 ///   answer.
-/// * **Never reorders or rewrites** existing content: the file is opened in append mode,
-///   and the only bytes written are a newline (if the last line lacked one), the marker
-///   comment (if absent) and the missing patterns.
+/// * **Never reorders or rewrites** existing content: the file is opened in append mode
+///   (and created when the repository has no `.gitignore` yet, which is what "appends to
+///   an empty list" has to mean), and the only bytes written are a newline (if the last
+///   line lacked one), the marker comment (if absent) and the missing patterns.
 /// * **Silent when not a repo or not writable**, both of which are ordinary situations
 ///   rather than failures.
 ///
@@ -713,6 +714,7 @@ pub fn update_gitignore(evidence_root: &Path) -> Result<GitignoreOutcome, String
     }
 
     let mut file = std::fs::OpenOptions::new()
+        .create(true)
         .append(true)
         .open(&gitignore)
         .map_err(|reason| {
@@ -1419,6 +1421,38 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(repo.path().join(".gitignore")).expect("gitignore"),
             once
+        );
+    }
+
+    #[test]
+    fn gitignore_is_created_when_the_repository_has_none_yet() {
+        // The everyday case: a clean clone with no .gitignore at all. Before the
+        // `.create(true)` this path failed with ENOENT, so the ADR-0002 §6.4 promise
+        // ("appends .evidence/ to that workspace's .gitignore") silently did not happen
+        // on exactly the repositories that most needed it.
+        let home = tempfile::tempdir().expect("tempdir");
+        let repo = crate::fixtures::TestRepo::init(&home.path().join("repo"));
+        let root = repo.path().join(".evidence");
+        std::fs::create_dir_all(&root).expect("evidence dir");
+        assert!(
+            !repo.path().join(".gitignore").exists(),
+            "the fixture must start without a .gitignore"
+        );
+
+        assert_eq!(
+            update_gitignore(&root),
+            Ok(GitignoreOutcome::Updated),
+            "no .gitignore is not a reason to do nothing"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join(".gitignore")).expect("gitignore"),
+            format!("{GITIGNORE_MARKER}\n.evidence/\n.act-mcp.lock\n"),
+            "a created file is the same block an appended one gets"
+        );
+        assert_eq!(
+            update_gitignore(&root),
+            Ok(GitignoreOutcome::AlreadyListed),
+            "and it is idempotent from there too"
         );
     }
 

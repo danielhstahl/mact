@@ -51,8 +51,9 @@ act was spawned reports `kill: {method: \"none\"}`. The call blocks up to `--can
 with `run_status`. A cancel arriving after act exited is a no-op reported as `already_terminal`, \
 because the outcome and the evidence were already determined. Note the asymmetry in what a \
 cancelled run leaves behind: a caller cancel **skips evidence extraction** (you asked for the \
-measurement to stop, so no numbers are published), while a `timed_out` run publishes what it \
-collected - keep a slow run's numbers by raising `timeout_secs` instead. Errors: \
+measurement to stop, so nothing is published under `.evidence/` and its `evidence_files` is \
+empty), while a `timed_out` run publishes what it collected - keep a slow run's numbers by \
+raising `timeout_secs` instead. Errors: \
 `invalid_arguments`, `unknown_argument`, `run_not_found`.";
 
 /// The argument names.
