@@ -13,6 +13,7 @@ use std::{
     time::Duration,
 };
 
+use axum::http::HeaderValue;
 use clap::Args;
 use thiserror::Error;
 
@@ -21,11 +22,53 @@ use crate::workspace::{IsolationPolicy, SemVer, MAX_GIT_TIMEOUT, MINIMUM_ACT_VER
 /// Default bind address. Loopback only, always: act-mcp has **no
 /// authentication** (mact-f1w.5), and `act` runs arbitrary container images, so
 /// a routable bind is not a mode we ship. `--bind` to anything else is rejected
-/// by [`Config::build`]; the rest of the hardening is mact-f1w.13.
+/// by [`Config::build`] unless the operator passes
+/// [`--i-understand-this-is-unauthenticated`][UNAUTH_ACK_FLAG], which also makes
+/// [`crate::server::serve`] shout about it at startup.
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
 
 /// Default `act` binary name, looked up on `PATH` with [`which`] at boot.
 pub const DEFAULT_ACT_BINARY: &str = "act";
+
+/// The spelled-out acknowledgement a non-loopback bind needs, without the leading `--`.
+///
+/// This is the string to grep for (mact-f1w.13): the flag, its env var, the refusal
+/// message, and the startup banner all name it, so "what did we make the operator type
+/// for that?" is one search away.
+pub const UNAUTH_ACK_FLAG: &str = "i-understand-this-is-unauthenticated";
+
+/// The env-var spelling of [`UNAUTH_ACK_FLAG`].
+pub const UNAUTH_ACK_ENV: &str = "ACT_MCP_I_UNDERSTAND_THIS_IS_UNAUTHENTICATED";
+
+/// The `Host` values accepted unless `--allow-host` adds to them.
+///
+/// rmcp's own default, kept deliberately: `localhost` (what an `ssh -L` client sends),
+/// the v4 loopback literal, and the v6 loopback literal. A request naming any other
+/// `Host:` is refused with 403, which is what closes DNS rebinding against a local
+/// server — a browser tricked into resolving `evil.example` to `127.0.0.1` still sends
+/// `Host: evil.example`.
+pub const DEFAULT_ALLOWED_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
+
+/// Default `--max-request-body-bytes`.
+///
+/// A `run_workflow` call is a workflow name, a job id, and a handful of `--var`/`--input`
+/// pairs; a megabyte is already two orders of magnitude more than a legitimate call, and
+/// the bound is what stops one unauthenticated local process from making this one buffer
+/// a request the size of its RAM.
+pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 1_048_576;
+/// Smallest `--max-request-body-bytes`: below this even a call with a couple of `--var`
+/// pairs starts failing, so lowering it further is always a mistake.
+pub const MIN_REQUEST_BODY_BYTES: usize = 1_024;
+/// Largest `--max-request-body-bytes`: past it the limit is decorative.
+pub const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+/// The header the opt-in shared secret travels in (`--require-session-token`).
+pub const SESSION_TOKEN_HEADER: &str = "x-act-mcp-token";
+
+/// Default `--max-run-dirs`: how many `.evidence/runs/<run_id>/` directories may exist
+/// before a new run is refused. Retention (§ ADR-0004 §7.3) prunes *memory*, never disk,
+/// so without a cap one long-lived server fills the disk a run at a time.
+pub const DEFAULT_MAX_RUN_DIRS: usize = 1_000;
 
 /// Resolved, validated, immutable boot configuration.
 ///
@@ -68,6 +111,84 @@ pub struct Config {
     /// subprocess and a fragile table parse per call. It is an operator opt-in for
     /// repositories where "act refuses this file" is worth paying that for.
     pub list_tasks_act_cross_check: bool,
+    /// The resolved bind address **is not loopback** and the operator said so with
+    /// [`--i-understand-this-is-unauthenticated`][UNAUTH_ACK_FLAG].
+    ///
+    /// `false` means the loopback rule is in force all the way down: [`crate::server::serve`]
+    /// re-checks the socket it actually bound and refuses to run on a routable address.
+    pub non_loopback_bind_acknowledged: bool,
+    /// `Host:` values accepted (see [`DEFAULT_ALLOWED_HOSTS`] and `--allow-host`).
+    /// Never empty: an empty list means "accept any `Host`" in rmcp, which is the
+    /// DNS-rebinding hole.
+    pub allowed_hosts: Vec<String>,
+    /// `Origin:` values accepted (`--allow-origin`). Usually empty, and empty means
+    /// *refuse every request that carries an `Origin`*, not "allow any": see
+    /// [`Config::origin_validation_enforced`].
+    pub allowed_origins: Vec<String>,
+    /// `--max-request-body-bytes`: a larger POST is answered 413 by rmcp.
+    pub max_request_body_bytes: usize,
+    /// The opt-in shared secret ([`SESSION_TOKEN_HEADER`]), `None` when the feature is off.
+    pub session_token: Option<SessionToken>,
+    /// Cap on `.evidence/runs/` directories (`--max-run-dirs`); see
+    /// [`crate::registry::RunPolicy::max_run_dirs`].
+    pub max_run_dirs: usize,
+}
+
+/// The opt-in shared secret, held so it cannot be printed by accident.
+///
+/// A secret that shows up in a `Debug` line is a secret in the log file, and `Config`
+/// *is* debug-logged at boot (`tracing::debug!(?config, …)`). So this newtype renders as
+/// `SessionToken(<redacted>)` and hands out its value only through [`SessionToken::expose`]
+/// / [`SessionToken::header_value`].
+#[derive(Clone)]
+pub struct SessionToken(String);
+
+impl SessionToken {
+    /// Wrap a token the operator supplied. Empty is not a token.
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Option<Self> {
+        let value = value.into();
+        if value.is_empty() {
+            None
+        } else {
+            Some(Self(value))
+        }
+    }
+
+    /// Generate 128 bits from `/dev/urandom`, hex.
+    ///
+    /// Same source as the run id's random suffix uses. There is no
+    /// fallback here on purpose: a secret that silently becomes `clock() ^ pid` is worse
+    /// than a boot that fails, and this one is only generated when the operator asked for
+    /// the feature.
+    #[must_use]
+    pub fn generate() -> Option<Self> {
+        let mut bytes = [0u8; 16];
+        let mut file = std::fs::File::open("/dev/urandom").ok()?;
+        std::io::Read::read_exact(&mut file, &mut bytes)
+            .ok()
+            .map(|()| Self(bytes.iter().map(|byte| format!("{byte:02x}")).collect()))
+    }
+
+    /// The raw value, for the comparison and for the one boot log line that prints it.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    /// What a client must send in [`SESSION_TOKEN_HEADER`].
+    pub fn header_value(&self) -> HeaderValue {
+        // The alphabet is hex (generated) or whatever the operator passed; an
+        // ASCII-visible value is validated at boot, so this cannot fail in practice and
+        // a rejection at first request would be a worse failure than one at boot.
+        HeaderValue::from_str(&self.0).unwrap_or_else(|_| HeaderValue::from_static("invalid"))
+    }
+}
+
+impl std::fmt::Debug for SessionToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SessionToken(<redacted len={}>)", self.0.len())
+    }
 }
 
 /// Reasons `act-mcp serve` refuses to start.
@@ -99,9 +220,28 @@ pub enum ConfigError {
     BindUnresolved { value: String, reason: String },
 
     #[error(
-        "--bind {addr} is not a loopback address, and act-mcp has no authentication\n  fix: bind 127.0.0.1 or ::1 — act runs arbitrary containers behind this endpoint"
+        "--bind {addr} is not a loopback address, and act-mcp has no authentication\n  fix: bind 127.0.0.1 or ::1 — act runs arbitrary containers behind this endpoint\n  fix: if this endpoint is deliberately reachable from elsewhere, pass --{} and expect a startup warning", UNAUTH_ACK_FLAG
     )]
     BindNotLoopback { addr: SocketAddr },
+
+    #[error("--bind {0} is loopback-only by default; the resolved socket was not loopback")]
+    ResolvedBindNotLoopback(SocketAddr),
+
+    #[error("--allow-origin {value:?} is not an origin\n  fix: a full origin with a scheme, such as http://localhost:8080 (or ://…:* to match any port)")]
+    OriginInvalid { value: String },
+
+    #[error("--session-token was empty; pass a value, or use --require-session-token to have one generated")]
+    SessionTokenEmpty,
+
+    #[error(
+        "--max-request-body-bytes {value} is out of range ({}..={})",
+        MIN_REQUEST_BODY_BYTES,
+        MAX_REQUEST_BODY_BYTES
+    )]
+    MaxRequestBodyOutOfRange { value: usize },
+
+    #[error("--max-run-dirs must be at least 1; 0 would refuse every run before it started")]
+    MaxRunDirsZero,
 
     #[error(
         "act binary not found: `{requested}`\n  fix: install act (https://github.com/nektos/act) or pass --act-binary /absolute/path/to/act"
@@ -240,6 +380,73 @@ pub struct ServeArgs {
         help = "Container-runtime socket to check reachability against, instead of the runtime default. `-` (act's 'do not mount it') is treated as unset here."
     )]
     pub container_daemon_socket: Option<String>,
+
+    /// The [`UNAUTH_ACK_FLAG`] escape hatch: bind outside loopback on purpose.
+    #[arg(
+        long = "i-understand-this-is-unauthenticated",
+        env = "ACT_MCP_I_UNDERSTAND_THIS_IS_UNAUTHENTICATED",
+        default_value_t = false,
+        help = "Allow --bind to name a non-loopback address. act-mcp has NO authentication and act runs arbitrary container images: everyone who can route to this socket can run workflows here."
+    )]
+    pub i_understand_this_is_unauthenticated: bool,
+
+    /// Extra `Host:` values to accept (repeatable). See `docs/security.md`.
+    #[arg(
+        long = "allow-host",
+        value_name = "HOST",
+        env = "ACT_MCP_ALLOWED_HOSTS",
+        value_delimiter = ',',
+        help = "Accept this Host value in addition to localhost/127.0.0.1/::1; use host or host:port. Name the front-end here for a deliberate port-forward, e.g. --allow-host gateway.internal:8080."
+    )]
+    pub allow_host: Vec<String>,
+
+    /// Extra browser `Origin:` values to accept (repeatable).
+    #[arg(
+        long = "allow-origin",
+        value_name = "ORIGIN",
+        env = "ACT_MCP_ALLOWED_ORIGINS",
+        value_delimiter = ',',
+        help = "Accept this browser Origin in addition to none. Must carry a scheme, e.g. http://localhost:8080; a request with any other Origin is refused."
+    )]
+    pub allow_origin: Vec<String>,
+
+    /// `--max-request-body-bytes`.
+    #[arg(
+        long,
+        value_name = "BYTES",
+        default_value_t = DEFAULT_MAX_REQUEST_BODY_BYTES,
+        env = "ACT_MCP_MAX_REQUEST_BODY_BYTES",
+        help = "Largest POST body accepted at /mcp; a larger one is answered 413."
+    )]
+    pub max_request_body_bytes: usize,
+
+    /// Opt-in shared secret.
+    #[arg(
+        long,
+        default_value_t = false,
+        env = "ACT_MCP_REQUIRE_SESSION_TOKEN",
+        help = "Require every request to carry the shared secret header x-act-mcp-token, and generate one at boot (logged once on stderr). Cheap defence against another local process using this endpoint; pair it with --session-token to supply your own."
+    )]
+    pub require_session_token: bool,
+
+    /// The shared secret value to require (implies [`ServeArgs::require_session_token`]).
+    #[arg(
+        long,
+        value_name = "TOKEN",
+        env = "ACT_MCP_SESSION_TOKEN",
+        help = "Require exactly this x-act-mcp-token value instead of a generated one."
+    )]
+    pub session_token: Option<String>,
+
+    /// `--max-run-dirs`.
+    #[arg(
+        long,
+        value_name = "COUNT",
+        default_value_t = DEFAULT_MAX_RUN_DIRS,
+        env = "ACT_MCP_MAX_RUN_DIRS",
+        help = "Refuse a new run once this many .evidence/runs/<run_id>/ directories exist; run retention prunes memory, never disk, so this is the disk guard."
+    )]
+    pub max_run_dirs: usize,
 }
 
 impl Default for ServeArgs {
@@ -256,6 +463,13 @@ impl Default for ServeArgs {
             minimum_act_version: MINIMUM_ACT_VERSION.to_owned(),
             container_daemon_socket: None,
             list_tasks_act_cross_check: false,
+            i_understand_this_is_unauthenticated: false,
+            allow_host: Vec::new(),
+            allow_origin: Vec::new(),
+            max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
+            require_session_token: false,
+            session_token: None,
+            max_run_dirs: DEFAULT_MAX_RUN_DIRS,
         }
     }
 }
@@ -264,12 +478,13 @@ impl Config {
     /// Resolve and validate CLI args into a boot configuration.
     ///
     /// Check order: workspace exists → workspace has `.github` → bind resolves
-    /// and is loopback → `act` resolves → log dir is usable. The order is
-    /// deliberate: the cheapest and most likely-mistaken check runs first, so
+    /// and is loopback (or was explicitly acknowledged) → `act` resolves → log dir is
+    /// usable → the request-shape and network-surface limits are inside their bounds. The
+    /// order is deliberate: the cheapest and most likely-mistaken check runs first, so
     /// the first error a user sees is the one they caused.
     pub fn build(args: &ServeArgs) -> Result<Self, ConfigError> {
         let workspace = Self::resolve_workspace(args)?;
-        let bind = Self::resolve_bind(&args.bind)?;
+        let bind = Self::resolve_bind(&args.bind, args.i_understand_this_is_unauthenticated)?;
         let act_binary = Self::resolve_act(&args.act_binary)?;
 
         let isolation = Self::resolve_isolation(&args.isolation)?;
@@ -298,6 +513,13 @@ impl Config {
             }
         }
 
+        let session_token =
+            Self::resolve_session_token(args.require_session_token, args.session_token.as_deref())?;
+        let allowed_origins = Self::resolve_allowed_origins(&args.allow_origin)?;
+        if args.max_run_dirs == 0 {
+            return Err(ConfigError::MaxRunDirsZero);
+        }
+
         Ok(Self {
             workspace,
             evidence_dir,
@@ -310,7 +532,68 @@ impl Config {
             minimum_act_version,
             container_daemon_socket,
             list_tasks_act_cross_check: args.list_tasks_act_cross_check,
+            non_loopback_bind_acknowledged: !is_loopback(bind.ip()),
+            allowed_hosts: Self::resolve_allowed_hosts(bind, &args.allow_host),
+            allowed_origins,
+            max_request_body_bytes: Self::resolve_max_request_body(args.max_request_body_bytes)?,
+            session_token,
+            max_run_dirs: args.max_run_dirs,
         })
+    }
+
+    /// The shipped defaults for every field mact-f1w.13 owns, assembled in one place.
+    ///
+    /// The point is that exactly one function decides what the *default* network surface is,
+    /// and both [`Config::build`] (through the same helpers) and every test/embedder
+    /// constructor go through it, so a test cannot accidentally exercise a server with a
+    /// wider surface than the shipped one — the kind of gap where "the test passed" and
+    /// "the binary is safe" come apart.
+    #[must_use]
+    pub fn with_hardened_defaults(
+        workspace: PathBuf,
+        evidence_dir: PathBuf,
+        act_binary: PathBuf,
+    ) -> Self {
+        let bind = DEFAULT_BIND
+            .parse::<SocketAddr>()
+            .expect("the default bind parses");
+        Self {
+            workspace,
+            evidence_dir,
+            bind,
+            act_binary,
+            log_dir: None,
+            isolation: IsolationPolicy::default(),
+            allow_dirty_worktree: false,
+            git_timeout: crate::workspace::DEFAULT_GIT_TIMEOUT,
+            minimum_act_version: MINIMUM_ACT_VERSION
+                .parse::<SemVer>()
+                .expect("the pinned floor is a valid version"),
+            container_daemon_socket: None,
+            list_tasks_act_cross_check: false,
+            non_loopback_bind_acknowledged: false,
+            allowed_hosts: Self::resolve_allowed_hosts(bind, &[]),
+            allowed_origins: Vec::new(),
+            max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
+            session_token: None,
+            max_run_dirs: DEFAULT_MAX_RUN_DIRS,
+        }
+    }
+
+    /// The run-supervisor policy this boot configuration implies.
+    ///
+    /// ADR-0004 §11's defaults, with the one cap this ticket owns overlaid. The other knobs
+    /// stay with the ADR defaults on purpose: they are the budgets ADR-0004 pins, and moving
+    /// them onto the CLI is a ticket that also has to re-check the interaction rules in
+    /// [`crate::registry::RunPolicy::validate`] — whereas `--max-run-dirs` exists only to keep
+    /// a long-lived local server from filling the disk one run at a time.
+    #[cfg(unix)]
+    #[must_use]
+    pub fn run_policy(&self) -> crate::registry::RunPolicy {
+        crate::registry::RunPolicy {
+            max_run_dirs: self.max_run_dirs,
+            ..crate::registry::RunPolicy::default()
+        }
     }
 
     fn resolve_isolation(value: &str) -> Result<IsolationPolicy, ConfigError> {
@@ -384,7 +667,7 @@ impl Config {
         Ok(std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()))
     }
 
-    fn resolve_bind(value: &str) -> Result<SocketAddr, ConfigError> {
+    fn resolve_bind(value: &str, acknowledged: bool) -> Result<SocketAddr, ConfigError> {
         // `127.0.0.1:8080` and `[::1]:8080` parse directly; `localhost:8080`
         // needs a lookup. Anything that resolves to port 0 is rejected below,
         // so a bare hostname cannot silently become "pick a random port".
@@ -412,10 +695,101 @@ impl Config {
         // Port 0 is allowed and useful: the kernel picks a free port and
         // `serve` logs the real one. A typo like `--bind 127.0.0.1` (no port)
         // never gets here — it fails to resolve above.
-        if !is_loopback(addr.ip()) {
+        if !is_loopback(addr.ip()) && !acknowledged {
             return Err(ConfigError::BindNotLoopback { addr });
         }
         Ok(addr)
+    }
+
+    /// The `Host:` allowlist: [`DEFAULT_ALLOWED_HOSTS`] plus the bound address when the
+    /// operator knowingly bound somewhere else, plus every `--allow-host`.
+    ///
+    /// The bound IP is added only in the acknowledged non-loopback case: an operator who
+    /// passed [`UNAUTH_ACK_FLAG`] has already accepted that the endpoint is reachable, and
+    /// refusing `Host: 192.168.1.20:8080` on that socket would be a surprise rather than a
+    /// defence (the DNS-rebinding argument is about loopback, where a browser can be tricked
+    /// into dialing `127.0.0.1` for an attacker's domain name). A DNS *name* still has to
+    /// be named with `--allow-host`, so a port-forward or a reverse proxy is an explicit
+    /// act, not an accident — see `docs/security.md`.
+    fn resolve_allowed_hosts(bind: SocketAddr, extra: &[String]) -> Vec<String> {
+        let mut hosts: Vec<String> = DEFAULT_ALLOWED_HOSTS
+            .iter()
+            .map(|host| (*host).to_owned())
+            .collect();
+        if !is_loopback(bind.ip()) {
+            hosts.push(bind.ip().to_string());
+        }
+        for host in extra {
+            let trimmed = host.trim();
+            if !trimmed.is_empty() && !hosts.iter().any(|seen| seen.eq_ignore_ascii_case(trimmed)) {
+                hosts.push(trimmed.to_owned());
+            }
+        }
+        hosts
+    }
+
+    /// Validate every `--allow-origin` before it reaches rmcp.
+    ///
+    /// An origin without a scheme is refused rather than guessed at: rmcp treats a
+    /// schemeless entry as no match at all, so silently accepting one would produce a
+    /// allowlist entry that never fires — the subtle failure this whole ticket is against.
+    fn resolve_allowed_origins(extra: &[String]) -> Result<Vec<String>, ConfigError> {
+        extra
+            .iter()
+            .map(|raw| {
+                let value = raw.trim();
+                let scheme_and_host = value.split_once("://").and_then(|(scheme, rest)| {
+                    let host = rest.trim_end_matches('/');
+                    let scheme_ok =
+                        scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https");
+                    // `:*` is rmcp's "any port" spelling; a host may not contain `/`.
+                    let host_ok = !host.is_empty()
+                        && !host.contains('/')
+                        && !host.contains(char::is_whitespace);
+                    if scheme_ok && host_ok {
+                        Some(value.to_owned())
+                    } else {
+                        None
+                    }
+                });
+                scheme_and_host.ok_or_else(|| ConfigError::OriginInvalid { value: raw.clone() })
+            })
+            .collect()
+    }
+
+    /// `--require-session-token` / `--session-token`: the supplied value wins, and asking
+    /// to require one without naming it gets a generated one (which the server logs once,
+    /// because a secret nobody can read is not a control).
+    fn resolve_session_token(
+        require: bool,
+        supplied: Option<&str>,
+    ) -> Result<Option<SessionToken>, ConfigError> {
+        match supplied {
+            Some("") => Err(ConfigError::SessionTokenEmpty),
+            Some(value) => Ok(SessionToken::new(value)),
+            None if require => SessionToken::generate()
+                .map(Some)
+                .ok_or(ConfigError::SessionTokenEmpty),
+            None => Ok(None),
+        }
+    }
+
+    fn resolve_max_request_body(bytes: usize) -> Result<usize, ConfigError> {
+        if !(MIN_REQUEST_BODY_BYTES..=MAX_REQUEST_BODY_BYTES).contains(&bytes) {
+            return Err(ConfigError::MaxRequestBodyOutOfRange { value: bytes });
+        }
+        Ok(bytes)
+    }
+
+    /// Whether requests carrying an `Origin:` must match [`Config::allowed_origins`].
+    ///
+    /// Always `true`, and the point of naming it is that it is *not* a knob: an MCP client
+    /// is not a browser, so an `Origin` header on this endpoint means either a browser (the
+    /// cross-site-request case) or someone probing. A local browser-based MCP client that
+    /// really needs to reach us names itself with `--allow-origin`.
+    #[must_use]
+    pub const fn origin_validation_enforced(&self) -> bool {
+        true
     }
 
     fn resolve_act(requested: &Path) -> Result<PathBuf, ConfigError> {
@@ -619,36 +993,181 @@ mod tests {
     #[test]
     fn bind_must_be_loopback() {
         for value in ["0.0.0.0:8080", "10.1.2.3:8080", "8.8.8.8:1194"] {
-            let err = Config::resolve_bind(value).expect_err("must reject non-loopback");
+            let err = Config::resolve_bind(value, false).expect_err("must reject non-loopback");
             assert!(
                 matches!(err, ConfigError::BindNotLoopback { .. }),
                 "{value} → {err}"
+            );
+            // The refusal names the only way past it, so the message is the documentation.
+            assert!(
+                err.to_string().contains(UNAUTH_ACK_FLAG),
+                "the refusal must name --{UNAUTH_ACK_FLAG}: {err}"
             );
         }
     }
 
     #[test]
+    fn a_non_loopback_bind_needs_the_acknowledgement_and_says_so_in_the_config() {
+        // With the flag the bind is legal, and the config records that it was acknowledged
+        // — that flag is what `server::serve` re-checks against the socket it bound.
+        let acked = Config::resolve_bind("0.0.0.0:8080", true).expect("acknowledged bind is legal");
+        assert_eq!(acked.ip().to_string(), "0.0.0.0");
+        assert!(!is_loopback(acked.ip()));
+        // A loopback bind never needs it, and never sets the flag.
+        assert!(Config::resolve_bind("127.0.0.1:8080", false).is_ok());
+    }
+
+    #[test]
+    fn the_network_surface_defaults_are_the_narrow_ones() {
+        let workspace = fixture_workspace();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let act = stub_act(tmp.path(), "act");
+        let config = Config::build(&args_with(workspace.path(), &act)).expect("valid config");
+
+        assert_eq!(
+            config.allowed_hosts,
+            vec!["localhost", "127.0.0.1", "::1"],
+            "the default Host allowlist is loopback-only and never empty"
+        );
+        assert!(
+            config.allowed_origins.is_empty(),
+            "no browser origin is allowed by default"
+        );
+        assert!(config.origin_validation_enforced());
+        assert_eq!(
+            config.max_request_body_bytes,
+            DEFAULT_MAX_REQUEST_BODY_BYTES
+        );
+        assert_eq!(config.max_run_dirs, DEFAULT_MAX_RUN_DIRS);
+        assert!(
+            config.session_token.is_none(),
+            "the shared secret is opt-in, not on by default"
+        );
+        assert!(!config.non_loopback_bind_acknowledged);
+    }
+
+    #[test]
+    fn allowed_hosts_grows_only_where_it_is_told_to() {
+        let workspace = fixture_workspace();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let act = stub_act(tmp.path(), "act");
+
+        let mut args = args_with(workspace.path(), &act);
+        args.allow_host = vec!["gateway.internal:8080".to_owned(), " localhost ".to_owned()];
+        let config = Config::build(&args).expect("a port-forward is a legal thing to configure");
+        assert_eq!(
+            config.allowed_hosts,
+            vec!["localhost", "127.0.0.1", "::1", "gateway.internal:8080"],
+            "--allow-host appends, dedupes, and never replaces the loopback defaults"
+        );
+
+        // An acknowledged non-loopback bind adds its own address: the operator who said
+        // "expose it" should not then have to guess why clients get 403.
+        let mut args = args_with(workspace.path(), &act);
+        args.bind = "127.0.0.1:0".to_owned();
+        args.i_understand_this_is_unauthenticated = true;
+        assert!(
+            !Config::build(&args)
+                .expect("loopback needs no acknowledgement, but tolerates it")
+                .non_loopback_bind_acknowledged
+        );
+    }
+
+    #[test]
+    fn origins_and_limits_are_validated_at_boot() {
+        let workspace = fixture_workspace();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let act = stub_act(tmp.path(), "act");
+
+        let mut args = args_with(workspace.path(), &act);
+        args.allow_origin = vec!["evil.example".to_owned()];
+        let err = Config::build(&args).expect_err("an origin needs its scheme");
+        assert!(matches!(err, ConfigError::OriginInvalid { .. }));
+        assert!(err.to_string().contains("--allow-origin"));
+
+        let mut args = args_with(workspace.path(), &act);
+        args.allow_origin = vec![
+            "http://localhost:8080".to_owned(),
+            "http://127.0.0.1:*".to_owned(),
+        ];
+        assert_eq!(
+            Config::build(&args)
+                .expect("a scheme-qualified origin is fine")
+                .allowed_origins,
+            vec!["http://localhost:8080", "http://127.0.0.1:*"]
+        );
+
+        for bytes in [1usize, 999, MAX_REQUEST_BODY_BYTES + 1] {
+            let mut args = args_with(workspace.path(), &act);
+            args.max_request_body_bytes = bytes;
+            assert!(matches!(
+                Config::build(&args).expect_err("out of bounds is a typo worth reporting"),
+                ConfigError::MaxRequestBodyOutOfRange { .. }
+            ));
+        }
+
+        let mut args = args_with(workspace.path(), &act);
+        args.max_run_dirs = 0;
+        assert!(matches!(
+            Config::build(&args).expect_err("0 refuses every run"),
+            ConfigError::MaxRunDirsZero
+        ));
+
+        // The shared secret: generated on request, supplied by hand, never empty.
+        let mut args = args_with(workspace.path(), &act);
+        args.require_session_token = true;
+        let generated = Config::build(&args)
+            .expect("requiring a token generates one")
+            .session_token
+            .expect("generated");
+        assert_eq!(generated.expose().len(), 32, "128 bits of hex");
+        assert_ne!(generated.expose(), generated.expose().to_uppercase());
+        assert!(
+            !format!("{generated:?}").contains(generated.expose()),
+            "Debug must not print the secret: {generated:?}"
+        );
+
+        let mut args = args_with(workspace.path(), &act);
+        args.session_token = Some("hunter2hunter2".to_owned());
+        assert_eq!(
+            Config::build(&args)
+                .expect("a supplied token implies requiring it")
+                .session_token
+                .expect("kept")
+                .expose(),
+            "hunter2hunter2"
+        );
+
+        let mut args = args_with(workspace.path(), &act);
+        args.session_token = Some(String::new());
+        assert!(matches!(
+            Config::build(&args).expect_err("empty is not a secret"),
+            ConfigError::SessionTokenEmpty
+        ));
+    }
+
+    #[test]
     fn bind_accepts_loopback_forms_and_rejects_portless_or_rubbish() {
         assert_eq!(
-            Config::resolve_bind("[::1]:8080")
+            Config::resolve_bind("[::1]:8080", false)
                 .expect("v6 loopback")
                 .port(),
             8080
         );
-        assert!(Config::resolve_bind("localhost:8080").is_ok());
+        assert!(Config::resolve_bind("localhost:8080", false).is_ok());
         // No port at all is a typo, not "port 0".
         assert!(matches!(
-            Config::resolve_bind("127.0.0.1"),
+            Config::resolve_bind("127.0.0.1", false),
             Err(ConfigError::BindUnresolved { .. })
         ));
         // Port 0 means "any free port"; `serve` logs the port it got.
         assert_eq!(
-            Config::resolve_bind("127.0.0.1:0")
+            Config::resolve_bind("127.0.0.1:0", false)
                 .expect("port 0 is legal")
                 .port(),
             0
         );
-        assert!(Config::resolve_bind("not an address").is_err());
+        assert!(Config::resolve_bind("not an address", false).is_err());
     }
 
     #[test]

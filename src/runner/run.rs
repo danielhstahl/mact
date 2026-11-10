@@ -343,9 +343,11 @@ impl RunningActRun {
         self.shared.pgid
     }
 
-    /// The argv act was spawned with; secrets are already absent by construction (they are
-    /// in the secret file, never argv). `meta.json.act.argv` records exactly this
-    /// (ADR-0002 §1.3).
+    /// The argv act was spawned with, with every redaction needle already replaced:
+    /// declared secrets are absent by construction (they are in the secret file, never argv),
+    /// and a `--var`/`--input`/`--env` value whose name says secret is masked here too
+    /// (mact-f1w.13). `meta.json.act.argv` records exactly this (ADR-0002 §1.3), so the
+    /// durable copy of the command line cannot become the place a credential survives.
     #[must_use]
     pub fn argv(&self) -> &[String] {
         &self.argv
@@ -788,12 +790,7 @@ pub(super) async fn start(
         "act spawned"
     );
 
-    let secret_values: Vec<&str> = spec
-        .secrets
-        .values()
-        .map(String::as_str)
-        .filter(|value| !value.is_empty())
-        .collect();
+    let secret_values: Vec<String> = spec.redaction_needles();
     let (exited, _) = watch::channel(false);
     let shared = Arc::new(RunShared {
         run_id: spec.run_id.to_string(),
@@ -801,9 +798,9 @@ pub(super) async fn start(
         limits: Arc::clone(&limits),
         log_path: spec.run_dir.join("act.jsonl"),
         ring: Mutex::new(LogRing::new(limits.log_tail_ring_bytes)),
-        disk_redactor: Redactor::secrets(secret_values.iter().copied()),
+        disk_redactor: Redactor::secrets(secret_values.iter().map(String::as_str)),
         tail_redactor: Redactor::secrets_and_paths(
-            secret_values.iter().copied(),
+            secret_values.iter().map(String::as_str),
             &spec.workspace,
             &spec.evidence_dir,
         ),
@@ -846,7 +843,17 @@ pub(super) async fn start(
     Ok(RunningActRun {
         shared,
         child,
-        argv,
+        // The argv handed back for `meta.json.act.argv` is the *redacted* one: act's argv
+        // carries every `--var`/`--input`/`--env` value, and a value whose name says secret is
+        // exactly what must not end up in a durable file under `.evidence` (mact-f1w.13). The
+        // process was spawned with `argv` above; only this record is filtered, so the audit
+        // trail says what we ran without storing what we were paid to keep out.
+        argv: {
+            let redactor = Redactor::secrets(secret_values.iter().map(String::as_str));
+            argv.iter()
+                .map(|argument| redactor.apply_str(argument).into_owned())
+                .collect()
+        },
         pid,
         started_at,
         started_instant,

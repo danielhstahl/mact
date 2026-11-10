@@ -31,7 +31,8 @@ use act_mcp::{
     about = "MCP server (protocol 2026-07-28) that runs GitHub Actions workflows with act",
     long_about = "Runs nektos/act workflows for an MCP client over streamable HTTP on loopback, \
                   pinning MCP protocol revision 2026-07-28 and writing .evidence JSONL.\n\n\
-                  There is no authentication: the server refuses to bind anywhere but loopback.",
+                  There is no authentication: the server binds loopback only, and binding anywhere \
+                  else needs --i-understand-this-is-unauthenticated.",
     propagate_version = true
 )]
 struct Cli {
@@ -123,9 +124,11 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
     tracing::debug!(?config, "configuration accepted");
 
     // One supervisor per process: it owns every run, so a run outlives the request that
-    // started it and is visible to every session (ADR-0004 §2, D-1).
+    // started it and is visible to every session (ADR-0004 §2, D-1). Built from the boot
+    // config so `--max-run-dirs` (mact-f1w.13) reaches the cap that actually enforces it.
     let supervisor = std::sync::Arc::new(
-        RunSupervisor::new().context("the built-in run-lifecycle defaults are unusable")?,
+        RunSupervisor::with_policy(config.run_policy())
+            .context("the built-in run-lifecycle defaults are unusable")?,
     );
 
     let shutdown = CancellationToken::new();

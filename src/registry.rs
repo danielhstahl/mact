@@ -138,6 +138,15 @@ pub struct RunPolicy {
     /// `--max-timeout-secs`: the effective ceiling for a caller's `timeout_secs` **and**
     /// for every per-category default (§4.3).
     pub max_timeout: Duration,
+    /// mact-f1w.13 `--max-run-dirs`: how many `.evidence/runs/<run_id>/` directories may
+    /// exist at once.
+    ///
+    /// Run retention (§7.3) prunes *memory*, and the epic's own rule is that a published
+    /// file is never deleted, so nothing else bounds the disk footprint of a long-lived
+    /// server. Past the cap a new run is refused with
+    /// [`StartError::TooManyRunDirs`] — a typed, explained refusal instead of a machine with
+    /// a full filesystem and a run that died halfway.
+    pub max_run_dirs: usize,
     /// `--default-timeout-secs`: per-category overrides; `'*'` is the fallback (§4.3).
     pub default_timeouts: HashMap<String, Duration>,
 }
@@ -169,6 +178,7 @@ impl Default for RunPolicy {
             log_tail_ring_bytes: crate::runner::DEFAULT_LOG_TAIL_RING_BYTES,
             max_run_log_bytes: crate::runner::DEFAULT_MAX_RUN_LOG_BYTES,
             max_timeout: Duration::from_secs(DEFAULT_MAX_TIMEOUT_SECS),
+            max_run_dirs: crate::config::DEFAULT_MAX_RUN_DIRS,
             default_timeouts,
         }
     }
@@ -230,6 +240,10 @@ impl RunPolicy {
             return Err(PolicyError::MaxTimeout {
                 value: self.max_timeout,
             });
+        }
+        // 1 rather than 0: a cap of 0 would refuse every run, including the first one ever.
+        if self.max_run_dirs == 0 {
+            return Err(PolicyError::MaxRunDirs);
         }
         for (category, timeout) in &self.default_timeouts {
             if timeout.is_zero() || timeout > &self.max_timeout {
@@ -303,6 +317,8 @@ pub enum PolicyError {
     RetentionAge,
     #[error("--max-timeout-secs {value:?} is out of range (1..={COMPILED_MAX_TIMEOUT_SECS} s compiled limit)")]
     MaxTimeout { value: Duration },
+    #[error("--max-run-dirs must be at least 1; 0 would refuse every run before it started")]
+    MaxRunDirs,
     #[error("--default-timeout-secs {category}={value:?} is not inside 1..=--max-timeout-secs ({ceiling:?})")]
     DefaultTimeout {
         category: String,
@@ -409,6 +425,19 @@ pub enum StartError {
         /// The OS's words.
         reason: String,
     },
+    /// mact-f1w.13: `.evidence/runs/` already holds `--max-run-dirs` run directories.
+    ///
+    /// Nothing in the epic deletes a published run dir (ADR-0002 §6.2), so this is the disk
+    /// guard that replaces deletion: refuse the run, name the directory to prune, and leave
+    /// the machine alone.
+    TooManyRunDirs {
+        /// The configured cap.
+        limit: usize,
+        /// How many run directories were there when the request arrived.
+        existing: usize,
+        /// The directory to prune (or the operator raises `--max-run-dirs`).
+        path: PathBuf,
+    },
     /// The plan's `run_id` is not the pinned shape (defence in-depth: the id is
     /// server-generated, so this is a bug report, not a user error).
     BadRunId(String),
@@ -426,6 +455,10 @@ impl StartError {
             Self::LockUnavailable { .. } => ("internal_error", true),
             Self::TooManyRuns { .. } => ("too_many_runs", true),
             Self::RunDir { .. } => ("runner_internal_error", true),
+            // The same wire code as the in-flight cap: from the caller's side both are
+            // "this server will not take another run right now", and both are retryable
+            // once the operator prunes or a run finishes.
+            Self::TooManyRunDirs { .. } => ("too_many_runs", true),
             Self::BadRunId(_) => ("internal_error", false),
         }
     }
@@ -453,6 +486,16 @@ impl StartError {
             ),
             Self::RunDir { path, reason } => format!(
                 "the run's evidence directory {} could not be created: {reason}",
+                path.display()
+            ),
+            Self::TooManyRunDirs {
+                limit,
+                existing,
+                path,
+            } => format!(
+                "{} already holds {existing} run directories and the limit is {limit}; run \
+                 retention never deletes published evidence, so prune that directory (or raise \
+                 --max-run-dirs) before another run starts",
                 path.display()
             ),
             Self::BadRunId(value) => format!("`{value}` is not a valid run_id (ADR-0002 §1.2)"),
@@ -489,6 +532,23 @@ impl StartError {
                 let mut detail = Map::new();
                 detail.insert("limit".to_owned(), Value::from(*limit));
                 detail.insert("active".to_owned(), Value::from(*active));
+                detail
+            }
+            Self::TooManyRunDirs {
+                limit,
+                existing,
+                path,
+            } => {
+                let mut detail = Map::new();
+                detail.insert("limit".to_owned(), Value::from(*limit));
+                detail.insert("existing".to_owned(), Value::from(*existing));
+                // Which directory to prune is the actionable half of the answer; ADR-0001 §9
+                // keeps the absolute path in the local log rather than on the wire, and the
+                // runs dir is `<evidence>/runs` either way.
+                detail.insert(
+                    "runs_dir".to_owned(),
+                    Value::String(path.display().to_string()),
+                );
                 detail
             }
             Self::RunDir { path, reason } => {
@@ -780,6 +840,22 @@ impl RunSupervisor {
     }
 }
 
+/// How many run directories `runs_root` holds (the `--max-run-dirs` check, mact-f1w.13).
+///
+/// One `read_dir`, no recursion: the cap counts the runs this server has accumulated, and a
+/// checker that walked every run's contents would be the expensive thing a request has to
+/// wait for. A missing or unreadable root counts as zero — a first run has no directory yet,
+/// and "could not count them" must not read as "at the cap".
+fn count_run_dirs(runs_root: &std::path::Path) -> usize {
+    match std::fs::read_dir(runs_root) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_dir())
+            .count(),
+        Err(_) => 0,
+    }
+}
+
 /// Why [`RunSupervisor::build`] refused.
 #[allow(missing_docs, reason = "the inner variants carry the text")]
 #[derive(Debug, Error)]
@@ -985,6 +1061,28 @@ impl RunSupervisor {
                 limit: self.inner.policy.max_concurrent_runs,
                 active,
             });
+        }
+
+        // The disk-side sibling of that cap (mact-f1w.13): memory retention bounds the run
+        // records, this bounds the directories they left behind. Checked before the lock for
+        // the same reason as the concurrency cap — a refusal should not touch anything.
+        if let Some(runs_root) = plan.spec.run_dir.parent() {
+            let limit = self.inner.policy.max_run_dirs;
+            let existing = count_run_dirs(runs_root);
+            if existing >= limit {
+                tracing::warn!(
+                    run_id = %run_id,
+                    limit,
+                    existing,
+                    runs_dir = %runs_root.display(),
+                    "refusing a run: the evidence runs directory is at its cap"
+                );
+                return Err(StartError::TooManyRunDirs {
+                    limit,
+                    existing,
+                    path: runs_root.to_path_buf(),
+                });
+            }
         }
 
         // L2: the `flock`. Busy is answered in microseconds (§6.5) — there is no queue and

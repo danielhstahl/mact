@@ -8,9 +8,7 @@ use std::{net::SocketAddr, path::Path, sync::Arc};
 
 use act_mcp::{
     config::{ServeArgs, DEFAULT_BIND},
-    server,
-    workspace::{SemVer, DEFAULT_GIT_TIMEOUT},
-    Config,
+    server, Config,
 };
 
 #[allow(unused_imports, reason = "only some test binaries need the supervisor")]
@@ -107,23 +105,12 @@ impl Fixture {
 /// act and no docker), and a workspace the boot gate would refuse (no `.github`, so
 /// only the tool's own `workflows_dir_missing` can be reached).
 pub fn config_at(workspace: &Path, act_binary: &Path) -> Arc<Config> {
-    Arc::new(Config {
-        workspace: canonical(workspace),
-        evidence_dir: workspace.join(".evidence"),
-        bind: DEFAULT_BIND.parse().expect("loopback default parses"),
-        act_binary: act_binary.to_path_buf(),
-        log_dir: None,
-        isolation: Default::default(),
-        allow_dirty_worktree: false,
-        git_timeout: DEFAULT_GIT_TIMEOUT,
-        minimum_act_version: SemVer {
-            major: 0,
-            minor: 2,
-            patch: 62,
-        },
-        container_daemon_socket: None,
-        list_tasks_act_cross_check: false,
-    })
+    let workspace = canonical(workspace);
+    Arc::new(Config::with_hardened_defaults(
+        workspace.clone(),
+        workspace.join(".evidence"),
+        act_binary.to_path_buf(),
+    ))
 }
 
 /// A running server on an ephemeral loopback port.

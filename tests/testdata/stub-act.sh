@@ -16,6 +16,9 @@
 #   STUB_STDERR_FILE      file whose contents are copied to stderr verbatim
 #   STUB_ECHO_SECRET      name of an env var whose value is printed inside a JSON line
 #                         (the redaction test: the runner must eat it before storage)
+#   STUB_ECHO_ARGV        set: print every argv token inside one JSON line (a `--var` value
+#                         reaches act as argv, so this is how a test proves the runner
+#                         redacted it before the log was written)
 #   STUB_REPEAT N         print N padding-bearing JSON lines (log-cap test)
 #   STUB_NO_NEWLINE       print bytes with no trailing newline (partial last line)
 #   STUB_CHILD_SECS N     background a `sleep N` (proves the whole group is killed)
@@ -59,6 +62,20 @@ fi
 if [ -n "${STUB_ECHO_SECRET:-}" ]; then
   value=$(printenv "$STUB_ECHO_SECRET" || true)
   emit "{\"level\":\"info\",\"msg\":\"token is ${value}\",\"time\":\"2026-11-10T00:42:03Z\"}"
+fi
+
+# mact-f1w.13: the redaction needle list has more than one source now — a `--var`/`--input`
+# whose name says secret arrives through argv, and a credential already in the server's own
+# environment arrives through the job's `env`. A test that wants to prove both were caught
+# needs both echoed in the same run.
+if [ -n "${STUB_ECHO_SECRET2:-}" ]; then
+  value=$(printenv "$STUB_ECHO_SECRET2" || true)
+  emit "{\"level\":\"info\",\"msg\":\"second is ${value}\",\"time\":\"2026-11-10T00:42:04Z\"}"
+fi
+
+if [ -n "${STUB_ECHO_ARGV:-}" ]; then
+  joined=$(printf '%s ' "$@")
+  emit "{\"level\":\"info\",\"msg\":\"argv ${joined}\",\"time\":\"2026-11-10T00:42:05Z\"}"
 fi
 
 if [ -n "${STUB_REPEAT:-}" ]; then

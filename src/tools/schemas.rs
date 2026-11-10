@@ -68,6 +68,9 @@ pub fn task_id() -> Value {
 }
 
 /// `$defs/category`.
+///
+/// The pattern and the length limit are the ones `tools::category` enforces in Rust; they are
+/// spelled once (see that module for why the Rust check is not optional).
 #[must_use]
 pub fn category() -> Value {
     json!({
@@ -76,8 +79,8 @@ pub fn category() -> Value {
                         produces no evidence. ADR-0001 section 2.4 states the reason.",
         "type": "string",
         "minLength": 1,
-        "maxLength": 64,
-        "pattern": r"^[a-z][a-z0-9_]*$"
+        "maxLength": super::category::MAX_CATEGORY_BYTES,
+        "pattern": super::category::SCHEMA_PATTERN
     })
 }
 

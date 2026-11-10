@@ -33,6 +33,14 @@ fn serve_command(args: &[&str]) -> Command {
         .env_remove("ACT_MCP_LOG_DIR")
         .env_remove("EVIDENCE_DIR")
         .env_remove("RUST_LOG")
+        // The mact-f1w.13 surface: none of these may come from the ambient environment.
+        .env_remove("ACT_MCP_I_UNDERSTAND_THIS_IS_UNAUTHENTICATED")
+        .env_remove("ACT_MCP_ALLOWED_HOSTS")
+        .env_remove("ACT_MCP_ALLOWED_ORIGINS")
+        .env_remove("ACT_MCP_MAX_REQUEST_BODY_BYTES")
+        .env_remove("ACT_MCP_REQUIRE_SESSION_TOKEN")
+        .env_remove("ACT_MCP_SESSION_TOKEN")
+        .env_remove("ACT_MCP_MAX_RUN_DIRS")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -145,6 +153,12 @@ async fn boot_fails_when_the_bind_is_not_loopback() {
     assert!(
         stderr.contains("loopback"),
         "stderr should explain the loopback rule: {stderr}"
+    );
+    // The refusal has to point at the only way past it, or the operator will read "bind
+    // loopback" as a bug rather than a policy (mact-f1w.13).
+    assert!(
+        stderr.contains("i-understand-this-is-unauthenticated"),
+        "stderr should name the acknowledgement flag: {stderr}"
     );
     assert_eq!(stdout, "", "stdout must stay empty");
 }

@@ -1316,21 +1316,13 @@ jobs:
     /// no act binary present" is asserted by every test in this module, not by one.
     fn config_for(repo: &crate::fixtures::TestRepo) -> Config {
         Config {
-            workspace: repo.path().to_path_buf(),
-            evidence_dir: repo.path().join(".evidence"),
-            bind: "127.0.0.1:0".parse().expect("loopback"),
             act_binary: std::path::Path::new("/nonexistent/act").to_path_buf(),
-            log_dir: None,
-            isolation: Default::default(),
-            allow_dirty_worktree: false,
             git_timeout: Duration::from_secs(1),
-            minimum_act_version: crate::workspace::SemVer {
-                major: 0,
-                minor: 2,
-                patch: 62,
-            },
-            container_daemon_socket: None,
-            list_tasks_act_cross_check: false,
+            ..Config::with_hardened_defaults(
+                repo.path().to_path_buf(),
+                repo.path().join(".evidence"),
+                std::path::Path::new("/nonexistent/act").to_path_buf(),
+            )
         }
     }
 

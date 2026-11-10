@@ -10,6 +10,12 @@
 
 use std::{borrow::Cow, net::SocketAddr, sync::Arc, time::Duration};
 
+use axum::{
+    extract::{Request, State},
+    http::StatusCode,
+    middleware::{self, Next},
+    response::{IntoResponse as _, Response},
+};
 use rmcp::{
     handler::server::wrapper::{Json, Parameters},
     model::{Implementation, JsonObject, ProtocolVersion, ServerCapabilities, ServerConfig},
@@ -20,18 +26,28 @@ use rmcp::{
     ServerHandler,
 };
 use tokio_util::sync::CancellationToken;
-use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
 
-use crate::config::Config;
+use crate::config::{Config, SESSION_TOKEN_HEADER};
 use crate::registry::RunSupervisor;
 use crate::tools::{cancel_run, list_tasks, run_status, ToolError};
 
 /// Server name reported in `serverInfo` / `discover` responses.
 pub const SERVER_NAME: &str = "act-mcp";
 
-/// Path the MCP endpoint is mounted at.
+/// The path the MCP endpoint is mounted at.
 pub const MCP_ROUTE: &str = "/mcp";
+
+/// The SSE keep-alive interval for the streams this server does open.
+///
+/// Not left at rmcp's default by accident. With `json_response = true` a normal tool call
+/// is a plain JSON response and there is no stream to keep alive; a stream appears only
+/// when a handler notifies mid-call. For a single local client the interval is not about
+/// beating an idle proxy timeout (there is no proxy on loopback) — it is how a half-closed
+/// client is noticed at all: the keep-alive write fails, the stream ends, and the session
+/// and its buffers go instead of lingering until the run's own timeout. 15 s is rmcp's own
+/// number, written down here rather than inherited.
+pub const SSE_KEEP_ALIVE: Duration = Duration::from_secs(15);
 
 /// The one protocol revision this server speaks.
 ///
@@ -228,10 +244,11 @@ pub fn mcp_service(
     supervisor: Arc<RunSupervisor>,
     cancellation_token: CancellationToken,
 ) -> StreamableHttpService<ActMcp, LocalSessionManager> {
+    let http = http_config(Arc::clone(&config), cancellation_token);
     StreamableHttpService::new(
         move || Ok(ActMcp::new(Arc::clone(&config), Arc::clone(&supervisor))),
         Arc::new(LocalSessionManager::default()),
-        http_config(cancellation_token),
+        http,
     )
 }
 
@@ -240,37 +257,125 @@ pub fn mcp_service(
 /// Kept separate from [`serve`] so tests can mount the identical stack on an
 /// ephemeral port without going through the CLI.
 ///
-/// The only layer so far is request tracing (`RUST_LOG=debug` turns it on).
-/// mact-f1w.13 adds the Host/Origin guards here.
+/// Two layers, in this order: request tracing (`RUST_LOG=debug`), and — only when the
+/// operator turned it on — the shared-secret check in [`require_session_token`]. Everything
+/// else that refuses a request happens inside rmcp's service, because that is where its
+/// `Host`/`Origin` allowlists and its body-size limit live; see [`http_config`].
 pub fn router(
     config: Arc<Config>,
     supervisor: Arc<RunSupervisor>,
     cancellation_token: CancellationToken,
 ) -> axum::Router {
-    axum::Router::new()
-        .nest_service(
-            MCP_ROUTE,
-            mcp_service(config, supervisor, cancellation_token),
-        )
-        .layer(ServiceBuilder::new().layer(TraceLayer::new_for_http()))
+    let router = axum::Router::new().nest_service(
+        MCP_ROUTE,
+        mcp_service(Arc::clone(&config), supervisor, cancellation_token),
+    );
+    // The shared-secret gate goes on first (it is the outermost layer because it is the
+    // cheapest answer: no session, no parse, no handler for a request that never proves
+    // itself). Tracing wraps everything, so a refused request still gets its trace line.
+    let router = match config.session_token.as_ref() {
+        Some(token) => router.layer(middleware::from_fn_with_state(
+            token.expose().to_owned(),
+            require_session_token,
+        )),
+        None => router,
+    };
+    router.layer(TraceLayer::new_for_http())
 }
 
-fn http_config(cancellation_token: CancellationToken) -> StreamableHttpServerConfig {
-    // Defaults are right for us (allowed_hosts stays loopback-only:
-    // localhost/127.0.0.1/::1), with two deliberate changes:
-    //
-    // * legacy_session_mode = false. The pinned revision has no sessions, and a
-    //   server that could also speak the old session handshake is a second
-    //   behaviour to test for no benefit. (--allow-legacy-sessions was dropped:
-    //   with one supported version there is nothing for it to unlock.)
-    // * json_response = true. Stateless request/response tools answer with
-    //   application/json instead of an SSE stream, which keeps a plain client
-    //   working; rmcp still falls back to SSE if a handler ever streams
-    //   notifications mid-call, which is what run_workflow will want later.
+/// Refuse any request that does not carry the shared secret in [`SESSION_TOKEN_HEADER`].
+///
+/// Installed only when `--require-session-token`/`--session-token` is set (see
+/// [`crate::config::ServeArgs::require_session_token`] for the decision and its limits).
+/// The comparison is `secrets_equal`, and the presented value is never logged: a middleware
+/// that prints the secret it is checking would put it in the log file it is meant to keep
+/// secrets out of.
+// `Result<Response, Response>` is the shape axum's middleware contract asks for; boxing the
+// error would be a wrapper nobody unwraps.
+#[allow(
+    clippy::result_large_err,
+    reason = "axum middleware returns a Response either way"
+)]
+async fn require_session_token(
+    State(expected): State<String>,
+    request: Request,
+    next: Next,
+) -> Result<Response, Response> {
+    let presented = request
+        .headers()
+        .get(SESSION_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok());
+    match presented {
+        Some(given) if secrets_equal(given, &expected) => Ok(next.run(request).await),
+        other => {
+            // `presented` (not its value) is the whole diagnostic: "no header" and "wrong
+            // header" are the same answer to the caller and must stay the same answer here
+            // too, or the log becomes a probe oracle.
+            tracing::warn!(
+                path = %request.uri(),
+                header_present = other.is_some(),
+                "refused a request that did not carry the required shared secret"
+            );
+            Err((
+                StatusCode::UNAUTHORIZED,
+                format!("act-mcp requires the `{SESSION_TOKEN_HEADER}` header on every request\n"),
+            )
+                .into_response())
+        }
+    }
+}
+
+/// Length-checked, then XOR-folded: no early return on the first differing byte.
+///
+/// Leaking the length of the secret is accepted — it is fixed at boot and hex, and the
+/// attack this guards against is timing a local loopback socket byte by byte.
+fn secrets_equal(presented: &str, expected: &str) -> bool {
+    let (presented, expected) = (presented.as_bytes(), expected.as_bytes());
+    if presented.len() != expected.len() {
+        return false;
+    }
+    let mut difference = 0u8;
+    for (given, want) in presented.iter().zip(expected) {
+        difference |= given ^ want;
+    }
+    difference == 0
+}
+
+/// rmcp's transport config, assembled from [`Config`].
+///
+/// The library defaults were chosen for a remote server with browser clients; this is a
+/// local, unauthenticated endpoint, so every field that encodes a trust decision is set
+/// here from the boot config rather than inherited:
+///
+/// * `legacy_session_mode = false`. The pinned revision has no sessions, and a server that
+///   could also speak the old session handshake is a second behaviour to test for no
+///   benefit (`--allow-legacy-sessions` was dropped for the same reason).
+/// * `json_response = true`. Stateless request/response tools answer with `application/json`
+///   instead of an SSE stream, which keeps a plain client working; rmcp still falls back to
+///   SSE if a handler streams notifications mid-call, which is what `run_workflow` will
+///   want later.
+/// * `allowed_hosts` comes from [`Config::allowed_hosts`] and is **never empty** — an empty
+///   allowlist is rmcp's "accept any Host" mode, which is the DNS-rebinding hole.
+/// * `allowed_origins` + `enforce_origin_validation`: enforcement is always on, so an empty
+///   allowlist refuses every request that carries an `Origin` rather than allowing any of
+///   them (see [`Config::origin_validation_enforced`]).
+/// * `max_request_body_bytes` from `--max-request-body-bytes`: an oversized POST is
+///   answered 413 while the body streams, so it does not matter that HTTP/1.1 chunking or
+///   a lying `Content-Length` could otherwise size the buffer.
+/// * `sse_keep_alive` is [`SSE_KEEP_ALIVE`], explained there.
+fn http_config(
+    config: Arc<Config>,
+    cancellation_token: CancellationToken,
+) -> StreamableHttpServerConfig {
     StreamableHttpServerConfig::default()
         .with_legacy_session_mode(false)
         .with_json_response(true)
         .with_cancellation_token(cancellation_token)
+        .with_allowed_hosts(config.allowed_hosts.iter().map(String::as_str))
+        .with_allowed_origins(config.allowed_origins.iter().map(String::as_str))
+        .enforce_origin_validation()
+        .with_max_request_body_bytes(config.max_request_body_bytes)
+        .with_sse_keep_alive(Some(SSE_KEEP_ALIVE))
 }
 
 /// Bind, log the address, and serve until `shutdown` is cancelled.
@@ -295,7 +400,13 @@ pub async fn serve(
 ) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     let local = listener.local_addr()?;
+    // The second, independent loopback check: `Config::build` already refused a routable
+    // `--bind` without the acknowledgement, and this one checks the address the socket
+    // actually got. Between the two, "it is only listening on loopback" is a property of the
+    // running process rather than of the argument parser.
+    guard_resolved_bind(&config, local)?;
     let url = endpoint_url(local);
+    log_startup_surface(&config, local, &url);
     tracing::info!(
         %url,
         bind = %local,
@@ -303,6 +414,10 @@ pub async fn serve(
         evidence_dir = %config.evidence_dir.display(),
         act_binary = %config.act_binary.display(),
         protocol_version = %SUPPORTED_PROTOCOL_VERSION,
+        allowed_hosts = ?config.allowed_hosts,
+        allowed_origins = ?config.allowed_origins,
+        max_request_body_bytes = config.max_request_body_bytes,
+        shared_secret_required = config.session_token.is_some(),
         "act-mcp listening"
     );
 
@@ -348,6 +463,71 @@ pub async fn serve(
 /// How long in-flight requests get to finish after a shutdown signal before
 /// their sessions are cancelled.
 const SHUTDOWN_DRAIN_BUDGET: Duration = Duration::from_secs(1);
+
+/// Refuse to run on a socket that is reachable from elsewhere, unless the operator said so.
+///
+/// The condition is checked against the *bound* address, not the requested one: the
+/// difference is exactly the case this guards (a config assembled by an embedder that never
+/// went through [`Config::build`], a `--bind` that resolved to something surprising).
+///
+/// # Errors
+///
+/// [`crate::config::ConfigError::ResolvedBindNotLoopback`] when the socket is not loopback
+/// and [`--i-understand-this-is-unauthenticated`][crate::config::UNAUTH_ACK_FLAG] was not
+/// passed.
+fn guard_resolved_bind(config: &Config, local: SocketAddr) -> anyhow::Result<()> {
+    if crate::config::is_loopback(local.ip()) || config.non_loopback_bind_acknowledged {
+        return Ok(());
+    }
+    Err(
+        anyhow::Error::new(crate::config::ConfigError::ResolvedBindNotLoopback(local)).context(
+            "refusing to serve: the socket this process bound is reachable from other machines",
+        ),
+    )
+}
+
+/// Say out loud, at startup, what the network surface is.
+///
+/// Loud on purpose: the whole ticket is that "HTTP but no auth, single local machine" is a
+/// claim about the socket, and an operator who widened it must not be able to miss that they
+/// did. A loopback boot gets one info line; everything else gets a banner.
+fn log_startup_surface(config: &Config, local: SocketAddr, url: &str) {
+    if crate::config::is_loopback(local.ip()) {
+        tracing::info!(
+            bind = %local,
+            "bind is loopback-only: only this machine can reach the endpoint (there is no authentication)"
+        );
+    } else {
+        // The acknowledged case. Multi-line because a single WARN line scrolls away.
+        tracing::warn!(
+            bind = %local,
+            %url,
+            allowed_hosts = ?config.allowed_hosts,
+            concat!(
+                "############################################################\n",
+                "# act-mcp is LISTENING ON A NON-LOOPBACK ADDRESS and has NO  \n",
+                "# AUTHENTICATION. Everyone who can route to this socket can   \n",
+                "# run containerised workflows on this machine via act.       \n",
+                "# You passed --i-understand-this-is-unauthenticated; this    \n",
+                "# line is the record that the exposure was deliberate.       \n",
+                "# Requests must still name this socket in Host (see           \n",
+                "# --allow-host, docs/security.md) and no browser Origin is    \n",
+                "# allowed unless you passed --allow-origin.                   \n",
+                "############################################################"
+            ),
+        );
+    }
+
+    if let Some(token) = &config.session_token {
+        // Deliberately logged: a secret no client can learn is not a control. It is logged
+        // once, at boot, on stderr — the same channel every other startup fact takes.
+        tracing::info!(
+            header = SESSION_TOKEN_HEADER,
+            token = token.expose(),
+            "shared secret required on every request (printed once; keep it out of logs you share)"
+        );
+    }
+}
 
 /// The URL a client should dial. Loopback, so plain HTTP is fine (and TLS here
 /// would only hide that there is no authentication).

@@ -26,7 +26,10 @@
 //!    `PDEATHSIG` is set as defense-in-depth (see `tests/runner_pdeathsig.rs`).
 //! 3. **Secrets are gone before they are stored.** Redaction happens at the log source, so
 //!    neither `act.jsonl` nor `log_tail` nor any file a run produces can carry one
-//!    (ADR-0001 §2.7), and secret *values* are never argv at all.
+//!    (ADR-0001 §2.7), and secret *values* are never argv at all. The needle list is
+//!    [`RunSpec::redaction_needles`]: every declared secret, plus anything whose *name* says
+//!    secret among the caller's `--var`/`--input`/`--env`, the operator's act-process env,
+//!    and this server's own environment (mact-f1w.13).
 //! 4. **Both log bounds are enforced.** `act.jsonl` is capped by `--max-run-log-bytes`
 //!    with a truncate-with-marker, and the in-memory tail ring is `--log-tail-ring-bytes`
 //!    so `log_tail` is always servable from memory (ADR-0004 §7.1).
@@ -64,8 +67,9 @@ pub use argv::{
     EVENTPATH_FLAG,
 };
 pub use log::{
-    fit_log_tail, truncation_marker, LogRing, Redactor, MAX_LOG_LINE_BYTES, MAX_LOG_TAIL_BYTES,
-    REDACTION_MARKER,
+    fit_log_tail, name_looks_secret, secret_named_values, truncation_marker, LogRing, Redactor,
+    MAX_LOG_LINE_BYTES, MAX_LOG_TAIL_BYTES, MIN_HEURISTIC_NEEDLE_BYTES, REDACTION_MARKER,
+    SECRET_NAME_MARKERS,
 };
 pub use process::{default_run_scratch_dir, group_exists};
 pub use run::{
@@ -599,6 +603,61 @@ impl RunSpec {
         self.scratch_dir.join("secrets.env")
     }
 
+    /// Every value this run must not let reach a log, a tool result, or an evidence file.
+    ///
+    /// Three sources, in three different confidence classes:
+    ///
+    /// 1. **declared secrets** (`secrets`, i.e. what goes into `secrets.env`) — every value,
+    ///    with no length floor, because the caller told us it is a secret;
+    /// 2. **caller-supplied values** (`--var`, `--input`, `--matrix`, the job's `--env`) —
+    ///    only the pairs whose *key* looks secret ([`name_looks_secret`]), because a `--var`
+    ///    is routinely a build flag and masking all of them would mask the log rather than
+    ///    the secret (see [`MIN_HEURISTIC_NEEDLE_BYTES`] for the length floor);
+    /// 3. **the environment** — the act process env and this server's own `std::env`, again
+    ///    name-matched. This is what catches `GITHUB_TOKEN`/`NPM_TOKEN` that the operator
+    ///    exported for act's image pulls and never declared to the tool: act-mcp passes its
+    ///    own environment through (ADR-0003 §7.6), so a job that `env`s its surroundings
+    ///    would otherwise paste the operator's credentials into `act.jsonl`.
+    ///
+    /// Deliberately *not* included: every value of every map. The redactor runs on every line
+    /// of a chatty build, and a needle list built from all env values both masks ordinary
+    /// output and makes the cost of a line proportional to the size of the environment.
+    #[must_use]
+    pub fn redaction_needles(&self) -> Vec<String> {
+        let mut needles: Vec<String> = self
+            .secrets
+            .values()
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .collect();
+
+        let mut name_matched: Vec<&str> = Vec::new();
+        for map in [
+            &self.vars,
+            &self.inputs,
+            &self.matrix,
+            &self.extra_env,
+            &self.process_env,
+        ] {
+            name_matched.extend(secret_named_values(
+                map.iter()
+                    .map(|(key, value)| (key.as_str(), value.as_str())),
+            ));
+        }
+        // The server's own environment, read once per run rather than per line.
+        let server_env: Vec<(String, String)> = std::env::vars().collect();
+        name_matched.extend(secret_named_values(
+            server_env
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str())),
+        ));
+        needles.extend(name_matched.into_iter().map(str::to_owned));
+
+        needles.sort();
+        needles.dedup();
+        needles
+    }
+
     /// `<run-scratch>/<run>/inert.conf` (ADR-0003 §7.3, §7.7).
     #[must_use]
     pub fn inert_file_path(&self) -> PathBuf {
@@ -887,6 +946,50 @@ mod tests {
             "000000",
             "the hex tail looks like a fallback that never got entropy"
         );
+    }
+
+    #[test]
+    fn the_redaction_needles_are_the_declared_secrets_plus_everything_named_like_one() {
+        let mut spec = spec();
+        spec.secrets = BTreeMap::from([
+            ("GITHUB_TOKEN".to_owned(), "ghp_declared".to_owned()),
+            ("SHORT".to_owned(), "x".to_owned()),
+            ("EMPTY".to_owned(), String::new()),
+        ]);
+        // A caller that passes a credential as a `--var` gets it redacted by name, and one
+        // that passes an ordinary build flag does not get its log shredded.
+        spec.vars = BTreeMap::from([
+            ("NPM_TOKEN".to_owned(), "npm-from-var".to_owned()),
+            ("BUILD_MODE".to_owned(), "release-debug".to_owned()),
+        ]);
+        spec.inputs = BTreeMap::from([("RELEASE_PASSWORD".to_owned(), "p@ssw0rd-long".to_owned())]);
+        spec.extra_env =
+            BTreeMap::from([("PLAIN_ENV".to_owned(), "not-a-secret-value".to_owned())]);
+        // Short values under the name rule are skipped on purpose (see the constant's doc).
+        spec.process_env = BTreeMap::from([("API_KEY".to_owned(), "ab".to_owned())]);
+
+        let needles = spec.redaction_needles();
+        for wanted in ["ghp_declared", "x", "npm-from-var", "p@ssw0rd-long"] {
+            assert!(
+                needles.contains(&wanted.to_owned()),
+                "{wanted} missing: {needles:?}"
+            );
+        }
+        for not_wanted in ["release-debug", "not-a-secret-value", "ab", ""] {
+            assert!(
+                !needles.contains(&not_wanted.to_owned()),
+                "{not_wanted:?} must not be a needle: {needles:?}"
+            );
+        }
+        // The server's own environment is scanned by name too, and a value taken from it can
+        // only be an operator's, so assert through the seam rather than the ambient env.
+        std::env::set_var("ACT_MCP_TEST_ONLY_SECRET", "from-the-server-env");
+        assert!(spec
+            .redaction_needles()
+            .contains(&"from-the-server-env".to_owned()));
+        std::env::remove_var("ACT_MCP_TEST_ONLY_SECRET");
+        // Deterministic and deduped: the same spec twice gives the same list.
+        assert_eq!(spec.redaction_needles(), spec.redaction_needles());
     }
 
     #[test]

@@ -25,6 +25,39 @@ use std::path::Path;
 /// harness (`.15`) can assert on it instead of guessing a spelling.
 pub const REDACTION_MARKER: &str = "***REDACTED***";
 
+/// Name fragments that make an operator- or caller-supplied **key** worth treating as if
+/// its value were a secret (mact-f1w.13).
+///
+/// Matching is on the uppercased key, so `GITHUB_TOKEN`, `npm_token`, `AWS_SECRET_ACCESS_KEY`
+/// and `MyPassword` all match. It is deliberately a list of name fragments rather than a
+/// denylist of variable names: the pattern that actually leaks a credential is the one named
+/// `SOMETHING_TOKEN_WEIRD`, and a name-based rule catches the next one for free. A false
+/// positive costs one masked token in a log; a false negative is a credential in a file that
+/// gets committed.
+pub const SECRET_NAME_MARKERS: [&str; 12] = [
+    "SECRET",
+    "TOKEN",
+    "PASSWORD",
+    "PASSWD",
+    "PASS",
+    "CREDENTIAL",
+    "CREDENTIALS",
+    "AUTH",
+    "APIKEY",
+    "PRIVATE_KEY",
+    "PRIVATE",
+    "ACCESS_KEY",
+];
+
+/// Shortest value the name-based rule ([`name_looks_secret`]) will redact.
+///
+/// Without a floor, a variable named `SESSION` and valued `1` would turn every `1` in every
+/// log into `***REDACTED***` — a redactor that eats the log is worse than one that misses a
+/// short value, and the whole point of the name rule is best-effort defence for values we
+/// were not told about. Values the caller declared in the `secrets` map have **no** floor:
+/// those are declared secrets, however short.
+pub const MIN_HEURISTIC_NEEDLE_BYTES: usize = 8;
+
 /// Largest single log line kept before it is split. act's `--json` lines are small;
 /// this exists for the pathological case (a job `cat`ting a 200 MiB file into a step),
 /// where "one line" would otherwise be the buffer size.
@@ -33,6 +66,34 @@ pub const MAX_LOG_LINE_BYTES: usize = 1_048_576;
 /// Wire bound on `log_tail` (ADR-0001 §2.8 / `$defs/log_tail_bytes` maximum), which is
 /// also the default ring size — the reason `run_status` can answer a tail from memory.
 pub const MAX_LOG_TAIL_BYTES: usize = 65_536;
+
+/// Whether `key`'s name says its value should be treated as a secret.
+pub fn name_looks_secret(key: &str) -> bool {
+    let upper = key.to_ascii_uppercase();
+    SECRET_NAME_MARKERS
+        .iter()
+        .any(|marker| upper.contains(marker))
+}
+
+/// The values of every `(key, value)` pair whose name looks secret and is long enough to be
+/// worth redacting ([`MIN_HEURISTIC_NEEDLE_BYTES`]).
+///
+/// The name filter is what keeps this cheap: a redactor applies every needle to every line,
+/// so blindly taking all values would both mask ordinary output and slow every line of a
+/// chatty build.
+pub fn secret_named_values<'a>(
+    pairs: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Vec<&'a str> {
+    pairs
+        .into_iter()
+        .filter(|(key, value)| {
+            name_looks_secret(key)
+                && value.len() >= MIN_HEURISTIC_NEEDLE_BYTES
+                && !value.contains('\0')
+        })
+        .map(|(_, value)| value)
+        .collect()
+}
 
 /// A byte-level find-and-replace set, applied to every log line before it is stored.
 ///
@@ -348,6 +409,41 @@ pub fn truncation_marker(bytes_written: u64, dropped_lines: u64, cap: u64) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_name_rule_reads_env_style_keys() {
+        for key in [
+            "GITHUB_TOKEN",
+            "npm_token",
+            "AWS_SECRET_ACCESS_KEY",
+            "MyPassword",
+            "DOCKER_AUTH_CONFIG",
+            "private_key_pem",
+        ] {
+            assert!(name_looks_secret(key), "{key} should look secret");
+        }
+        for key in [
+            "PATH",
+            "HOME",
+            "RUN_ID",
+            "ACTMCP_EVIDENCE_OUT",
+            "STUB_SLEEP",
+            "CI",
+            "LANG",
+        ] {
+            assert!(!name_looks_secret(key), "{key} should not look secret");
+        }
+    }
+
+    #[test]
+    fn the_name_rule_skips_values_too_short_to_redact() {
+        let pairs = [("GITHUB_TOKEN", "1"), ("NPM_TOKEN", "0123456789")];
+        assert_eq!(
+            secret_named_values(pairs),
+            vec!["0123456789"],
+            "a 1-byte needle would redact every 1 in the log"
+        );
+    }
 
     #[test]
     fn redactor_replaces_every_occurrence_of_a_secret() {
