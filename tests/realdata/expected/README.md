@@ -14,9 +14,14 @@ What a golden adds is everything *else* about the record: key order, the envelop
 duration. Those are contract details too, and a property test does not pin them. So:
 
 ```sh
+scripts/smoke-real-act.sh --prereq-only        # first: can this machine run real act at all?
 scripts/smoke-real-act.sh --write-expected     # real mode only; the stub is refused
 $EDITOR tests/realdata/expected/*.jsonl        # read every line: you are signing for it
 ```
+
+The first line is not ceremony. `--write-expected` needs a run that happened, a run needs a
+container runtime, and a machine without one is described in docs/testing.md §7 "The
+pre-flight" — which is also where the nightly runner is named as the place this does work.
 
 `--write-expected` writes one normalised file per kind (`coverage.jsonl`, `benchmark.jsonl`).
 **Normalised** means the volatile values became named placeholders — `{RUN_ID}`, `{COMMIT}`,

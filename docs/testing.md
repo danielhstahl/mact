@@ -303,6 +303,31 @@ documented at the test: the ignored test is the gate, and `the_smoke_script_pass
 rotting. If you are on a machine without `jq`, the stub self-check says `SKIP` out loud instead
 of pretending.
 
+### The pre-flight, because most machines cannot do this
+
+Real mode is not a flag you can wish into existence: it needs `act` **and** a live container
+runtime. This repository's own development sandboxes have neither — no `docker` binary, no
+socket, no `DOCKER_HOST` — and they are unprivileged (`uid 100`, empty capability set,
+`unshare -Urm` → `EPERM`), so rootless docker and podman are not startable either. That is a
+fact about the *machine*, not about the code, and finding it out an hour into a session is pure
+waste. Ask the machine first; it costs two seconds:
+
+```sh
+scripts/smoke-real-act.sh --prereq-only   # the argv check, plus the probe the server itself uses
+```
+
+If it says "nothing answered `docker info …`", stop: no flag, stub or amount of patience
+makes a real capture on this host. Either do it where a runtime exists — for this repository,
+that means the nightly's `ubuntu-24.04` runner: dispatch
+`.github/workflows/nightly-real-act.yml`, download the `smoke-artefacts-*` upload, read it, and
+commit it from a machine that can push — or leave the two directories below alone. They are
+empty because they are *waiting for a run*. An `act.jsonl` typed up by hand, or emitted by the
+stub, or coaxed out of a Docker-API shim, is worse than an empty directory: it is the
+third-party half of the `.evidence` contract, and a forged third party is exactly how a wrong
+`job_duration_s` gets published for a year. `mact-n8n` — the ticket to commit these two
+artifacts — was once claimed in precisely such a sandbox and closed for precisely this reason,
+with no bytes invented.
+
 ### Two artifacts that are not goldens yet
 
 `tests/realdata/golden/README.md` and `tests/realdata/expected/README.md` are worth reading
@@ -319,7 +344,8 @@ before you "fix" either directory. Both are empty of captured data on purpose:
 
 Until then the smoke makes **value** assertions instead (the coverage arithmetic in the fixture,
 the four benchmark metric names and their producers), which need no golden and still catch a
-producer quietly stopping work. Committing the two real artifacts is **mact-n8n**.
+producer quietly stopping work. Committing the two real artifacts is **mact-n8n**, and that
+stays open work for a machine that passes the pre-flight above — not a file to write.
 
 ### What a `DIVERGENCE` means
 

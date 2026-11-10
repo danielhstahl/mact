@@ -19,10 +19,16 @@ was written (`docs/testing.md` §1 is deliberate about that).
 So the golden is produced by a run and reviewed by a person, in that order:
 
 ```sh
+scripts/smoke-real-act.sh --prereq-only           # first: can this machine do it at all?
 scripts/smoke-real-act.sh --capture-golden        # writes act.jsonl + its provenance sidecar
 git diff tests/realdata/golden                    # READ it: these are act's bytes now
 git add tests/realdata/golden && git commit       # committing it is the assertion
 ```
+
+Run the first line before anything else, and believe it if it fails. Most machines that read
+this file — every sandbox this repository's tickets have been worked in — have no container
+runtime, and `act` without one cannot produce a capture of anything; docs/testing.md §7 "The
+pre-flight" is the long version, including what to do instead.
 
 `.github/workflows/nightly-real-act.yml` runs exactly that on a runner that has act and
 docker, and uploads the pair as an artefact whether the run is green or red. Committing the
