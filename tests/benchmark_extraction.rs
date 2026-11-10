@@ -38,7 +38,8 @@ use act_mcp::{
             extract_with, BenchmarkSummary, Discovered, ExtractionOutcome, SourceCounts,
             WARNING_BENCHMARK_SOURCE_SHADOWED, WARNING_MALFORMED_METRIC,
             WARNING_MARKER_CAP_REACHED, WARNING_NO_BENCHMARK_METRICS, WARNING_PARSE_FAILED,
-            WARNING_PAYLOAD_TOO_LARGE, WARNING_PAYLOAD_UNREADABLE, WARNING_TRUNCATED,
+            WARNING_PAYLOAD_TOO_LARGE, WARNING_PAYLOAD_UNREADABLE,
+            WARNING_STEP_TIMINGS_UNAVAILABLE, WARNING_TRUNCATED,
         },
         schema::validate_record,
         BenchmarkSource, ExtractContext,
@@ -996,6 +997,51 @@ fn a_log_without_step_timings_falls_back_to_the_span_of_its_lines() {
         find(&summary, "job_duration_s", None)[0]["value"],
         91.0,
         "act's timestamps are whole seconds, and the fallback says exactly that"
+    );
+}
+
+/// The `0.2.62 … 0.2.75` case, on act's real log shape for those tags: every step reports that
+/// it finished and none of them is timed, because `executionTime` arrived in v0.2.76 and those
+/// versions print no duration anywhere on the line. The timings are then **unavailable** rather
+/// than absent, and the run has to say so — a successful benchmark run publishing no act timings
+/// and no reason is the bug this test exists for (docs/benchmark-inputs.md §3).
+#[test]
+fn an_act_too_old_to_time_its_steps_says_so_instead_of_going_quiet() {
+    let harness = Harness::new(RUN_ID);
+    harness.use_log("act-pre-0.2.76.jsonl");
+    let summary = harness.extract();
+
+    assert!(
+        find(&summary, "step_duration_s", None).is_empty(),
+        "there is nothing in this log to build a step duration from: {:?}",
+        names(&summary)
+    );
+    let job = find(&summary, "job_duration_s", None);
+    assert_eq!(job.len(), 1, "the job still gets one duration row");
+    assert_eq!(
+        job[0]["value"], 92.0,
+        "and it is the whole-second span of the log's own lines, which is coarser than a sum of \
+         steps and is what the warning says"
+    );
+    assert!(
+        names(&summary).contains(&"cold_start_ms".to_owned()),
+        "the in-band marker channel is alive in these versions too, so the run still publishes: \
+         {:?}",
+        names(&summary)
+    );
+    assert_eq!(summary.outcome, ExtractionOutcome::Derived);
+    assert!(
+        summary
+            .warnings
+            .iter()
+            .any(|warning| warning == WARNING_STEP_TIMINGS_UNAVAILABLE),
+        "the missing timings are named, not quiet: {:?}",
+        summary.warnings
+    );
+    let detail = summary.detail.expect("a note about the timings");
+    assert!(
+        detail.contains("v0.2.76"),
+        "and the note names the version that added the field: {detail}"
     );
 }
 

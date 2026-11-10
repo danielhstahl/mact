@@ -1,0 +1,63 @@
+{
+  "act": {
+    "argv": [
+      "{ACT_BINARY}",
+      "--directory",
+      "{WORKSPACE}",
+      "--workflows",
+      "{WORKSPACE}/.github/workflows/benchmark.yml",
+      "--job",
+      "hyperfine-bench",
+      "--bind",
+      "--reuse=false",
+      "--rm",
+      "--pull=false",
+      "--rebuild",
+      "--use-gitignore",
+      "--json",
+      "--quiet=false",
+      "--secret-file",
+      "{SCRATCH}/{RUN_ID}/secrets.env",
+      "--var-file",
+      "{SCRATCH}/{RUN_ID}/inert.conf",
+      "--env-file",
+      "{SCRATCH}/{RUN_ID}/inert.conf",
+      "--input-file",
+      "{SCRATCH}/{RUN_ID}/inert.conf",
+      "--env",
+      "ACTMCP_EVIDENCE_OUT={EVIDENCE}/incoming/{RUN_ID}",
+      "--env",
+      "ACTMCP_RUN_ID={RUN_ID}"
+    ],
+    "log": "runs/{RUN_ID}/act.jsonl",
+    "log_bytes": {NUMBER},
+    "log_truncated": false,
+    "pid": {NUMBER}
+  },
+  "category": "benchmark",
+  "commit": "{COMMIT}",
+  "duration_ms": {NUMBER},
+  "evidence": [
+    {
+      "kind": "benchmark",
+      "path": ".evidence/benchmark/{COMMIT}/{RUN_ID}.jsonl",
+      "records": 6,
+      "truncated": false
+    }
+  ],
+  "exit_code": 0,
+  "host": "{HOST}",
+  "incoming": {
+    "dir": "incoming/{RUN_ID}",
+    "removed": false
+  },
+  "run_id": "{RUN_ID}",
+  "schema_version": 1,
+  "started_at": "{TS}",
+  "status": "success",
+  "task": "hyperfine-bench",
+  "warnings": [
+    "act_step_timings_unavailable"
+  ],
+  "workflow": "benchmark"
+}

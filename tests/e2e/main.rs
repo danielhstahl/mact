@@ -22,6 +22,7 @@
 //! 10  a job that prints its secrets      the value is in no byte the run wrote
 //! 11  list_tasks over the fixture set    the workflows, their jobs, and the one it cannot parse
 //! 12  the stub's own argv contract       unknown/forbidden/missing flags are refused
+//! 13  act older than v0.2.76             no act timings, and a named warning instead of silence
 //! ```
 //!
 //! Timings: every scenario but `04b` finishes in a second or two. `04b` waits out the
@@ -45,7 +46,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use harness::{wait_for_process_gone, Scenario, Stub};
+use harness::{read_to_string, wait_for_process_gone, Scenario, Stub};
 
 /// The golden directory name of each scenario, so the name is in one place.
 mod names {
@@ -58,6 +59,7 @@ mod names {
     pub const NO_PAYLOAD: &str = "07-coverage-payload-missing";
     pub const ISTANBUL: &str = "09-coverage-summary-source";
     pub const SECRETS: &str = "10-secret-never-on-disk";
+    pub const NO_ACT_TIMINGS: &str = "13-benchmark-without-act-timings";
 }
 
 /// The four required `run_workflow` arguments.
@@ -1046,6 +1048,77 @@ fn scenario_12_the_stub_act_refuses_any_argv_it_was_not_promised() {
             "{what} is refused with a reason the log will show: {output}"
         );
     }
+}
+
+// ------------------------------------- 13 an act too old to time its own steps
+
+/// Scenario 13: the part of this server's supported act range that predates **v0.2.76**
+/// (`0.2.62 … 0.2.75`) logs every step's Success line with no `executionTime` at all — there
+/// is no timing anywhere on those lines to read, in the fields or in the text — so the run can
+/// publish no `step_duration_s`. That has to be a named warning on the result and on
+/// `meta.json`, not an unexplained gap in `benchmark/` (mact-s3l,
+/// [docs/benchmark-inputs.md §3](../../docs/benchmark-inputs.md)).
+#[tokio::test]
+async fn scenario_13_an_act_without_step_timings_warns_instead_of_going_quiet() {
+    let mut scenario = Scenario::new();
+    scenario.boot(
+        Stub::new()
+            .log("benchmark-success-pre-0.2.76.jsonl")
+            .payload("benchmark")
+            .benchmark_marker(),
+    );
+    let head = scenario.repo.head();
+
+    let view = scenario
+        .run_ok(args("benchmark", "hyperfine-bench", "benchmark", &head))
+        .await;
+    let run_id = view["run_id"].as_str().expect("a run_id").to_owned();
+    assert_eq!(
+        view["status"],
+        json!("success"),
+        "act ran the job fine; only its timings are missing: {view}"
+    );
+    assert!(
+        view["warnings"]
+            .as_array()
+            .expect("warnings")
+            .contains(&json!("act_step_timings_unavailable")),
+        "the missing timings are named on the result: {view}"
+    );
+
+    let records = jsonl(&scenario.evidence_file(&evidence_path("benchmark", &head, &run_id)));
+    let kinds: Vec<&str> = records
+        .iter()
+        .filter_map(|record| record["name"].as_str())
+        .collect();
+    assert!(
+        !kinds.contains(&"step_duration_s"),
+        "there was nothing in the log to time a step with: {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&"job_duration_s"),
+        "the job still gets the whole-second span of the log as its duration: {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&"tokenizer_throughput") && kinds.contains(&"cold_start_ms"),
+        "the two producers that do not depend on act are untouched: {kinds:?}"
+    );
+
+    let meta: Value = serde_json::from_str(&read_to_string(
+        &scenario.run_dir(&run_id).join("meta.json"),
+    ))
+    .expect("meta.json is JSON");
+    assert!(
+        meta["warnings"]
+            .as_array()
+            .expect("meta.json warnings")
+            .contains(&json!("act_step_timings_unavailable")),
+        "and the durable trace says it too, for a reader who missed the result: {meta}"
+    );
+
+    let (code, output) = scenario.validate_evidence().await;
+    assert_eq!(code, 0, "validate-evidence over the run's tree: {output}");
+    scenario.assert_tree(names::NO_ACT_TIMINGS, &view);
 }
 
 /// Run the stub directly and report `(exit code, combined output)`.

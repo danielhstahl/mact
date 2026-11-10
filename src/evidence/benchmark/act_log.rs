@@ -27,6 +27,30 @@
 //! A line that is not JSON at all is searched as plain text, so a run captured without
 //! `--json` still yields its markers (just none of its timings).
 //!
+//! ## Which act versions emit `executionTime` — and what happens on the ones that do not
+//!
+//! `executionTime` is younger than this server's floor. `pkg/runner/step.go` gained it in act
+//! **v0.2.76**:
+//!
+//! ```text
+//! // v0.2.62 and v0.2.75, pkg/runner/step.go — no duration in the fields, none in the text
+//! logger.WithField("stepResult", stepResult.Outcome)
+//!       .Infof("  ✅  Success - %s %s", stage, stepString)
+//!
+//! // v0.2.76 — the same line, with the duration in both places
+//! logger.WithFields(logrus.Fields{"executionTime": executionTime, "stepResult": stepResult.Outcome})
+//!       .Infof("  ✅  Success - %s %s [%s]", stage, stepString, executionTime)
+//! ```
+//!
+//! Since [`crate::workspace::MINIMUM_ACT_VERSION`] is `0.2.62`, a run on `0.2.62 … 0.2.75` is a
+//! run whose log has **step-completion lines and no timings** — and there is nothing to fall
+//! back to, because those older lines carry no duration in `msg` either. Rather than let that
+//! be a silent absence in `.evidence`, the scan counts such lines
+//! ([`Scan::untimed_steps`]) so `benchmark` can publish the named warning
+//! `act_step_timings_unavailable`; the decision and the operator's options are
+//! `docs/benchmark-inputs.md` §3. The log shape itself is pinned, from act's source at those
+//! tags, by `tests/fixtures/benchmark/act-pre-0.2.76.jsonl`.
+//!
 //! ## What is attributed to this run
 //!
 //! act can run several jobs' worth of log in one stream (a job with `needs:` drags its
@@ -66,6 +90,12 @@ pub(crate) struct Scan {
     pub(crate) marker_capped: bool,
     /// The steps this run's job reported finishing, in log order.
     pub(crate) steps: Vec<StepTiming>,
+    /// This run's step-completion lines that carried **no** usable timing — the signature of
+    /// act before v0.2.76 (§"Which act versions emit `executionTime`"). Zero is the normal
+    /// answer on a supported act; a non-zero answer on a run that also has `steps` means act
+    /// lied about one step, and on a run with no `steps` at all it means act emitted no
+    /// timings at all.
+    pub(crate) untimed_steps: usize,
     /// The span of this run's log lines, when act's timestamps said anything.
     pub(crate) span_ms: Option<u64>,
     /// The log ends in our own truncation marker, so timings after that point are missing.
@@ -120,8 +150,8 @@ pub(crate) fn scan(
                 }
                 let attribution = attribution(entry, job_id);
                 if attribution != Attribution::Other {
-                    if let Some(ms) = entry.get("executionTime").and_then(duration_ms) {
-                        scan.steps.push(StepTiming {
+                    match entry.get("executionTime").and_then(duration_ms) {
+                        Some(ms) => scan.steps.push(StepTiming {
                             step: entry
                                 .get("step")
                                 .and_then(Value::as_str)
@@ -129,7 +159,10 @@ pub(crate) fn scan(
                                 .filter(|text| !text.is_empty())
                                 .map(str::to_owned),
                             ms,
-                        });
+                        }),
+                        // A step act said it finished, with no timing to go with it.
+                        None if is_step_completion(entry, line) => scan.untimed_steps += 1,
+                        None => {}
                     }
                     if let Some(at) = entry.get("time").and_then(timestamp) {
                         first = Some(first.map_or(at, |held| held.min(at)));
@@ -171,6 +204,37 @@ fn attribution(entry: &Value, job_id: &str) -> Attribution {
         }
     }
     Attribution::Ambient
+}
+
+/// Does this line say a step *ran and finished* — i.e. is it a line act would owe a timing to?
+///
+/// act's Success/Failure line is the only line that ever carries a step timing, which makes it
+/// the only line on which a *missing* timing is evidence of something: pre-v0.2.76 act logs
+/// `stepResult` there and stops, so a completion line without a duration is what an act older
+/// than this server's timing support looks like (§"Which act versions emit `executionTime`").
+///
+/// Two rules keep the count honest about what act owes a timing for:
+///
+/// * `"skipped"` is **not** a completion. act logs a skipped step as
+///   `WithField("stepResult", "skipped").Debugf("Skipping step …")` in every version, including
+///   v0.2.76, and never times a step it did not run — counting it would turn a workflow with one
+///   `if:`-ed-out step into a permanent warning.
+/// * A line that names no step is not one either: act's job-level `🏁 Job succeeded` carries no
+///   step and no timing in every version.
+///
+/// `stepResult` is the primary signal (v0.2.62 and v0.2.76 both set it); act's own wording is
+/// the fallback, for a line whose result field arrived spelled differently while its text is
+/// unmistakable.
+fn is_step_completion(entry: &Value, raw_line: &str) -> bool {
+    if let Some(verdict) = entry.get("stepResult").and_then(Value::as_str) {
+        return matches!(verdict, "success" | "failure");
+    }
+    if entry.get("step").and_then(Value::as_str).is_none() {
+        return false;
+    }
+    messages(entry, raw_line)
+        .into_iter()
+        .any(|text| text.contains("Success - ") || text.contains("Failure - "))
 }
 
 /// The texts on one entry that can carry a marker.
@@ -353,6 +417,82 @@ mod tests {
             scan.steps.is_empty(),
             "no negative, no garbage: {:?}",
             scan.steps
+        );
+    }
+
+    /// The shape act v0.2.62 … v0.2.75 write: the same Success line, with `stepResult` and no
+    /// `executionTime` and — unlike v0.2.76 — no duration in `msg` either. Nothing may be read
+    /// as a timing here, and the run must be able to say so: hence `untimed_steps`.
+    #[test]
+    fn a_pre_0_2_76_completion_is_counted_as_untimed() {
+        let scan = scan_of(&[
+            r#"{"dryrun":false,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"info","msg":"  ▶  Run benchmark","stage":"main","step":"Run benchmark","stepID":["1"],"time":"2026-11-10T00:42:05Z"}"#,
+            r#"{"dryrun":false,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"info","msg":"  ✅  Success - Main Run benchmark","stage":"main","step":"Run benchmark","stepID":["1"],"stepResult":"success","time":"2026-11-10T00:43:33Z"}"#,
+            r#"{"job":"hyperfine-bench","jobID":"hyperfine-bench","jobResult":"success","level":"info","msg":"🏁 Job succeeded","time":"2026-11-10T00:43:36Z"}"#,
+        ]);
+        assert!(
+            scan.steps.is_empty(),
+            "there is nothing to time here: {:?}",
+            scan.steps
+        );
+        assert_eq!(scan.untimed_steps, 1, "one completion, no timing");
+        assert_eq!(
+            scan.span_ms,
+            Some(91_000),
+            "the log span is still what a duration can fall back to"
+        );
+    }
+
+    #[test]
+    fn an_untimed_completion_is_counted_alongside_timed_ones() {
+        let scan = scan_of(&[
+            r#"{"jobID":"hyperfine-bench","step":"Setup","executionTime":1000000000,"stepResult":"success"}"#,
+            r#"{"jobID":"hyperfine-bench","step":"Run benchmark","msg":"  ❌  Failure - Main Run benchmark","stepResult":null}"#,
+        ]);
+        assert_eq!(scan.steps.len(), 1);
+        assert_eq!(
+            scan.untimed_steps, 1,
+            "a null result field falls back to the text"
+        );
+    }
+
+    #[test]
+    fn a_skipped_step_owes_no_timing() {
+        // act logs `stepResult: "skipped"` without a timing in every version, including the
+        // ones that support timings, so counting it would warn on any workflow with an `if:`.
+        let scan = scan_of(&[
+            r#"{"jobID":"hyperfine-bench","step":"Only on main","level":"debug","msg":"Skipping step 'Only on main' due to 'github.ref != 'refs/heads/main''","stepResult":"skipped"}"#,
+            r#"{"jobID":"hyperfine-bench","step":"Run benchmark","executionTime":1000000000,"stepResult":"success"}"#,
+        ]);
+        assert_eq!(scan.steps.len(), 1);
+        assert_eq!(
+            scan.untimed_steps, 0,
+            "a step act never ran is not a missing timing"
+        );
+    }
+
+    #[test]
+    fn a_step_that_never_finished_is_not_an_untimed_completion() {
+        // A run killed mid-step: act started the step and never logged a result, which is the
+        // caller's span-fallback case, not act's timing support being too old.
+        let scan = scan_of(&[
+            r#"{"jobID":"hyperfine-bench","step":"Run benchmark","msg":"  ▶  Run benchmark","stage":"main"}"#,
+            r#"{"jobID":"hyperfine-bench","msg":"killed by timeout"}"#,
+        ]);
+        assert!(scan.steps.is_empty());
+        assert_eq!(scan.untimed_steps, 0);
+    }
+
+    #[test]
+    fn another_jobs_untimed_completion_is_not_this_runs() {
+        let scan = scan_of(&[
+            r#"{"jobID":"setup","step":"Install","stepResult":"success"}"#,
+            r#"{"jobID":"hyperfine-bench","step":"Run benchmark","executionTime":1000000000,"stepResult":"success"}"#,
+        ]);
+        assert_eq!(scan.steps.len(), 1);
+        assert_eq!(
+            scan.untimed_steps, 0,
+            "another job's log lines are not this run's data"
         );
     }
 

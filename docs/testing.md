@@ -339,7 +339,11 @@ supported range, and the smoke prints them whenever a capture triggers them:
 
 * `executionTime` — the only source of step timings — exists from act **v0.2.76**; this server's
   floor is `MINIMUM_ACT_VERSION` **0.2.62**, so on `0.2.62 … 0.2.75` a benchmark run publishes
-  no `act_log` timings at all. Either raise the floor or make the missing case a named warning.
+  no `act_log` timings at all. *Decided:* the floor stays 0.2.62 and the missing case is the named
+  warning `act_step_timings_unavailable`, pinned by
+  `tests/fixtures/benchmark/act-pre-0.2.76.jsonl` and asserted in `tests/benchmark_extraction.rs`
+  — the reasoning is [docs/benchmark-inputs.md §3](benchmark-inputs.md#3-acts-own-timings-need-act-0276-or-newer),
+  and what the smoke adds is confirming it against a live log.
 * `Output`/`Error` — read by `act_log::messages()` as alternative message fields — are not act
   fields in any released version. Dead code wearing a compatibility costume.
 

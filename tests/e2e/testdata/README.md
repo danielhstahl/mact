@@ -8,9 +8,17 @@ checked in so a failure is reproducible without docker, network, or a registry p
 | `bin/` | `act` — the stand-in for the real binary (see its header comment) and `docker` — a container-CLI that only answers the startup probe |
 | `workflows/` | fixture `.github/workflows` files for the e2e scenarios, including one deliberately broken |
 | `payload/` | what a job writes through the bind mount: `lcov.info`, `coverage-summary.json`, `benchmark.json` |
-| `logs/` | captured `act --json` output (success + failure) used for timing and redaction checks |
+| `logs/` | captured `act --json` output (success + failure) used for timing and redaction checks, plus `benchmark-success-pre-0.2.76.jsonl` — see the note below |
 | `tool-io/` | the ADR-0001 contract fixtures — hand-written tool arguments and `structuredContent` payloads, all of them indexed in [§ `tool-io/`](#tool-io--the-adr-0001-contract-fixtures) below |
 | `scenarios/` | the golden evidence trees, one directory per e2e scenario — written by `E2E_UPDATE_GOLDEN=1 cargo test --test e2e`, never by hand |
+
+`logs/benchmark-success-pre-0.2.76.jsonl` is the odd one out and is not a capture: it is act's
+Success-line shape **before v0.2.76**, written out from `pkg/runner/step.go` at the v0.2.62 and
+v0.2.75 tags, where the line carries `stepResult` and no `executionTime` (and no duration in the
+text either). Scenario 13 runs the pipeline against it to prove that a run whose act is too old to
+time its steps says so — `act_step_timings_unavailable` — instead of publishing act timings for
+none of its steps; the decision behind it is
+[docs/benchmark-inputs.md §3](../../../docs/benchmark-inputs.md#3-acts-own-timings-need-act-0276-or-newer).
 
 The payloads are small on purpose — a few files, a few samples — but carry the real shape
 (lcov `SF:`/`DA:`/`BRDA:`, Istanbul's `total` + per-file keys, a benchmark file with

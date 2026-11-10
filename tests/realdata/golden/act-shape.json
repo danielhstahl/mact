@@ -172,7 +172,7 @@
         "src/evidence/benchmark/act_log.rs — step_duration_s and job_duration_s are built from THIS FIELD AND NOTHING ELSE"
       ],
       "provenance": "source",
-      "note": "THE FIELD TO WATCH. It does not exist in every act in the supported range: pkg/runner/step.go gained it between v0.2.75 and v0.2.76 (absent at v0.2.62..=0.2.75, present through v0.2.97). On an older act the extractor finds no timings at all and must say so instead of publishing a silent zero — see known_gaps."
+      "note": "THE FIELD TO WATCH. It does not exist in every act in the supported range: pkg/runner/step.go gained it between v0.2.75 and v0.2.76 (absent at v0.2.62..=0.2.75, present through v0.2.97). On an older act the extractor finds no timings at all and now says so — the run carries the named warning act_step_timings_unavailable instead of publishing a silent zero; see known_gaps and docs/benchmark-inputs.md §3."
     },
     "Output": {
       "group": "phantom",
@@ -237,7 +237,8 @@
       "field": "executionTime",
       "gap": "act emits step timings only from v0.2.76. This server's floor is MINIMUM_ACT_VERSION 0.2.62, so on act 0.2.62..=0.2.75 every benchmark record's act_log timings are absent — the run still succeeds and publishes the job's own metrics, and job_duration_s/step_duration_s simply do not appear.",
       "settled_by": "source: pkg/runner/step.go at v0.2.75 (absent) and v0.2.76 (present)",
-      "what_to_do": "Either raise the floor to 0.2.76 or make the missing-timings case a named warning on the run. The smoke prints this gap whenever the live log has no executionTime."
+      "decided": "mact-s3l: the floor stays 0.2.62 and the case is named, not silent. A run whose step-completion lines carried no executionTime carries the warning act_step_timings_unavailable plus a detail line naming v0.2.76 and what job_duration_s fell back to. Reasoning and operator options: docs/benchmark-inputs.md §3.",
+      "what_to_do": "Still check it against a live log: a log with stepResult Success/Failure lines and no executionTime on any of them is this gap, and the run must then carry act_step_timings_unavailable (scripts/smoke-real-act.sh checks for exactly that). If a live act >= v0.2.76 ever omits executionTime, that is a NEW divergence and this gap no longer explains it."
     },
     {
       "id": "phantom-message-fields",

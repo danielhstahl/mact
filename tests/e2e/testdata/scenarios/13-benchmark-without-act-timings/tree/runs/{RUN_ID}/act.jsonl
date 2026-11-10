@@ -1,0 +1,11 @@
+{"dryrun":false,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"info","msg":"🚀  Start image=catthehacker/ubuntu:act-24.04","time":"{TS}"}
+{"dryrun":false,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"info","msg":"  ▶  Set up job","stage":"pre","step":"Set up job","stepID":["0"],"time":"{TS}"}
+{"dryrun":false,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"info","msg":"  ✅  Success - Pre Set up job","stage":"pre","step":"Set up job","stepID":["0"],"stepResult":"success","time":"{TS}"}
+{"dryrun":false,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"info","msg":"  ▶  Run Bench","stage":"main","step":"Bench","stepID":["1"],"time":"{TS}"}
+{"dryrun":false,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"info","msg":"warming the cache","raw_output":true,"stage":"main","step":"Bench","stepID":["1"],"time":"{TS}"}
+{"dryrun":false,"job":"lint","jobID":"lint","level":"info","msg":"  ✅  Success - Main Run eslint","stage":"main","step":"Run eslint","stepID":["0"],"stepResult":"success","time":"{TS}"}
+{"dryrun":false,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"info","msg":"  ✅  Success - Main Run Bench","stage":"main","step":"Bench","stepID":["1"],"stepResult":"success","time":"{TS}"}
+{"dryrun":false,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"info","msg":"  ✅  Success - Post Complete job","stage":"post","step":"Complete job","stepID":["2"],"stepResult":"success","time":"{TS}"}
+{"dryrun":false,"job":"hyperfine-bench","jobID":"hyperfine-bench","jobResult":"success","level":"info","msg":"🏁 Job succeeded","time":"{TS}"}
+ACTMCP_BENCHMARK {"name":"cold_start_ms","value":12.5,"unit":"ms","labels":{"step":"Bench"}}
+ACTMCP_BENCHMARK {"name":"queue_depth","value":3}

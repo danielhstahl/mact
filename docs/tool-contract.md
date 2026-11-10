@@ -319,7 +319,11 @@ Open vocabulary in `warnings[]` (and in `.evidence/runs/<run_id>/meta.json`); a 
 `unresolvable_workflow`, plus the
 ADR-0002 §5.1 set (`no_coverage_found`, `parse_failed`, `unsupported_format`, `payload_too_large`,
 `payload_unreadable`, `payload_transport_unavailable`, `coverage_source_shadowed`, `malformed_metric`,
-`marker_cap_reached`, `truncated`). Unknown warnings are ignored, never fatal.
+`marker_cap_reached`, `truncated`), and the codes the benchmark extractor adds beside that set
+(`no_benchmark_metrics`, `act_log_unreadable`, `act_log_truncated`,
+`act_step_timings_unavailable` — act older than v0.2.76 timed none of its steps, see
+[docs/benchmark-inputs.md §3](benchmark-inputs.md#3-acts-own-timings-need-act-0276-or-newer)).
+Unknown warnings are ignored, never fatal.
 
 ## 8. Limits
 

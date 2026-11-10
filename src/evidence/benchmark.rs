@@ -37,6 +37,13 @@
 //!    `job_duration_s` has that value kept and act's suppressed, so a duration is never
 //!    counted twice (§5.3).
 //!
+//! Producer 3 depends on a field act does not always emit: `executionTime` arrived in act
+//! v0.2.76, and this server accepts act from `0.2.62`. A run on `0.2.62 … 0.2.75` therefore has
+//! no act timings to publish at all — a case that is reported as
+//! [`crate::evidence::benchmark::WARNING_STEP_TIMINGS_UNAVAILABLE`] on the run rather than as an
+//! unexplained gap in
+//! `benchmark/` (the reasoning is `docs/benchmark-inputs.md` §3).
+//!
 //! ## The rules this module exists to keep
 //!
 //! 1. **A number is only a number if it parses as one.** Non-finite, non-numeric and
@@ -83,7 +90,7 @@ use crate::{
         ExtractContext,
     },
     runner::{ActRunOutcome, WARNING_PAYLOAD_TRANSPORT_UNAVAILABLE},
-    workspace::ValidatedRunTarget,
+    workspace::{ValidatedRunTarget, MINIMUM_ACT_VERSION},
 };
 
 /// The ticket's `RunOutcome`, by the name the ticket uses.
@@ -108,6 +115,16 @@ pub const WARNING_PARSE_FAILED: &str = "parse_failed";
 pub const WARNING_NO_BENCHMARK_METRICS: &str = "no_benchmark_metrics";
 /// Warning: act's captured log could not be read, so no timings could be derived.
 pub const WARNING_LOG_UNREADABLE: &str = "act_log_unreadable";
+/// Warning: act's log showed steps finishing but never said how long one took, so act's own
+/// timings are **unavailable**, not merely absent.
+///
+/// act gained `executionTime` in v0.2.76 and this server accepts act from
+/// [`crate::workspace::MINIMUM_ACT_VERSION`] `0.2.62`, so every run on `0.2.62 … 0.2.75` looks
+/// exactly like this: the steps all complete, none of them is timed, and `step_duration_s`
+/// records simply do not appear. The alternative was raising the floor to 0.2.76, which would
+/// refuse the run over an evidence nicety; the reasoning, and what an operator can do instead,
+/// is `docs/benchmark-inputs.md` §3.
+pub const WARNING_STEP_TIMINGS_UNAVAILABLE: &str = "act_step_timings_unavailable";
 /// Warning: act's log ended in our own truncation marker, so any timing after that point
 /// is missing rather than absent.
 pub const WARNING_LOG_TRUNCATED: &str = "act_log_truncated";
@@ -600,6 +617,40 @@ impl<'context> Extraction<'context> {
             }
         };
         self.span_ms = scan.span_ms;
+        if scan.untimed_steps > 0 {
+            // act said steps finished and never said how long they took. On an act older than
+            // v0.2.76 that is what every run looks like, and without this warning the run would
+            // publish act timings for none of its steps and no hint why.
+            let because = if scan.steps.is_empty() {
+                if self.span_ms.is_some() {
+                    "no `step_duration_s` record was published and `job_duration_s` is the \
+                     whole-second span of the log lines"
+                } else {
+                    "no duration record of any kind was published"
+                }
+            } else {
+                "the steps that were timed are published and the ones that were not are missing \
+                 from `step_duration_s`"
+            };
+            let detail = format!(
+                "{} of this run's step-completion lines carried no `executionTime`, so act's own \
+                 timings are unavailable rather than absent (act added that field in v0.2.76; \
+                 this server's floor is {MINIMUM_ACT_VERSION}): {because} — if your act is \
+                 v0.2.76 or newer, act's log shape changed again and docs/benchmark-inputs.md §3 \
+                 is the file to read",
+                scan.untimed_steps,
+            );
+            self.push_warning(WARNING_STEP_TIMINGS_UNAVAILABLE);
+            self.note(detail.clone());
+            // Loud on purpose: this is the case a run used to pass through silently, and a
+            // warning code alone is easy to skip when the number simply is not there.
+            tracing::warn!(
+                run_id = %self.envelope.run_id,
+                timed_steps = scan.steps.len(),
+                untimed_steps = scan.untimed_steps,
+                "{WARNING_STEP_TIMINGS_UNAVAILABLE}: {detail}"
+            );
+        }
         if scan.log_truncated || scan.budget_exceeded {
             // Not the §5.1 `truncated` (that word is the metric cap's): this one says the
             // *input* ran out, so a timing may be missing rather than absent.

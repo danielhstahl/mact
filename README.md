@@ -520,6 +520,7 @@ any of it by hand, including the MCP Inspector.
 | `--bind 0.0.0.0:8080 is not a loopback address` | the loopback rule, on purpose | read [docs/security.md §1](docs/security.md) (and the port-forward recipe), then pass `--i-understand-this-is-unauthenticated` |
 | `run_status` says `run_not_found` for a run you remember | run state is in-memory and does not survive a restart | the durable trace is `.evidence/runs/<run_id>/meta.json` |
 | a run succeeded and `evidence_files` is `[]` | the `category` was neither `benchmark` nor `coverage` (open vocabulary, but only those two extract evidence), or extraction found nothing | read `warnings` (`unknown_category`, `no_coverage_found`, `parse_failed`…) and `meta.json`'s `warnings[]` |
+| a benchmark run has no `step_duration_s` records, and `job_duration_s` looks like whole seconds | act only emits step timings (`executionTime`) from **v0.2.76**, and this server accepts act from 0.2.62; the run carries the `act_step_timings_unavailable` warning rather than a silent gap | upgrade act to ≥ 0.2.76, or have the job time its own steps; [docs/benchmark-inputs.md §3](docs/benchmark-inputs.md#3-acts-own-timings-need-act-0276-or-newer) |
 | `linker … Bad address (os error 14)` while building | bind-mounted `./target` | `export CARGO_TARGET_DIR=/tmp/tt` |
 | `pip` and `python3` disagree and `scripts/validate_evidence.py` cannot import `jsonschema` | dev-box packaging, not this repo | use the built-in checker: `cargo run -- validate-evidence <path>` |
 
@@ -578,6 +579,7 @@ and `.github/workflows/nightly-real-act.yml` runs it nightly where docker exists
 ## Further reading
 
 * [docs/evidence-format.md](docs/evidence-format.md) — the `.evidence` contract for a reader, with jq recipes
+* [docs/benchmark-inputs.md](docs/benchmark-inputs.md) — where a benchmark number came from, and what act version it needs
 * [docs/tool-contract.md](docs/tool-contract.md) — the tool shapes and the error vocabulary
 * [docs/adr/0001-tool-contract.md](docs/adr/0001-tool-contract.md) — why `run_workflow` looks like it does
 * [docs/adr/0002-evidence-jsonl-contract.md](docs/adr/0002-evidence-jsonl-contract.md) — the `.evidence` contract, normatively

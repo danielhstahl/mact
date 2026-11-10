@@ -781,7 +781,17 @@ step_record_values() {
             ok=1
         }
     else
-        detail "act ${ACT_VERSION:-?} predates v0.2.76: it emits no step timings, so no act_log records are expected"
+        # act predates v0.2.76, so no act_log records are expected. But the absence has to be
+        # NAMED: a scanner cannot tell "old act" from "our extractor quietly stopped working",
+        # and that silent case is what mact-s3l was. See docs/benchmark-inputs.md §3.
+        local warn
+        warn=$(jq -r '(.warnings // []) | join(",")' "$OUT/repo/.evidence/runs/${RUN_ID[benchmark]:-none}/meta.json" 2>/dev/null || echo "")
+        if grep -qw act_step_timings_unavailable <<<"${warn:-}"; then
+            detail "act ${ACT_VERSION:-?} predates v0.2.76: no act_log records, and the run says so (act_step_timings_unavailable)"
+        else
+            detail "act ${ACT_VERSION:-?} predates v0.2.76, so no act_log records are expected — but the run did not warn act_step_timings_unavailable either (warnings=[$warn]): the gap is silent again"
+            ok=1
+        fi
     fi
     latency=$(jq -sr '[.[] | select(.name=="smoke_latency_ms")][0].value // "none"' "$bench_file")
     detail "smoke_latency_ms = $latency (the fixture printed 12.5)"

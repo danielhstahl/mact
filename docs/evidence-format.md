@@ -195,6 +195,14 @@ its own `job_duration_s`, the job's value wins and act's is suppressed for that 
 Note the deliberate asymmetry: the envelope's `duration_ms` is integer milliseconds, the
 metric names are human-facing seconds (`*_s`).
 
+One version dependency to know about when diffing history: `step_duration_s` needs act's
+`executionTime`, which act gained in **v0.2.76**, and this server accepts act from **0.2.62**. A
+run on `0.2.62 … 0.2.75` therefore publishes no `step_duration_s` at all, and its
+`job_duration_s` is the whole-second span of the log lines instead of a sum of steps — which the
+run says with the `act_step_timings_unavailable` warning instead of going quiet about. Absent
+`step_duration_s` rows are *unknown*, never `0 s`. See
+[docs/benchmark-inputs.md §3](benchmark-inputs.md#3-acts-own-timings-need-act-0276-or-newer).
+
 ## 6. The coverage record
 
 One source file — or the run total — per line:
