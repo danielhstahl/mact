@@ -1,0 +1,1246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tool-contract.schema.json",
+  "title": "act-mcp tool contract: arguments and structured results of the four tools (MCP 2026-07-28)",
+  "description": "Machine-readable half of docs/adr/0001-tool-contract.md and docs/tool-contract.md. Each tool has two entries under $defs: '<tool>_args' (the tools/call params.arguments object) and '<tool>_result' (the JSON object the server puts in result.structuredContent). 'tool_error' is the shape of structuredContent on an isError:true tool result. This root schema validates nothing by itself: scripts/validate_tool_contract.py selects one $defs entry as the schema root and copies $defs along so the internal '#/$defs/...' refs keep resolving. The prose contract is the ADR; ADR, docs/tool-contract.md, the fixture set and this file are held in lockstep by that script.",
+  "x-status": "accepted (ADR-0001, ticket mact-f1w.2)",
+  "x-mcp-protocol-version": "2026-07-28",
+  "x-nullability": "A value is either present with its correct type or the key is absent. JSON null is never valid anywhere in this contract; unknown is expressed by omission (same policy as ADR-0002 section 2.1). Every object here is additionalProperties:false.",
+  "x-run-status": {
+    "all": ["pending", "running", "success", "failed", "cancelled", "timed_out", "error"],
+    "non_terminal": ["pending", "running"],
+    "terminal": ["success", "failed", "cancelled", "timed_out", "error"],
+    "note": "The five terminal names are the SAME vocabulary as .evidence run_status in schema/evidence.schema.json and schema/run-meta.schema.json. 'succeeded' is not a status value anywhere in this project."
+  },
+  "x-error-codes": {
+    "invalid_arguments": {
+      "is_error": true,
+      "retryable": false,
+      "group": "arguments",
+      "tools": ["run_workflow", "list_tasks", "run_status", "cancel_run"],
+      "meaning": "A required argument is missing, an argument has the wrong JSON type, or a value violates its length bound or pattern. detail.errors lists every offending instance path, so the caller self-corrects in one round trip.",
+      "detail": "{errors: [{path, reason, expected}]}"
+    },
+    "unknown_argument": {
+      "is_error": true,
+      "retryable": false,
+      "group": "arguments",
+      "tools": ["run_workflow", "list_tasks", "run_status", "cancel_run"],
+      "meaning": "An argument the tool does not define was supplied (including a caller-supplied run_id: run ids are server-generated only). Detail names each unexpected key and the accepted set.",
+      "detail": "{unexpected: [string], expected: [string]}"
+    },
+    "workspace_not_found": {
+      "is_error": true,
+      "retryable": false,
+      "group": "precondition",
+      "tools": ["run_workflow", "list_tasks"],
+      "meaning": "The workspace directory (server CWD, or --workspace) does not exist, is not a directory, or is not readable.",
+      "detail": "{path: relpath, reason: string}"
+    },
+    "not_a_git_repository": {
+      "is_error": true,
+      "retryable": false,
+      "group": "precondition",
+      "tools": ["run_workflow"],
+      "meaning": "The workspace is not inside a git work tree, so a commit cannot be resolved or checked out inside it. git rev-parse --show-toplevel failed.",
+      "detail": "{path: relpath}"
+    },
+    "workflows_dir_missing": {
+      "is_error": true,
+      "retryable": false,
+      "group": "precondition",
+      "tools": ["run_workflow", "list_tasks"],
+      "meaning": "<workspace>/.github/workflows is absent, is not a directory, or contains no *.yml / *.yaml file. This is the gate that says 'this directory is not a GitHub Actions repository'.",
+      "detail": "{path: relpath}"
+    },
+    "act_missing": {
+      "is_error": true,
+      "retryable": true,
+      "group": "precondition",
+      "tools": ["run_workflow"],
+      "meaning": "The act binary was not found on PATH, is not executable, or is older than the minimum supported version. Cached probe (30s), so retrying after installing act succeeds.",
+      "detail": "{probed: [string], reason: not_found | not_executable | too_old, found_version?: string, minimum_version?: string}"
+    },
+    "docker_unreachable": {
+      "is_error": true,
+      "retryable": true,
+      "group": "precondition",
+      "tools": ["run_workflow"],
+      "meaning": "No container runtime answered (docker info, or the configured --container-daemon-socket, failed or timed out). Cached probe (30s).",
+      "detail": "{reason: not_found | timeout | error, detail: string}"
+    },
+    "workflow_not_found": {
+      "is_error": true,
+      "retryable": false,
+      "group": "resolution",
+      "tools": ["run_workflow"],
+      "meaning": "No file under .github/workflows matches the requested workflow, or it matched only a workflow name: key that resolves to a file that does not exist. Detail lists the valid options so the caller self-corrects in one round trip.",
+      "detail": "{workflow: string, workflows_dir: relpath, available: [string]}"
+    },
+    "ambiguous_workflow": {
+      "is_error": true,
+      "retryable": false,
+      "group": "resolution",
+      "tools": ["run_workflow"],
+      "meaning": "More than one file matches the requested workflow name (for example bench.yml and bench.yaml, or two files declaring the same name: key). The caller must disambiguate by passing the file name.",
+      "detail": "{workflow: string, candidates: [relpath]}"
+    },
+    "task_not_found": {
+      "is_error": true,
+      "retryable": false,
+      "group": "resolution",
+      "tools": ["run_workflow"],
+      "meaning": "The resolved workflow declares no job with that id (the value that act -j <job> would receive). Detail lists the job ids in that file.",
+      "detail": "{workflow_file: relpath, task: string, jobs: [string]}"
+    },
+    "commit_unknown": {
+      "is_error": true,
+      "retryable": false,
+      "group": "resolution",
+      "tools": ["run_workflow"],
+      "meaning": "The commit does not resolve in the workspace repository (git rev-parse --verify <sha>^{commit} failed). act-mcp never fetches: a commit the local clone does not have is a caller error, not a network task.",
+      "detail": "{commit: string, reason: not_found | not_a_commit}"
+    },
+    "commit_ambiguous": {
+      "is_error": true,
+      "retryable": false,
+      "group": "resolution",
+      "tools": ["run_workflow"],
+      "meaning": "An abbreviated commit matches more than one object. Supply a longer prefix (40 hex is never ambiguous).",
+      "detail": "{commit: string, candidates: [string]}"
+    },
+    "isolation_failed": {
+      "is_error": true,
+      "retryable": true,
+      "group": "precondition",
+      "tools": ["run_workflow"],
+      "meaning": "ADR-0003 could not produce a working tree for the requested commit: the running policy refuses a commit other than HEAD (head-only mode), or the temporary worktree could not be created or removed. The run was not started.",
+      "detail": "{mode: head_only | worktree, requested: string, head: string, reason: string}"
+    },
+    "workspace_busy": {
+      "is_error": true,
+      "retryable": true,
+      "group": "precondition",
+      "tools": ["run_workflow"],
+      "meaning": "Another act run holds the workspace single-flight lock (ADR-0003 / ADR-0004). There is no queue: the call fails immediately and detail names the run in flight so the caller can poll it or cancel it.",
+      "detail": "{run_id: string, phase: string, started_at: timestamp}"
+    },
+    "too_many_runs": {
+      "is_error": true,
+      "retryable": true,
+      "group": "precondition",
+      "tools": ["run_workflow"],
+      "meaning": "The server-wide concurrent-act-run cap (--max-concurrent-runs, default 2) is reached across all workspaces.",
+      "detail": "{limit: integer, active: [run_id]}"
+    },
+    "idempotency_conflict": {
+      "is_error": true,
+      "retryable": false,
+      "group": "precondition",
+      "tools": ["run_workflow"],
+      "meaning": "The supplied idempotency_key is already remembered for a DIFFERENT (workflow, task, category, commit) tuple. The server will not silently start a second run under a key that already means something else.",
+      "detail": "{idempotency_key: string, run_id: run_id, previous: object, requested: object}"
+    },
+    "run_not_found": {
+      "is_error": true,
+      "retryable": false,
+      "group": "control",
+      "tools": ["run_status", "cancel_run"],
+      "meaning": "No run with that run_id is known to this server process. Run state is in memory (ADR-0004); after a restart or retention eviction the durable trace is .evidence/runs/<run_id>/, which is not polled by run_status.",
+      "detail": "{run_id: run_id, known_runs: integer}"
+    },
+    "internal_error": {
+      "is_error": true,
+      "retryable": true,
+      "group": "call",
+      "tools": ["run_workflow", "list_tasks", "run_status", "cancel_run"],
+      "meaning": "The server failed in a way it did not predict, before any run was created. No run exists and nothing was written.",
+      "detail": "{panic: string}"
+    },
+    "act_spawn_failed": {
+      "is_error": false,
+      "retryable": true,
+      "group": "runner",
+      "tools": ["run_workflow", "run_status"],
+      "meaning": "act could not be started (fork/exec failure, bad working directory, argument building blew up). Terminal run status 'error'; the run exists and its (empty) log is on disk.",
+      "detail": "{os_error: string, argv: [string]}"
+    },
+    "act_crashed": {
+      "is_error": false,
+      "retryable": true,
+      "group": "runner",
+      "tools": ["run_workflow", "run_status"],
+      "meaning": "act died by signal, or was reaped without an exit status, for a reason that is not a timeout and not a cancel. Terminal run status 'error'.",
+      "detail": "{signal: string, exit_code?: integer}"
+    },
+    "runner_internal_error": {
+      "is_error": false,
+      "retryable": true,
+      "group": "runner",
+      "tools": ["run_workflow", "run_status"],
+      "meaning": "The supervisor failed mid-run after act was started (state machine inconsistency, worktree vanished, log pipe died). Terminal run status 'error'; whatever evidence already landed stays published.",
+      "detail": "{stage: string, reason: string}"
+    },
+    "evidence_write_failed": {
+      "is_error": false,
+      "retryable": false,
+      "group": "runner",
+      "tools": ["run_workflow", "run_status"],
+      "meaning": "act finished but the evidence the run existed to produce could not be written (EACCES, ENOSPC, read-only evidence root). The run is failed on purpose: a silent success with no file is the worst outcome. meta.json may be absent for these runs.",
+      "detail": "{path: relpath, os_error: string}"
+    },
+    "evidence_path_exists": {
+      "is_error": false,
+      "retryable": false,
+      "group": "runner",
+      "tools": ["run_workflow", "run_status"],
+      "meaning": "The evidence file this run was about to publish already exists (ADR-0002 section 6.2). That means a run_id collision, which is a bug worth surfacing rather than merging into someone else's file. Terminal run status 'error'.",
+      "detail": "{path: relpath, run_id: run_id}"
+    },
+    "evidence_path_escape": {
+      "is_error": false,
+      "retryable": false,
+      "group": "runner",
+      "tools": ["run_workflow", "run_status"],
+      "meaning": "A path derived from caller-controlled or payload-controlled input resolved outside the evidence root, or through a symlink (ADR-0002 section 6.3). The write was refused; terminal run status 'error'.",
+      "detail": "{path: string, root: relpath}"
+    }
+  },
+  "$defs": {
+    "run_id": {
+      "description": "Server-generated run identity; shape pinned by ADR-0002 section 1.2 so ls order is chronological. Never supplied by a caller.",
+      "type": "string",
+      "pattern": "^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$"
+    },
+    "timestamp": {
+      "description": "UTC instant, always Z (never +00:00), fractional seconds optional; writers canonicalise to millisecond precision. Same rule as ADR-0002 section 2.2.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$"
+    },
+    "relpath": {
+      "description": "Workspace-relative (or evidence-root-relative) path, forward slashes, no leading /, no . or .. segment, no absolute host path anywhere in a tool result.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[.]{0,2}[A-Za-z0-9][A-Za-z0-9 ._+-]*(/[.]{0,2}[A-Za-z0-9][A-Za-z0-9 ._+-]*)*$"
+    },
+    "workflow_name": {
+      "description": "Workflow identity as a caller types it: basename without extension (coverage), basename with .yml/.yaml, or the workspace-relative path .github/workflows/<file>. Case sensitive. Two consecutive dots are forbidden anywhere, so no '..' traversal segment is expressible; a leading '/' or '-' is not matchable. ADR-0001 section 2.2.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "not": {
+        "pattern": "\\.\\."
+      },
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._/-]*$"
+        },
+        {
+          "pattern": "^\\.github/workflows/[A-Za-z0-9][A-Za-z0-9 ._/-]*$"
+        }
+      ]
+    },
+    "task_id": {
+      "description": "Job id declared in the resolved workflow file; exactly what act -j receives (ADR-0001 section 2.3). Same dot rule as workflow_name: '..' is not expressible.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "not": {
+        "pattern": "\\.\\."
+      },
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._/-]*$"
+    },
+    "category": {
+      "description": "OPEN vocabulary, deliberately not a closed enum: benchmark and coverage are the two known values in v1, any other shape-legal value runs the job and produces no evidence. ADR-0001 section 2.4 states the reason.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "commit_input": {
+      "description": "Commit as a caller types it: 7 to 40 hex digits, either case, normalized to lowercase before resolution. No whitespace, no .., no ~, no leading - (ADR-0001 section 2.5).",
+      "type": "string",
+      "minLength": 7,
+      "maxLength": 40,
+      "pattern": "^[0-9a-fA-F]{7,40}$"
+    },
+    "commit_full": {
+      "description": "Resolved commit: full lowercase 40-hex SHA. Every result field named commit uses this, never the caller's abbreviation.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "warning_code": {
+      "description": "OPEN vocabulary of machine-readable caveats. Same vocabulary as meta.json warnings[] in ADR-0002 section 5.1, plus the tool-level members listed in docs/tool-contract.md. Adding a member is additive; an unknown code is never fatal.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "error_code": {
+      "description": "CLOSED set of machine-readable tool error codes. Every member is documented in docs/adr/0001-tool-contract.md section 5.3 and docs/tool-contract.md; x-error-codes in this file carries isError / retryable / owning tools per member. A client that receives a code it does not know MUST treat the call as a failed tool call (never as success) and MUST NOT retry blindly.",
+      "enum": [
+        "internal_error",
+        "invalid_arguments",
+        "unknown_argument",
+        "workspace_not_found",
+        "not_a_git_repository",
+        "workflows_dir_missing",
+        "act_missing",
+        "docker_unreachable",
+        "workflow_not_found",
+        "ambiguous_workflow",
+        "task_not_found",
+        "commit_unknown",
+        "commit_ambiguous",
+        "isolation_failed",
+        "workspace_busy",
+        "too_many_runs",
+        "idempotency_conflict",
+        "run_not_found",
+        "act_spawn_failed",
+        "act_crashed",
+        "runner_internal_error",
+        "evidence_write_failed",
+        "evidence_path_exists",
+        "evidence_path_escape"
+      ]
+    },
+    "error": {
+      "description": "The typed error payload. Present in structuredContent of every isError:true tool result (as the whole object), and as the 'error' member of a run result whose terminal status is 'error'.",
+      "type": "object",
+      "required": ["code", "message", "retryable"],
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/error_code"
+        },
+        "message": {
+          "description": "One human-readable sentence, no trailing newline, secret values already redacted. Never a stack trace, never a host absolute path.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "retryable": {
+          "description": "Whether calling again unchanged could possibly succeed, taken from the table in ADR-0001 section 5.3. Callers MUST NOT retry a retryable:true error in a tight loop.",
+          "type": "boolean"
+        },
+        "detail": {
+          "description": "Per-code machine-readable context; shape documented per code in x-error-codes. Keys listed there are always present for that code, extra keys are allowed. Must not exceed 4096 bytes when compactly serialized; lists are truncated rather than truncated mid-element.",
+          "type": "object",
+          "maxProperties": 16
+        }
+      }
+    },
+    "tool_error": {
+      "description": "The whole structuredContent object of an isError:true result: exactly one error member and nothing else.",
+      "type": "object",
+      "required": ["error"],
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/error"
+        }
+      }
+    },
+    "secret_map": {
+      "description": "Secret passthrough. Values never appear in argv, in any file under .evidence, in log_tail, or in a tool result; the runner redacts them at the source (mact-f1w.8 / .13).",
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 8192
+      }
+    },
+    "input_map": {
+      "description": "workflow_dispatch-style inputs, passed as act --input key=value in sorted key order so argv is stable and golden-testable.",
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "log_tail_bytes": {
+      "description": "How much log tail to return. The server truncates to a UTF-8 boundary at the last complete line that fits.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65536,
+      "default": 4096
+    },
+    "log_tail": {
+      "description": "Last lines of act's rendered log, redacted, workspace and evidence absolute paths replaced by <WORKSPACE> and <EVIDENCE>. Length is capped in BYTES by log_tail_bytes; maxLength here is the maximum allowed request (65536).",
+      "type": "string",
+      "maxLength": 65536
+    },
+    "status": {
+      "description": "Run state. pending/running are non-terminal and reachable only through run_status or a wait:false call; the other five are terminal and are the SAME names as .evidence run_status (ADR-0002).",
+      "enum": ["pending", "running", "success", "failed", "cancelled", "timed_out", "error"]
+    },
+    "phase": {
+      "description": "Coarse progress inside the supervisor (ADR-0004 owns transitions). Advisory: a client may display it, nothing may branch on it. Unknown values are ignored.",
+      "type": "string",
+      "enum": [
+        "queued",
+        "preparing_tree",
+        "starting_act",
+        "running",
+        "extracting_evidence",
+        "publishing_evidence",
+        "cancelling",
+        "done"
+      ]
+    },
+    "run_view": {
+      "description": "The canonical view of one run, returned by run_status(run_id) and, with the extra member 'deduplicated', by run_workflow. Fields the caller asked for by name in the ticket are all here: run_id, status, workflow_file, job (named 'task'), commit, started_at, duration_ms, evidence_files, evidence_record_count, log_tail, error.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "status",
+        "terminal",
+        "workflow",
+        "workflow_file",
+        "task",
+        "category",
+        "commit",
+        "evidence_files",
+        "evidence_record_count",
+        "log_tail",
+        "warnings"
+      ],
+      "properties": {
+        "run_id": {
+          "$ref": "#/$defs/run_id"
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "terminal": {
+          "description": "Redundant with status by design: a client polling run_status should not need a status table to decide whether to poll again.",
+          "type": "boolean"
+        },
+        "phase": {
+          "$ref": "#/$defs/phase"
+        },
+        "workflow": {
+          "description": "Resolved workflow identity: file basename without .yml/.yaml. Never a path, never re-derived from logs. Same value as the evidence envelope's workflow field.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._/-]*$"
+        },
+        "workflow_file": {
+          "$ref": "#/$defs/relpath"
+        },
+        "task": {
+          "$ref": "#/$defs/task_id"
+        },
+        "category": {
+          "$ref": "#/$defs/category"
+        },
+        "commit": {
+          "$ref": "#/$defs/commit_full"
+        },
+        "started_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "finished_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "duration_ms": {
+          "description": "Wall duration in ms: total run duration once terminal, elapsed-so-far while pending/running. Omitted only when the clock is not known (act never started).",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 259200000
+        },
+        "exit_code": {
+          "description": "act's wait(2) code. Absent when act produced no exit status (signalled, spawn failure) and always absent for pending/running.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "evidence_files": {
+          "description": "The JSONL evidence files this run published, relative to the evidence root (ADR-0002 section 1.1). Empty array means the run produced none, which is legitimate for an unknown category and for a run that died before extraction. meta.json and act.jsonl are NOT listed here: they are audit paths, not the contract.",
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/relpath"
+          }
+        },
+        "evidence_record_count": {
+          "description": "Total records across evidence_files. Zero is meaningful (ran, found nothing); it is not an error.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        },
+        "log_tail": {
+          "$ref": "#/$defs/log_tail"
+        },
+        "warnings": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/warning_code"
+          }
+        },
+        "error": {
+          "$ref": "#/$defs/error"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": ["success", "failed", "cancelled", "timed_out", "error"]
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "required": ["finished_at"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": ["pending", "running"]
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": ["finished_at"]
+                },
+                {
+                  "required": ["exit_code"]
+                },
+                {
+                  "required": ["error"]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "error"
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "required": ["error"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": ["success", "failed", "cancelled", "timed_out"]
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "not": {
+              "required": ["error"]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": ["success", "failed", "cancelled", "timed_out", "error"]
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "terminal": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": ["pending", "running"]
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "terminal": {
+                "const": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "run_summary": {
+      "description": "Compact entry for the run_status listing (no run_id given). Deliberately small: the listing is a recovery aid after a lost run_id, not a log viewer.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "status", "terminal", "workflow", "task", "category", "commit"],
+      "properties": {
+        "run_id": {
+          "$ref": "#/$defs/run_id"
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "terminal": {
+          "type": "boolean"
+        },
+        "phase": {
+          "$ref": "#/$defs/phase"
+        },
+        "workflow": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._/-]*$"
+        },
+        "task": {
+          "$ref": "#/$defs/task_id"
+        },
+        "category": {
+          "$ref": "#/$defs/category"
+        },
+        "commit": {
+          "$ref": "#/$defs/commit_full"
+        },
+        "started_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 259200000
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": ["success", "failed", "cancelled", "timed_out", "error"]
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "terminal": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": ["pending", "running"]
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "terminal": {
+                "const": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "run_workflow_args": {
+      "description": "tools/call params.arguments for run_workflow. All four identity fields are required; nothing else may be supplied except the listed optionals.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workflow", "task", "category", "commit"],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/workflow_name"
+        },
+        "task": {
+          "$ref": "#/$defs/task_id"
+        },
+        "category": {
+          "$ref": "#/$defs/category"
+        },
+        "commit": {
+          "$ref": "#/$defs/commit_input"
+        },
+        "wait": {
+          "description": "true (default): block until the run reaches a terminal state or timeout_secs expires, whichever comes first. false: return as soon as the run is registered, status running. A run outlives the request either way.",
+          "type": "boolean",
+          "default": true
+        },
+        "timeout_secs": {
+          "description": "Wall-clock budget for the act run and therefore for the blocking wait: at expiry the act process group is killed as a group and the run ends 'timed_out'. Defaults are per category and owned by ADR-0004 (v1: coverage 900, benchmark 1800, anything else 1800).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 21600
+        },
+        "log_tail_bytes": {
+          "$ref": "#/$defs/log_tail_bytes"
+        },
+        "inputs": {
+          "$ref": "#/$defs/input_map"
+        },
+        "secrets": {
+          "$ref": "#/$defs/secret_map"
+        },
+        "idempotency_key": {
+          "description": "Optional caller-side dedup token. A repeat call with the same key and the same (workflow, task, category, commit) returns the remembered run instead of starting a second one; same key with a different tuple is idempotency_conflict. Remembered in memory only, for as long as run state is retained (ADR-0004).",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        }
+      }
+    },
+    "run_workflow_result": {
+      "description": "structuredContent of a successful (isError:false) run_workflow call: run_view plus 'deduplicated'. Spelled out field-for-field instead of by $ref so a generated Rust struct and this file can be diffed mechanically; scripts/validate_tool_contract.py asserts the field set equals run_view's plus 'deduplicated'.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "status",
+        "terminal",
+        "deduplicated",
+        "workflow",
+        "workflow_file",
+        "task",
+        "category",
+        "commit",
+        "evidence_files",
+        "evidence_record_count",
+        "log_tail",
+        "warnings"
+      ],
+      "properties": {
+        "run_id": {
+          "$ref": "#/$defs/run_id"
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "terminal": {
+          "type": "boolean"
+        },
+        "deduplicated": {
+          "description": "True when this result is a remembered run found through idempotency_key rather than a run started by this call.",
+          "type": "boolean"
+        },
+        "phase": {
+          "$ref": "#/$defs/phase"
+        },
+        "workflow": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._/-]*$"
+        },
+        "workflow_file": {
+          "$ref": "#/$defs/relpath"
+        },
+        "task": {
+          "$ref": "#/$defs/task_id"
+        },
+        "category": {
+          "$ref": "#/$defs/category"
+        },
+        "commit": {
+          "$ref": "#/$defs/commit_full"
+        },
+        "started_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "finished_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 259200000
+        },
+        "exit_code": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "evidence_files": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/relpath"
+          }
+        },
+        "evidence_record_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        },
+        "log_tail": {
+          "$ref": "#/$defs/log_tail"
+        },
+        "warnings": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/warning_code"
+          }
+        },
+        "error": {
+          "$ref": "#/$defs/error"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": ["success", "failed", "cancelled", "timed_out", "error"]
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "required": ["finished_at"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": ["pending", "running"]
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": ["finished_at"]
+                },
+                {
+                  "required": ["exit_code"]
+                },
+                {
+                  "required": ["error"]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "error"
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "required": ["error"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": ["success", "failed", "cancelled", "timed_out"]
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "not": {
+              "required": ["error"]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": ["success", "failed", "cancelled", "timed_out", "error"]
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "terminal": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": ["pending", "running"]
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "terminal": {
+                "const": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "list_tasks_args": {
+      "description": "tools/call params.arguments for list_tasks. No argument may name a path: the tool only ever reads the server's own workspace (mact-f1w.13).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/workflow_name"
+        },
+        "include_steps": {
+          "description": "Also return each job's step summary (name, uses). Off by default: a big workflow's step list is the bulk of the payload.",
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "list_tasks_result": {
+      "description": "structuredContent for list_tasks. A workflow file that fails to parse is reported with an error member; it never fails the call.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workflows_dir", "workflow_count", "workflows", "warnings"],
+      "properties": {
+        "workflows_dir": {
+          "$ref": "#/$defs/relpath"
+        },
+        "workflow_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "workflows": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "file", "job_count", "jobs"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._/-]*$"
+              },
+              "file": {
+                "$ref": "#/$defs/relpath"
+              },
+              "display": {
+                "description": "The workflow's name: key if it declares one; absent otherwise.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255
+              },
+              "job_count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1024
+              },
+              "parse_error": {
+                "description": "Why this one file could not be read. Its own code namespace, deliberately separate from the tool-level error codes: a broken workflow file is data reported inside a successful call, never a failed call (one bad file must not break discovery).",
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["code", "message"],
+                "properties": {
+                  "code": {
+                    "enum": ["invalid_yaml", "not_a_map", "jobs_missing", "unsupported_yaml"]
+                  },
+                  "message": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024
+                  }
+                }
+              },
+              "jobs": {
+                "type": "array",
+                "maxItems": 1024,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["id", "category_hint"],
+                  "properties": {
+                    "id": {
+                      "$ref": "#/$defs/task_id"
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 255
+                    },
+                    "needs": {
+                      "type": "array",
+                      "maxItems": 64,
+                      "items": {
+                        "$ref": "#/$defs/task_id"
+                      }
+                    },
+                    "runs_on": {
+                      "type": "array",
+                      "maxItems": 16,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64
+                      }
+                    },
+                    "matrix_axes": {
+                      "type": "array",
+                      "maxItems": 16,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64
+                      }
+                    },
+                    "uses_composite": {
+                      "description": "True when the job or one of its steps references a remote or local reusable workflow/action (act needs network or a checkout to resolve it).",
+                      "type": "boolean"
+                    },
+                    "category_hint": {
+                      "description": "ADVISORY best-effort guess so a caller can pick a benchmark or coverage job without guessing: benchmark | coverage | other. Never authoritative: the caller still passes category explicitly.",
+                      "enum": ["benchmark", "coverage", "other"]
+                    },
+                    "steps": {
+                      "type": "array",
+                      "maxItems": 256,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 255
+                          },
+                          "uses": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 255
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/warning_code"
+          }
+        }
+      }
+    },
+    "run_status_args": {
+      "description": "tools/call params.arguments for run_status. With run_id: that run. Without it: the bounded recent/active listing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "run_id": {
+          "$ref": "#/$defs/run_id"
+        },
+        "log_tail_bytes": {
+          "$ref": "#/$defs/log_tail_bytes"
+        },
+        "limit": {
+          "description": "Listing mode only: how many runs to return, newest first.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50,
+          "default": 50
+        }
+      }
+    },
+    "run_status_result": {
+      "description": "structuredContent for run_status. Exactly one of run / runs is present, and the server does not validate that for you beyond the schemas: run iff run_id was supplied.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["active_count", "truncated"],
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/run_view"
+        },
+        "runs": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/run_summary"
+          }
+        },
+        "active_count": {
+          "description": "Runs currently non-terminal in this server process, whether or not they are in the returned page.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "truncated": {
+          "description": "True when older finished runs were dropped from the page (retention window from ADR-0004).",
+          "type": "boolean"
+        }
+      },
+      "oneOf": [
+        {
+          "required": ["run"],
+          "not": {
+            "required": ["runs"]
+          }
+        },
+        {
+          "required": ["runs"],
+          "not": {
+            "required": ["run"]
+          }
+        }
+      ]
+    },
+    "cancel_run_args": {
+      "description": "tools/call params.arguments for cancel_run.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id"],
+      "properties": {
+        "run_id": {
+          "$ref": "#/$defs/run_id"
+        }
+      }
+    },
+    "cancel_run_result": {
+      "description": "structuredContent for cancel_run. Cancelling a terminal run is NOT an error: cancel is idempotent and reports what was already true.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "status", "terminal", "already_terminal"],
+      "properties": {
+        "run_id": {
+          "$ref": "#/$defs/run_id"
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "terminal": {
+          "type": "boolean"
+        },
+        "already_terminal": {
+          "description": "True when the run was already terminal before this call; cancel_requested_at is then absent and status is the old terminal status, not cancelled.",
+          "type": "boolean"
+        },
+        "cancel_requested_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "kill": {
+          "description": "How the act process group was taken down (ADR-0004 owns the mechanics). Absent for a queued run that never started a process and for an already_terminal run.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["method"],
+          "properties": {
+            "method": {
+              "enum": ["term", "kill", "none"]
+            },
+            "took_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 300000
+            }
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/warning_code"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "already_terminal": {
+                "const": true
+              }
+            },
+            "required": ["already_terminal"]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": ["cancel_requested_at"]
+                },
+                {
+                  "required": ["kill"]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "already_terminal": {
+                "const": false
+              }
+            },
+            "required": ["already_terminal"]
+          },
+          "then": {
+            "required": ["cancel_requested_at"]
+          }
+        }
+      ]
+    }
+  }
+}

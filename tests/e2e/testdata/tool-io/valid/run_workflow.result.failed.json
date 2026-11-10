@@ -1,0 +1,24 @@
+{
+  "category": "benchmark",
+  "commit": "2f7c1a4b9e0d3c6a5b8f1e2d4c6a8b0f3e5d7c91",
+  "deduplicated": false,
+  "duration_ms": 94122,
+  "evidence_files": [
+    ".evidence/benchmark/2f7c1a4b9e0d3c6a5b8f1e2d4c6a8b0f3e5d7c91/20261110T004203Z-a1b2c3.jsonl"
+  ],
+  "evidence_record_count": 4,
+  "exit_code": 1,
+  "finished_at": "2026-11-10T00:43:37.539Z",
+  "log_tail": "##[error]Process completed with exit code 1.\n",
+  "phase": "done",
+  "run_id": "20261110T004203Z-a1b2c3",
+  "started_at": "2026-11-10T00:42:03.417Z",
+  "status": "failed",
+  "task": "hyperfine-bench",
+  "terminal": true,
+  "warnings": [
+    "exit_nonzero"
+  ],
+  "workflow": "benchmark",
+  "workflow_file": ".github/workflows/benchmark.yml"
+}

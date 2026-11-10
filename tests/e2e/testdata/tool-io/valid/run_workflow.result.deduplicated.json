@@ -1,0 +1,24 @@
+{
+  "category": "coverage",
+  "commit": "2f7c1a4b9e0d3c6a5b8f1e2d4c6a8b0f3e5d7c91",
+  "deduplicated": true,
+  "duration_ms": 61233,
+  "evidence_files": [
+    ".evidence/coverage/2f7c1a4b9e0d3c6a5b8f1e2d4c6a8b0f3e5d7c91/20261110T011507Z-d4e5f6.jsonl"
+  ],
+  "evidence_record_count": 5,
+  "exit_code": 0,
+  "finished_at": "2026-11-10T01:16:08.237Z",
+  "log_tail": "exit status 0\n",
+  "phase": "done",
+  "run_id": "20261110T011507Z-d4e5f6",
+  "started_at": "2026-11-10T01:15:07.004Z",
+  "status": "success",
+  "task": "coverage",
+  "terminal": true,
+  "warnings": [
+    "deduplicated"
+  ],
+  "workflow": "coverage",
+  "workflow_file": ".github/workflows/coverage.yml"
+}

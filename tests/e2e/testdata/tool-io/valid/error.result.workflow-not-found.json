@@ -1,0 +1,15 @@
+{
+  "error": {
+    "code": "workflow_not_found",
+    "detail": {
+      "available": [
+        "benchmark",
+        "coverage"
+      ],
+      "workflow": "bench",
+      "workflows_dir": ".github/workflows"
+    },
+    "message": "no workflow named 'bench' in .github/workflows",
+    "retryable": false
+  }
+}

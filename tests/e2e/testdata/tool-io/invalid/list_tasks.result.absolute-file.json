@@ -1,0 +1,13 @@
+{
+  "warnings": [],
+  "workflow_count": 1,
+  "workflows": [
+    {
+      "file": "/home/dev/scratch/.github/workflows/coverage.yml",
+      "job_count": 0,
+      "jobs": [],
+      "name": "coverage"
+    }
+  ],
+  "workflows_dir": ".github/workflows"
+}

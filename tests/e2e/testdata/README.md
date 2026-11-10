@@ -1,8 +1,9 @@
 # `tests/e2e/testdata` — contract fixtures
 
-These files are the executable half of [ADR-0002](../../../docs/adr/0002-evidence-jsonl-contract.md).
-They were **written by hand from the ADR and the schema**, not emitted by the implementation, so that
-the implementation has something independent to be measured against.
+These files are the executable half of [ADR-0002](../../../docs/adr/0002-evidence-jsonl-contract.md) (under
+`expected/` and `invalid/`) and of [ADR-0001](../../../docs/adr/0001-tool-contract.md) (under
+`tool-io/`). They were **written by hand from the ADRs and the schemas**, not emitted by the
+implementation, so that the implementation has something independent to be measured against.
 
 ```
 tests/e2e/testdata/
@@ -14,7 +15,10 @@ tests/e2e/testdata/
 │   ├── coverage-istanbul.jsonl      # coverage_summary source: statements/functions pairs
 │   ├── coverage-log-scrape.jsonl    # last resort: percent_only + low_confidence, no raw counts
 │   └── meta.json                    # run manifest for the coverage.jsonl run
-└── invalid/                         # each file must be REJECTED, for exactly one reason
+├── invalid/                         # each file must be REJECTED, for exactly one reason
+└── tool-io/                         # ADR-0001 tool arguments and structured results (see the last section)
+    ├── valid/                       # each file must validate against the $defs entry in its filename
+    └── invalid/                     # each file must be REJECTED
 ```
 
 ## Shape of the goldens
@@ -82,7 +86,96 @@ the JSON Schema cannot see; `scripts/validate_evidence.py` enforces them, and `a
 pip install jsonschema                                       # once
 python3 scripts/validate_evidence.py tests/e2e/testdata/expected        # must exit 0
 python3 scripts/validate_evidence.py tests/e2e/testdata/invalid         # must exit 1
+python3 scripts/validate_tool_contract.py --stats                       # must exit 0
 ```
 
 Any change to `schema/evidence.schema.json` must keep both commands above true, and must be reflected
 in the ADR in the same commit.
+
+## `tool-io/` — the ADR-0001 wire contract
+
+One JSON document per file: a tool's `params.arguments`, or the object the server puts in
+`result.structuredContent`, or the `isError: true` payload. Filename grammar — `validate_tool_contract.py`
+reads the def to validate against out of the name:
+
+```
+<tool>.<args|result>.<scenario>.json        tool ∈ run_workflow | list_tasks | run_status | cancel_run
+error.result.<scenario>.json                the shared $defs/tool_error payload
+```
+
+Regenerate the whole tree (it is generated once, from a reviewable script, so the files are byte-stable):
+`python3 scripts/gen_tool_contract_fixtures.py`.
+
+### `tool-io/valid/` — 21 documents that must validate
+
+| file | pins |
+|---|---|
+| `run_workflow.args.minimal.json` | the four required identity arguments and nothing else; 7-hex commit abbreviation |
+| `run_workflow.args.full.json` | every optional argument, uppercase commit, `.github/workflows/…` path form, `inputs`/`secrets` maps, `idempotency_key` |
+| `run_workflow.result.success.json` | the reference `run_view`: green run, one evidence file, 5 records |
+| `run_workflow.result.failed.json` | `status: "failed"` + `exit_code` — a red run is a normal result, and it still wrote evidence |
+| `run_workflow.result.running.json` | `wait: false` shape: non-terminal, `duration_ms` is elapsed, no `finished_at` / `exit_code` / `error` |
+| `run_workflow.result.error.json` | `status: "error"` requires `error`, and `error.code` comes from the runner group |
+| `run_workflow.result.timed_out.json` | timeout is its own terminal status, not `error` and not `cancelled` |
+| `run_workflow.result.cancelled.json` | `cancelled` + `partial_evidence_dropped` warning |
+| `run_workflow.result.deduplicated.json` | `deduplicated: true` replay via `idempotency_key` |
+| `list_tasks.args.empty.json` | no arguments is legal |
+| `list_tasks.args.filtered.json` | `workflow` filter + `include_steps` |
+| `list_tasks.result.full.json` | jobs with needs / matrix / runs_on / steps, advisory `category_hint`, and a `parse_error` file inside a successful call |
+| `run_status.args.list.json` | listing mode: `{}` |
+| `run_status.args.single.json` | single-run mode with `log_tail_bytes` |
+| `run_status.result.running.json` | exactly one of `run` / `runs`: here `run` |
+| `run_status.result.list.json` | `runs[]` of `run_summary`, newest first, `truncated: true` |
+| `cancel_run.args.json` | `run_id` is required here |
+| `cancel_run.result.cancelled.json` | real cancel: `cancel_requested_at` + `kill` |
+| `cancel_run.result.already-terminal.json` | idempotent cancel: `already_terminal: true`, old status kept, no `cancel_requested_at` / `kill` |
+| `error.result.workflow-not-found.json` | resolution error carrying `available`, so the caller self-corrects in one round trip |
+| `error.result.workspace-busy.json` | busy error carrying the in-flight `run_id` and `phase` |
+
+### `tool-io/invalid/` — 34 documents that must be rejected
+
+| file | rule (ADR-0001 §) |
+|---|---|
+| `run_workflow.args.missing-task.json` | `task` is required (§2.1) |
+| `run_workflow.args.unknown-field.json` | a caller-supplied `run_id` is `unknown_argument`; run ids are server-generated (§8) |
+| `run_workflow.args.short-commit.json` | commit is 7..=40 hex (§2.5) |
+| `run_workflow.args.nonhex-commit.json` | hex only — no whitespace, no `~`, no leading `-` (§2.5) |
+| `run_workflow.args.workflow-traversal.json` | `..` is not expressible in a workflow name (§2.2) |
+| `run_workflow.args.category-uppercase.json` | `category` is lowercase snake_case, and the shape check is all the validation it gets (§2.4) |
+| `run_workflow.args.timeout-too-large.json` | `timeout_secs` hard bound 21600 (§2.6, §9) |
+| `run_workflow.args.secret-value-not-string.json` | secret values are strings (§2.7) |
+| `run_workflow.args.bad-idempotency-key.json` | `idempotency_key` may not contain spaces (§2.1) |
+| `run_workflow.result.missing-run-id.json` | every run result carries `run_id` (§3.1) |
+| `run_workflow.result.status-succeeded.json` | the word is `success`; `succeeded` is not a status anywhere (§3.2) |
+| `run_workflow.result.terminal-without-finished-at.json` | terminal ⇒ `finished_at` (§3.1) |
+| `run_workflow.result.running-with-finished-at.json` | non-terminal ⇒ no `finished_at` (§3.1) |
+| `run_workflow.result.failed-with-error.json` | `error` is forbidden unless `status: "error"` (§3.1) |
+| `run_workflow.result.error-status-without-error.json` | `status: "error"` requires `error` (§3.1) |
+| `run_workflow.result.explicit-null.json` | `null` is never valid; absence expresses unknown (§3.1, ADR-0002 §2.1) |
+| `run_workflow.result.absolute-evidence-path.json` | no absolute host paths in a result (§3.3) |
+| `run_workflow.result.short-commit.json` | a result always carries the full 40-hex commit (§3.1) |
+| `run_workflow.result.unknown-error-code.json` | the error-code set is closed (§5.3) |
+| `run_workflow.result.log-tail-too-long.json` | `log_tail` respects the 65536-byte cap (§2.8, §9) |
+| `run_workflow.result.missing-deduplicated.json` | `deduplicated` is required on `run_workflow` results (§3) |
+| `run_workflow.result.terminal-flag-disagrees-with-status.json` | `terminal` must agree with `status` (§3.1) |
+| `run_status.args.bad-run-id.json` | `run_id` shape is ADR-0002 §1.2 (§3.1) |
+| `run_status.args.unknown-field.json` | no extra arguments (§2) |
+| `run_status.result.neither-run-nor-runs.json` | exactly one of `run` / `runs` (§6.2) |
+| `run_status.result.both-run-and-runs.json` | exactly one of `run` / `runs` (§6.2) |
+| `cancel_run.result.already-terminal-with-kill.json` | nothing was killed, so no `kill` (§6.3) |
+| `cancel_run.result.missing-cancel-requested-at.json` | a real cancel records `cancel_requested_at` (§6.3) |
+| `list_tasks.result.unknown-field.json` | no extra fields, and no absolute workspace path (§6.1) |
+| `list_tasks.result.bad-category-hint.json` | `category_hint` ∈ benchmark \| coverage \| other (§6.1) |
+| `list_tasks.result.absolute-file.json` | workflow paths are workspace-relative (§6.1) |
+| `error.result.missing-retryable.json` | `retryable` is required and comes from the table (§5.2) |
+| `error.result.detail-not-object.json` | `detail` is an object (§5.2) |
+| `error.result.double-nested.json` | `structuredContent` of an error is exactly `{"error": …}` (§5.2) |
+
+Three of them (`run_workflow.args.short-commit.json`, `run_workflow.args.workflow-traversal.json`,
+`error.result.double-nested.json`) are one violation each but report several leaf messages — a 6-hex string
+breaks both the pattern and `minLength`. `--stats` prints the count so it cannot quietly grow.
+
+Volatile values are pinned the same way as the evidence goldens so the e2e harness (mact-f1w.15) can
+normalise them explicitly: `commit` `2f7c1a4b…c91`, `run_id` `20261110T011507Z-d4e5f6` (coverage) and
+`20261110T004203Z-a1b2c3` (benchmark), `started_at` / `finished_at` to the matching instants, and
+`log_tail` free of absolute paths (`<WORKSPACE>` / `<EVIDENCE>`).

@@ -1,0 +1,69 @@
+{
+  "warnings": [
+    "parse_error"
+  ],
+  "workflow_count": 3,
+  "workflows": [
+    {
+      "display": "Benchmark",
+      "file": ".github/workflows/benchmark.yml",
+      "job_count": 2,
+      "jobs": [
+        {
+          "category_hint": "benchmark",
+          "id": "hyperfine-bench",
+          "matrix_axes": [
+            "profile"
+          ],
+          "name": "Run hyperfine benchmarks",
+          "needs": [
+            "build"
+          ],
+          "runs_on": [
+            "ubuntu-24.04"
+          ],
+          "uses_composite": true
+        },
+        {
+          "category_hint": "other",
+          "id": "build",
+          "runs_on": [
+            "ubuntu-24.04"
+          ]
+        }
+      ],
+      "name": "benchmark"
+    },
+    {
+      "file": ".github/workflows/coverage.yml",
+      "job_count": 1,
+      "jobs": [
+        {
+          "category_hint": "coverage",
+          "id": "coverage",
+          "runs_on": [
+            "ubuntu-24.04"
+          ],
+          "steps": [
+            {
+              "name": "Run tests",
+              "uses": "nick-fields/retry@v3"
+            }
+          ]
+        }
+      ],
+      "name": "coverage"
+    },
+    {
+      "file": ".github/workflows/broken.yml",
+      "job_count": 0,
+      "jobs": [],
+      "name": "broken",
+      "parse_error": {
+        "code": "invalid_yaml",
+        "message": "mapping values are not allowed here at line 7 column 3"
+      }
+    }
+  ],
+  "workflows_dir": ".github/workflows"
+}

@@ -1,0 +1,18 @@
+{
+  "warnings": [],
+  "workflow_count": 1,
+  "workflows": [
+    {
+      "file": ".github/workflows/coverage.yml",
+      "job_count": 1,
+      "jobs": [
+        {
+          "category_hint": "cov",
+          "id": "coverage"
+        }
+      ],
+      "name": "coverage"
+    }
+  ],
+  "workflows_dir": ".github/workflows"
+}

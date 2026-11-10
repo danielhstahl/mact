@@ -1,0 +1,12 @@
+{
+  "error": {
+    "code": "workspace_busy",
+    "detail": {
+      "phase": "running",
+      "run_id": "20261110T011507Z-d4e5f6",
+      "started_at": "2026-11-10T01:15:07.004Z"
+    },
+    "message": "workspace already has an act run in flight",
+    "retryable": true
+  }
+}

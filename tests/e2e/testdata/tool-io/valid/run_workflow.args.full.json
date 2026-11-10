@@ -1,0 +1,17 @@
+{
+  "category": "benchmark",
+  "commit": "2F7C1A4B9E0D3C6A5B8F1E2D4C6A8B0F3E5D7C91",
+  "idempotency_key": "sweep-2026-11-10:2f7c1a4:benchmark",
+  "inputs": {
+    "BENCH_ITERS": "20",
+    "PROFILE": "release"
+  },
+  "log_tail_bytes": 8192,
+  "secrets": {
+    "NPM_TOKEN": "super-secret-value"
+  },
+  "task": "hyperfine-bench",
+  "timeout_secs": 1800,
+  "wait": false,
+  "workflow": ".github/workflows/benchmark.yml"
+}
