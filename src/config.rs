@@ -10,10 +10,13 @@
 use std::{
     net::{IpAddr, SocketAddr, ToSocketAddrs},
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use clap::Args;
 use thiserror::Error;
+
+use crate::workspace::{IsolationPolicy, SemVer, MAX_GIT_TIMEOUT, MINIMUM_ACT_VERSION};
 
 /// Default bind address. Loopback only, always: act-mcp has **no
 /// authentication** (mact-f1w.5), and `act` runs arbitrary container images, so
@@ -43,6 +46,19 @@ pub struct Config {
     /// Optional scratch dir for act log capture (mact-f1w.8). `None` means the
     /// runner will use `<evidence-dir>/runs`.
     pub log_dir: Option<PathBuf>,
+    /// ADR-0003 D-1: which trees this server is willing to run (`--isolation`).
+    pub isolation: IsolationPolicy,
+    /// ADR-0003 §4.2 G5: downgrade the dirty-work-tree gate to the
+    /// `dirty_worktree` warning (`--allow-dirty-worktree`).
+    pub allow_dirty_worktree: bool,
+    /// ADR-0003 §10: per-`git`-call deadline (`--git-timeout-secs`).
+    pub git_timeout: Duration,
+    /// Oldest act release this server runs (`--minimum-act-version`); never below
+    /// [`MINIMUM_ACT_VERSION`].
+    pub minimum_act_version: SemVer,
+    /// Container-runtime socket the reachability probe dials, when the operator
+    /// pinned one (`--container-daemon-socket`). `None` probes the runtime default.
+    pub container_daemon_socket: Option<PathBuf>,
 }
 
 /// Reasons `act-mcp serve` refuses to start.
@@ -88,6 +104,21 @@ pub enum ConfigError {
 
     #[error("cannot read the current working directory: {reason}\n  fix: pass --workspace <path> explicitly")]
     NoCurrentDirectory { reason: String },
+
+    #[error("--isolation {value:?} is not a policy\n  fix: one of head-only, hybrid, worktree")]
+    IsolationPolicyInvalid { value: String },
+
+    #[error("--git-timeout-secs {value} is out of range (1..={})", MAX_GIT_TIMEOUT.as_secs())]
+    GitTimeoutOutOfRange { value: u32 },
+
+    #[error("--minimum-act-version {value:?} is not a major.minor.patch version ({reason})")]
+    MinimumActVersionInvalid { value: String, reason: String },
+
+    #[error("--minimum-act-version {value} is older than {floor}, the oldest act release whose flags this server emits\n  fix: install act {floor} or newer, or raise --minimum-act-version")]
+    MinimumActVersionTooOld { value: String, floor: String },
+
+    #[error("--container-daemon-socket was empty; pass a socket path such as /run/docker.sock, or omit it")]
+    ContainerDaemonSocketEmpty,
 }
 
 /// `act-mcp serve` arguments.
@@ -143,6 +174,54 @@ pub struct ServeArgs {
         help = "Directory for act log capture; defaults to <evidence-dir>/runs (mact-f1w.8)."
     )]
     pub log_dir: Option<PathBuf>,
+
+    /// ADR-0003 D-1 isolation policy.
+    #[arg(
+        long,
+        value_name = "POLICY",
+        default_value = "hybrid",
+        env = "ACT_MCP_ISOLATION",
+        help = "Which trees may be run: head-only (HEAD in place only), hybrid (HEAD in place, anything else in a worktree), worktree (always a worktree)."
+    )]
+    pub isolation: String,
+
+    /// ADR-0003 §4.2 G5 escape hatch.
+    #[arg(
+        long,
+        default_value_t = false,
+        env = "ACT_MCP_ALLOW_DIRTY_WORKTREE",
+        help = "Run a dirty HEAD anyway, stamping the dirty_worktree warning. Operator-only: the commit field then means 'HEAD plus whatever is in it'."
+    )]
+    pub allow_dirty_worktree: bool,
+
+    /// ADR-0003 §10 git budget.
+    #[arg(
+        long,
+        value_name = "SECS",
+        default_value_t = 30,
+        env = "ACT_MCP_GIT_TIMEOUT_SECS",
+        help = "Deadline for each read-only git call made while validating a run."
+    )]
+    pub git_timeout_secs: u32,
+
+    /// Oldest supported act.
+    #[arg(
+        long,
+        value_name = "X.Y.Z",
+        default_value = MINIMUM_ACT_VERSION,
+        env = "ACT_MCP_MINIMUM_ACT_VERSION",
+        help = "Refuse to run an act older than this version."
+    )]
+    pub minimum_act_version: String,
+
+    /// Container-runtime socket to probe.
+    #[arg(
+        long,
+        value_name = "PATH",
+        env = "ACT_MCP_CONTAINER_DAEMON_SOCKET",
+        help = "Container-runtime socket to check reachability against, instead of the runtime default. `-` (act's 'do not mount it') is treated as unset here."
+    )]
+    pub container_daemon_socket: Option<String>,
 }
 
 impl Default for ServeArgs {
@@ -153,6 +232,11 @@ impl Default for ServeArgs {
             evidence_dir: None,
             act_binary: PathBuf::from(DEFAULT_ACT_BINARY),
             log_dir: None,
+            isolation: "hybrid".to_owned(),
+            allow_dirty_worktree: false,
+            git_timeout_secs: 30,
+            minimum_act_version: MINIMUM_ACT_VERSION.to_owned(),
+            container_daemon_socket: None,
         }
     }
 }
@@ -168,6 +252,19 @@ impl Config {
         let workspace = Self::resolve_workspace(args)?;
         let bind = Self::resolve_bind(&args.bind)?;
         let act_binary = Self::resolve_act(&args.act_binary)?;
+
+        let isolation = Self::resolve_isolation(&args.isolation)?;
+        let git_timeout = Self::resolve_git_timeout(args.git_timeout_secs)?;
+        let minimum_act_version = Self::resolve_minimum_act_version(&args.minimum_act_version)?;
+        // `-` is act's own "do not mount the daemon socket into the job" value. It
+        // says nothing about whether a runtime is reachable — act always needs one —
+        // so the probe treats it as unset (ADR-0003 §8).
+        let container_daemon_socket = match args.container_daemon_socket.as_deref() {
+            None => None,
+            Some("") => return Err(ConfigError::ContainerDaemonSocketEmpty),
+            Some("-") => None,
+            Some(socket) => Some(PathBuf::from(socket)),
+        };
 
         let evidence_dir = args
             .evidence_dir
@@ -188,7 +285,47 @@ impl Config {
             bind,
             act_binary,
             log_dir: args.log_dir.clone(),
+            isolation,
+            allow_dirty_worktree: args.allow_dirty_worktree,
+            git_timeout,
+            minimum_act_version,
+            container_daemon_socket,
         })
+    }
+
+    fn resolve_isolation(value: &str) -> Result<IsolationPolicy, ConfigError> {
+        value
+            .parse::<IsolationPolicy>()
+            .map_err(|_| ConfigError::IsolationPolicyInvalid {
+                value: value.to_owned(),
+            })
+    }
+
+    fn resolve_git_timeout(secs: u32) -> Result<Duration, ConfigError> {
+        if secs == 0 || Duration::from_secs(u64::from(secs)) > MAX_GIT_TIMEOUT {
+            return Err(ConfigError::GitTimeoutOutOfRange { value: secs });
+        }
+        Ok(Duration::from_secs(u64::from(secs)))
+    }
+
+    fn resolve_minimum_act_version(value: &str) -> Result<SemVer, ConfigError> {
+        let parsed =
+            value
+                .parse::<SemVer>()
+                .map_err(|reason| ConfigError::MinimumActVersionInvalid {
+                    value: value.to_owned(),
+                    reason,
+                })?;
+        let floor = MINIMUM_ACT_VERSION
+            .parse::<SemVer>()
+            .expect("the pinned floor is a valid version");
+        if parsed < floor {
+            return Err(ConfigError::MinimumActVersionTooOld {
+                value: value.to_owned(),
+                floor: MINIMUM_ACT_VERSION.to_owned(),
+            });
+        }
+        Ok(parsed)
     }
 
     fn resolve_workspace(args: &ServeArgs) -> Result<PathBuf, ConfigError> {
@@ -285,6 +422,8 @@ pub fn is_loopback(ip: IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace::{IsolationPolicy, DEFAULT_GIT_TIMEOUT, MINIMUM_ACT_VERSION};
+    use std::time::Duration;
 
     fn args_with(workspace: &Path, act: &Path) -> ServeArgs {
         ServeArgs {
@@ -293,6 +432,7 @@ mod tests {
             evidence_dir: None,
             act_binary: act.to_path_buf(),
             log_dir: None,
+            ..ServeArgs::default()
         }
     }
 
@@ -361,6 +501,99 @@ mod tests {
             .expect_err("must fail");
         assert!(matches!(err, ConfigError::ActBinaryMissing { .. }));
         assert!(err.to_string().contains("nektos/act"));
+    }
+
+    #[test]
+    fn isolation_dirty_and_git_budget_defaults_are_the_adrs() {
+        let workspace = fixture_workspace();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let act = stub_act(tmp.path(), "act");
+        let config = Config::build(&args_with(workspace.path(), &act)).expect("valid config");
+        assert_eq!(config.isolation, IsolationPolicy::Hybrid);
+        assert!(!config.allow_dirty_worktree);
+        // The CLI default and the documented constant are one number, not two.
+        assert_eq!(config.git_timeout, DEFAULT_GIT_TIMEOUT);
+        assert_eq!(DEFAULT_GIT_TIMEOUT, Duration::from_secs(30));
+        assert_eq!(
+            config.minimum_act_version,
+            MINIMUM_ACT_VERSION.parse().expect("valid version")
+        );
+        assert_eq!(config.container_daemon_socket, None);
+    }
+
+    #[test]
+    fn the_isolation_flags_are_validated_at_boot_not_at_call_time() {
+        let workspace = fixture_workspace();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let act = stub_act(tmp.path(), "act");
+
+        let mut args = args_with(workspace.path(), &act);
+        args.isolation = "head_only".to_owned();
+        let err = Config::build(&args).expect_err("underscores are not the flag spelling");
+        assert!(matches!(err, ConfigError::IsolationPolicyInvalid { .. }));
+
+        let mut args = args_with(workspace.path(), &act);
+        args.isolation = "head-only".to_owned();
+        assert_eq!(
+            Config::build(&args)
+                .expect("head-only is a policy")
+                .isolation,
+            IsolationPolicy::HeadOnly
+        );
+
+        let mut args = args_with(workspace.path(), &act);
+        args.git_timeout_secs = 0;
+        assert!(matches!(
+            Config::build(&args).expect_err("0 is not a budget"),
+            ConfigError::GitTimeoutOutOfRange { .. }
+        ));
+
+        let mut args = args_with(workspace.path(), &act);
+        args.git_timeout_secs = 301;
+        assert!(matches!(
+            Config::build(&args).expect_err("ADR-0003 §10 caps the budget at 300"),
+            ConfigError::GitTimeoutOutOfRange { value: 301 }
+        ));
+
+        let mut args = args_with(workspace.path(), &act);
+        args.minimum_act_version = "0.1.99".to_owned();
+        let err = Config::build(&args).expect_err("below the flag floor");
+        assert!(matches!(err, ConfigError::MinimumActVersionTooOld { .. }));
+        assert!(err.to_string().contains(MINIMUM_ACT_VERSION));
+
+        let mut args = args_with(workspace.path(), &act);
+        args.minimum_act_version = "0.2.70".to_owned();
+        assert_eq!(
+            Config::build(&args)
+                .expect("raising the floor is allowed")
+                .minimum_act_version,
+            "0.2.70".parse().expect("valid version")
+        );
+
+        // `-` is act's own value for "no daemon socket in the job"; the probe treats
+        // it as unset, an empty value is a typo worth reporting.
+        let mut args = args_with(workspace.path(), &act);
+        args.container_daemon_socket = Some("-".to_owned());
+        assert_eq!(
+            Config::build(&args)
+                .expect("`-` is legal")
+                .container_daemon_socket,
+            None
+        );
+        let mut args = args_with(workspace.path(), &act);
+        args.container_daemon_socket = Some("/run/docker.sock".to_owned());
+        assert_eq!(
+            Config::build(&args)
+                .expect("a socket path is legal")
+                .container_daemon_socket,
+            Some(PathBuf::from("/run/docker.sock"))
+        );
+        let mut args = args_with(workspace.path(), &act);
+        args.container_daemon_socket = Some(String::new());
+        assert!(matches!(
+            Config::build(&args).expect_err("empty is a typo"),
+            ConfigError::ContainerDaemonSocketEmpty
+        ));
     }
 
     #[test]

@@ -15,6 +15,18 @@ use tempfile::TempDir;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+// The throwaway git repository lives in the library (`act_mcp::fixtures`) so the
+// unit tests and the integration tests share one definition; it is re-exported here
+// because `tests/common` is where a test looks for a helper. mact-f1w.15 (the e2e
+// harness) gets the same fixture this ticket's tests use.
+#[allow(
+    unused_imports,
+    reason = "re-exported for whichever test binary needs them"
+)]
+pub use act_mcp::fixtures::{
+    canonical, workflow_body, TestRepo, DEFAULT_WORKFLOW, DEFAULT_WORKFLOW_BODY,
+};
+
 /// A workspace that passes the boot gate: a directory containing
 /// `.github/workflows/`.
 pub fn fixture_workspace() -> TempDir {
@@ -70,6 +82,7 @@ impl Fixture {
             evidence_dir: None,
             act_binary: self.act.clone(),
             log_dir: None,
+            ..ServeArgs::default()
         }
     }
 

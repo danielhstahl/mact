@@ -63,6 +63,14 @@ which = "8"
 #   chrono        - timestamps; decided here: chrono (UTC everywhere), because
 #                   rmcp already pulls it into the tree -> mact-f1w.9
 
+# YAML: needed to read `.github/workflows/*.yml` (the `name:` key and the `jobs:`
+# map) during workflow/task resolution — mact-f1w.6. Deliberately yaml-rust2 and
+# not serde_yaml: serde_yaml is unmaintained (RUSTSEC-2024-0320), and we need only
+# "parse and walk", not serde derives on untrusted workflow files. `default-features
+# = false` drops encoding_rs; the loader reads &str. mact-f1w.7 (`list_tasks`)
+# builds its richer job index on the same crate rather than adding a second parser.
+yaml-rust2 = { version = "0.13", default-features = false }
+
 [dev-dependencies]
 # Same rmcp, plus the client half so the tests can be a real MCP client (a stock
 # client listing tools is the ticket's definition of done).

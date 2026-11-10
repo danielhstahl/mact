@@ -11,7 +11,14 @@
 //!
 //! * [`config`] — CLI/env surface and every boot-time validation, so "does this
 //!   workspace make sense" is answered before anything is spawned.
+//! * [`workspace`] — the pre-start validation gate: turn untrusted `run_workflow`
+//!   arguments plus the environment into a [`workspace::ValidatedRunTarget`], or
+//!   into one typed ADR-0001 error. Nothing here talks to the network or spawns act.
+//! * [`workflow_yaml`] — the minimal YAML view of a workflow file (declared name
+//!   and job ids) that validation needs.
 //! * [`server`] — the [`server::ActMcp`] service and the axum mount.
+//! * [`fixtures`] — throwaway-git-repository builders shared by the unit tests and
+//!   the integration tests (one definition, so the e2e suite reuses the same ones).
 //!
 //! ## Two rules this crate keeps
 //!
@@ -32,7 +39,11 @@
 #![warn(missing_docs)]
 
 pub mod config;
+pub mod fixtures;
 pub mod server;
+pub mod workflow_yaml;
+pub mod workspace;
 
 pub use config::{Config, ConfigError, ServeArgs};
 pub use server::ActMcp;
+pub use workspace::{RunRequest, ValidatedRunTarget, ValidationError, ValidationPolicy, Validator};
