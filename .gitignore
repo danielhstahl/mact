@@ -15,3 +15,6 @@ __pycache__/
 # run lock: docs/adr/0003-commit-isolation-and-serialization.md §6.
 .evidence/
 .act-mcp.lock
+
+# cargo build artefacts
+/target

@@ -1,0 +1,85 @@
+[package]
+name = "act-mcp"
+version = "0.1.0"
+edition = "2021"
+# rmcp 3.9's floor (its own Cargo.toml declares rust-version = "1.88"); do not
+# lower it, the 2026-07-28 protocol plumbing in rmcp does not build below it.
+rust-version = "1.88"
+description = "HTTP MCP server (protocol 2026-07-28) wrapping nektos/act with .evidence JSONL output"
+publish = false
+
+[lib]
+name = "act_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "act-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# Pinned to the 3.9 line on purpose: this server speaks exactly one protocol
+# revision (2026-07-28) and rmcp is what implements the negotiation for it.
+# Bumping rmcp means re-checking docs/adr/0001 and the conformance suite (mact-f1w.16).
+rmcp = { version = "3.9", default-features = false, features = [
+    "server",
+    "macros",
+    "schemars",
+    "transport-streamable-http-server",
+] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "process",
+    "signal",
+    "time",
+] }
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+clap = { version = "4", features = ["derive", "env"] }
+# CancellationToken: one token drives axum graceful shutdown and MCP session teardown.
+tokio-util = "0.7"
+# tower-http is used for the request-trace layer; tower is here because rmcp's
+# tower services are composed with it directly (mact-f1w.13 adds the Host/Origin
+# guards as tower layers).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "std"] }
+anyhow = "1"
+thiserror = "2"
+which = "8"
+
+# git: plain `git` CLI via tokio::process, NOT git2/libgit2. Decided in
+# mact-f1w.5 and recorded here so nobody re-litigates it: act itself shells out
+# to git, the gates we need (rev-parse, status --porcelain, worktree add) are all
+# CLI subcommands, and libgit2 would add a C build dependency for no gain.
+# The CLI is first used in mact-f1w.6 (workspace + commit validator).
+#
+# Deferred deps, deliberately not listed yet so `cargo build` stays honest about
+# what this scaffold actually links; each lands with the ticket that consumes it:
+#   uuid (v7)     - run ids, `YYYYMMDDTHHMMSSZ-<6 hex>` per ADR-0002 §1.2 -> mact-f1w.8/.11
+#   chrono        - timestamps; decided here: chrono (UTC everywhere), because
+#                   rmcp already pulls it into the tree -> mact-f1w.9
+
+[dev-dependencies]
+# Same rmcp, plus the client half so the tests can be a real MCP client (a stock
+# client listing tools is the ticket's definition of done).
+rmcp = { version = "3.9", default-features = false, features = [
+    "server",
+    "macros",
+    "schemars",
+    "transport-streamable-http-server",
+    "client",
+    "transport-streamable-http-client-reqwest",
+] }
+tempfile = "3"
+# Raw JSON-RPC over plain HTTP for the cases a well-behaved client never sends
+# (e.g. an initialize naming an older protocol revision).
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
+tokio = { version = "1", features = ["full", "macros"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+
