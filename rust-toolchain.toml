@@ -1,0 +1,23 @@
+# The toolchain this repository is built with, pinned.
+#
+# Two different numbers guard the Rust version here, and they mean different things:
+#
+# * `Cargo.toml`'s `rust-version = "1.88"` is the **floor**: the oldest rustc that may
+#   compile this crate. It is `rmcp` 3.9's own floor and must not be lowered.
+# * this file is the **pin**: the one toolchain CI installs and the one `cargo` picks up
+#   locally, so a green run on a build box and a green run on GitHub mean the same thing.
+#   `rustfmt` and `clippy` are listed because `scripts/ci.sh` runs both, and a pin that
+#   leaves clippy to whatever the host happens to have is not a pin.
+#
+# Why 1.99.1 and not the 1.88 floor: the committed `Cargo.lock` cannot be built by
+# 1.88.0 (`uuid 1.29.2` in the graph declares `rust-version = "1.89"`), so pinning the
+# floor would pin a toolchain that fails on this lockfile. The floor is still checked
+# where it can be — `cargo` itself refuses a build below it.
+#
+# Bumping this means re-running `scripts/ci.sh` (a new clippy is a new `-D warnings`
+# opinion, and this repo treats that as a code change, not a CI flake) and re-resolving
+# only what the new compiler demands.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

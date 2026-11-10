@@ -7,15 +7,18 @@
 //!                              └── handle() ──► terminate(initiator) → KillReport
 //! ```
 //!
-//! * [`build_argv`] (in [`argv`]) turns a [`RunSpec`] into act's argv — a pure function,
+//! * [`crate::runner::build_argv`] (in the `argv` submodule) turns a
+//!   [`crate::runner::RunSpec`] into act's argv — a pure function,
 //!   golden-tested against ADR-0003 §7.4.
-//! * [`Runner::start`] prepares the run's directories, writes the secret file, spawns act
-//!   **in its own process group** with `kill_on_drop`, and starts the log tee.
-//! * [`RunningActRun::wait`] owns the wait: it arms the absolute deadline, watches the
-//!   cancellation token, reaps act, drains the log, and returns an [`ActRunOutcome`].
-//! * [`RunHandle::terminate`] is the codebase's only signalling code (ADR-0004 §5.1):
+//! * [`crate::runner::Runner::start`] prepares the run's directories, writes the secret file,
+//!   spawns act **in its own process group** with `kill_on_drop`, and starts the log tee.
+//! * [`crate::runner::RunningActRun::wait`] owns the wait: it arms the absolute deadline,
+//!   watches the cancellation token, reaps act, drains the log, and returns an
+//!   [`crate::runner::ActRunOutcome`].
+//! * [`crate::runner::ActRunHandle::terminate`] is the codebase's only signalling code
+//!   (ADR-0004 §5.1):
 //!   `killpg(SIGTERM)` → `--term-grace-secs` → `killpg(SIGKILL)` → reap, and it reports a
-//!   [`KillReport`] that `cancel_run` copies verbatim.
+//!   [`crate::runner::KillReport`] that `cancel_run` copies verbatim.
 //!
 //! ## What the runner guarantees
 //!
@@ -27,7 +30,8 @@
 //! 3. **Secrets are gone before they are stored.** Redaction happens at the log source, so
 //!    neither `act.jsonl` nor `log_tail` nor any file a run produces can carry one
 //!    (ADR-0001 §2.7), and secret *values* are never argv at all. The needle list is
-//!    [`RunSpec::redaction_needles`]: every declared secret, plus anything whose *name* says
+//!    [`crate::runner::RunSpec::redaction_needles`]: every declared secret, plus anything
+//!    whose *name* says
 //!    secret among the caller's `--var`/`--input`/`--env`, the operator's act-process env,
 //!    and this server's own environment (mact-f1w.13).
 //! 4. **Both log bounds are enforced.** `act.jsonl` is capped by `--max-run-log-bytes`
@@ -543,7 +547,7 @@ pub struct RunSpec {
     /// and the seam the stub-act tests drive. `GITHUB_TOKEN` is filled from `secrets`
     /// automatically (ADR-0001 §2.7).
     pub process_env: BTreeMap<String, String>,
-    /// Opt-in event for act (see [`argv`]'s module docs).
+    /// Opt-in event for act (see the `argv` submodule's module docs).
     pub event: Option<ActEvent>,
     /// `--dryrun`: act validates the workflow and exits.
     pub dry_run: bool,

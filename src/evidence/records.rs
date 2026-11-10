@@ -1524,7 +1524,7 @@ pub struct BenchmarkRecord {
 }
 
 impl serde::Serialize for BenchmarkRecord {
-    /// Field order is the pinned wire order (see [`Envelope::write_into`]).
+    /// Field order is the pinned wire order (see `Envelope::write_into`).
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(None)?;
         self.envelope.write_into(&mut map)?;
@@ -1593,7 +1593,7 @@ pub struct CoverageRecord {
 }
 
 impl serde::Serialize for CoverageRecord {
-    /// Field order is the pinned wire order (see [`Envelope::write_into`]): envelope,
+    /// Field order is the pinned wire order (see `Envelope::write_into`): envelope,
     /// then label/scope/path, then the four count pairs in the order the istanbul golden
     /// lists them, then the scraped-percentage pair, then provenance.
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

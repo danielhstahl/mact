@@ -151,7 +151,7 @@ pub struct Config {
     pub max_run_dirs: usize,
     /// `--run-scratch`: the per-run scratch root outside the workspace (act's cwd, the
     /// `0600` secrets file, and an ADR-0003 worktree). See
-    /// [`Config::resolve_run_scratch`] for the one rule boot enforces.
+    /// `Config::resolve_run_scratch` (private, same module) for the one rule boot enforces.
     pub run_scratch: PathBuf,
 }
 

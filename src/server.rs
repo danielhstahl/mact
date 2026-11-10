@@ -351,15 +351,15 @@ fn request_key(id: &rmcp::model::RequestId) -> String {
     format!("{id}")
 }
 
-/// The axum [`Router`] holding the endpoint.
+/// The axum [`axum::Router`] holding the endpoint.
 ///
 /// Kept separate from [`serve`] so tests can mount the identical stack on an
 /// ephemeral port without going through the CLI.
 ///
 /// Two layers, in this order: request tracing (`RUST_LOG=debug`), and — only when the
-/// operator turned it on — the shared-secret check in [`require_session_token`]. Everything
+/// operator turned it on — the shared-secret check in `require_session_token`. Everything
 /// else that refuses a request happens inside rmcp's service, because that is where its
-/// `Host`/`Origin` allowlists and its body-size limit live; see [`http_config`].
+/// `Host`/`Origin` allowlists and its body-size limit live; see `http_config`.
 pub fn router(wiring: Arc<Wiring>, cancellation_token: CancellationToken) -> axum::Router {
     let router = axum::Router::new().nest_service(
         MCP_ROUTE,
@@ -486,7 +486,7 @@ fn http_config(
 /// and a half-open SSE stream must not be able to hold the process open:
 ///
 /// 1. `shutdown` cancels (ctrl-c / SIGTERM, wired in the binary) → axum stops
-///    accepting connections and in-flight handlers get [`SHUTDOWN_DRAIN_BUDGET`]
+///    accepting connections and in-flight handlers get `SHUTDOWN_DRAIN_BUDGET`
 ///    to finish on their own.
 /// 2. After that budget the session token is cancelled, which tears down live
 ///    MCP sessions, their SSE streams, and (from mact-f1w.8/.11 onward) the act

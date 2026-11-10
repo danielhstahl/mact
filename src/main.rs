@@ -41,7 +41,15 @@ struct Cli {
     command: Command,
 }
 
+// `clippy::large_enum_variant` is silenced deliberately, not habitually: `ServeArgs` is
+// clap's derived argument struct, clap's derive cannot box a subcommand's inline fields, and
+// this enum is built exactly once per process at boot. Boxing it by hand would mean writing
+// the argument parser by hand to save 200 bytes on a type that never outlives `main`.
 #[derive(Subcommand)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "clap builds the subcommand's argument struct inline; boxing it means hand-writing the parser"
+)]
 enum Command {
     /// Serve the MCP endpoint (streamable HTTP at /mcp).
     Serve(ServeArgs),

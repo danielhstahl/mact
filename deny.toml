@@ -1,0 +1,112 @@
+# cargo-deny configuration for act-mcp — the supply-chain half of `scripts/ci.sh`.
+#
+# Checked by `scripts/ci.sh supply-chain` (and by nothing else, so this file is the whole
+# policy). The four checks cargo-deny runs are all on, and each has a different job here:
+#
+#   licenses    — every dependency ships a licence this project may ship. New crates mean a
+#                 new line in `[licenses] allow`: an explicit, reviewable act.
+#   bans        — duplicate versions of the same crate, wildcard requirements, and the
+#                 crates this repo has *decided* not to use.
+#   sources     — dependencies only come from crates.io. A `git` dependency has to be
+#                 named here, in the open, with a reason.
+#   advisories  — RUSTSEC. This one needs the network (it clones the advisory DB); the
+#                 others do not, which is why `scripts/ci.sh --offline` runs the three
+#                 that work without it and says which one it skipped.
+#
+# `cargo audit` is not configured: cargo-deny's advisories check reads the same database
+# and also covers licences, bans and sources.
+
+# ---------------------------------------------------------------------------
+# Which dependency graph to check
+# ---------------------------------------------------------------------------
+[graph]
+# The platforms `scripts/ci.sh release` builds and the release job publishes: linux on
+# x86_64 and aarch64. Naming them is not a speed tweak — the default is *every* target,
+# and every target pulls in the uefi/windows-only corner of the ecosystem (r-efi, the
+# winapi family) whose licences and advisories this project cannot exercise and does not
+# ship. Anything that shows up on a linux build is checked; anything that can only show up
+# on a platform we do not ship is not this file's problem, and a build for a new platform
+# starts by adding its triple here.
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+# The same graph `cargo build --all-features` resolves, so a feature-gated dependency is
+# checked even though the default build does not link it.
+all-features = true
+
+# ---------------------------------------------------------------------------
+# Licences
+# ---------------------------------------------------------------------------
+[licenses]
+# `act-mcp` itself declares no licence (`publish = false`: this is a binary this project
+# runs, not a crate it ships), and cargo-deny would otherwise report the workspace as
+# `Unlicensed`. Private members are exempt; their dependencies are still checked.
+private = { ignore = true }
+# Permissive, OSI-disclosed licences only. The list is exactly the set the current graph
+# needs — the day a new one shows up, the build says so and someone decides whether it is
+# acceptable rather than a script shrugging.
+allow = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "MIT",
+    "MIT-0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+# Licence files that are close-but-not-exact copies of a canonical text. Below this
+# confidence the file is treated as no licence at all, which is the answer we want: a
+# bespoke licence is a legal question, not a detection threshold.
+confidence-threshold = 0.8
+
+# ---------------------------------------------------------------------------
+# Duplicates, wildcards, and decided-against crates
+# ---------------------------------------------------------------------------
+[bans]
+# A warning, not a denial: two versions of one crate in a graph this size is normal
+# (`getrandom` 0.3 next to 0.4 is two generations of the ecosystem, not a mistake), and a
+# check that is red on day one is a check nobody reads. It is still printed, and
+# `scripts/ci.sh` prints `cargo tree -d` next to it so a *needless* duplication of a big
+# crate is visible instead of folklore.
+multiple-versions = "warn"
+highlight = "all"
+# A wildcard requirement (`dependency = "*"`) resolves to whatever is newest, which is the
+# opposite of a pinned lockfile. This crate declares versions; keep it that way.
+wildcards = "deny"
+# Dev-dependencies are part of the graph cargo-deny sees, and this repo's dev-dependencies
+# (`reqwest`, a second `rmcp` feature set) are the ones most likely to drift.
+multiple-versions-include-dev = true
+
+# serde_yaml is unmaintained upstream (RUSTSEC-2024-0320) and Cargo.toml already says the
+# YAML reader here is `yaml-rust2`. Banning the crate outright means it cannot creep back
+# in through a transitive dependency on a branch where the advisories check was skipped.
+[[bans.deny]]
+name = "serde_yaml"
+reason = "unmaintained upstream (RUSTSEC-2024-0320); this repo reads YAML with yaml-rust2 — see Cargo.toml"
+
+# ---------------------------------------------------------------------------
+# Where dependencies may come from
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Empty on purpose. A git dependency is allowed by naming it here with the branch or rev
+# and the reason it is not a crates.io release — same rule as a licence addition.
+allow-git = []
+
+# ---------------------------------------------------------------------------
+# RUSTSEC advisories
+# ---------------------------------------------------------------------------
+[advisories]
+version = 2
+# The RUSTSEC graph includes dev-dependencies (cargo-deny checks the whole resolved graph,
+# and `reqwest`/`tempfile` are as much part of this build as `axum` is).
+# A yanked release is one the author withdrew after shipping; depending on it is a bug.
+yanked = "deny"
+# Empty on purpose. An ignored advisory needs its id, the reason, and the version that
+# makes it moot — e.g.
+#
+#   [[advisories.ignore]]
+#   id = "RUSTSEC-0000-0000"
+#   reason = "the vulnerable function is never called: <where>, and the upgrade is blocked by <what>"

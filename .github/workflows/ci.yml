@@ -1,0 +1,139 @@
+# CI for act-mcp.
+#
+# Deliberately thin, and thin on purpose: this repository's convention is that the logic of
+# a check lives in a script a human can run, not in YAML nobody can run. Everything here is
+# therefore either setup (checkout, cache, pinned toolchain, tool install) or a single call
+# into scripts/. If CI is red, `scripts/ci.sh --keep-going …` is red on your laptop, and
+# docs/ci.md says which step and why.
+#
+# Two jobs:
+#   check   — the whole suite: fmt, clippy -D warnings, rustdoc, cargo test, schema
+#             validation, cargo deny. No docker and no act on the runner, and none needed:
+#             tests/e2e is the pipeline proof (docs/testing.md §1).
+#   release — the release build for every platform this project ships, from the commit
+#             `check` approved, smoke-tested by scripts/smoke_binary.sh and uploaded.
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+    # A docs-only commit cannot break the crate, and a build that runs anyway teaches
+    # people to ignore the badge. The full set of paths that can break it:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "schema/**"
+      - "scripts/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "deny.toml"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    # No path filter here on purpose: a required status check that does not run for some
+    # PRs blocks that PR from merging, so PRs always get a run.
+  workflow_dispatch:
+
+# One run per branch at a time; a superseded PR push has nothing to say.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Nothing here writes to the repository, and a build that could is a build nobody audited.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      # One cache for the whole job: the registry (what cargo downloads) and ./target
+      # (what it compiles). Keyed on Cargo.lock plus the toolchain pin, so a lockfile or
+      # toolchain change starts cold, and restore-keys let a lockfile bump reuse the rest.
+      - name: cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ hashFiles('rust-toolchain.toml') }}-
+            ${{ runner.os }}-cargo-
+
+      # No toolchain action: rustup reads rust-toolchain.toml, which is the pin, and
+      # installs the components (clippy, rustfmt) listed in it. `rustup show` is what
+      # triggers that resolution, and prints what CI actually built with.
+      - name: toolchain
+        run: rustup show
+
+      - name: tools
+        run: scripts/install_ci_tools.sh
+
+      # The check itself. Everything except the release build, and `--keep-going` so one
+      # red step reports the others instead of hiding them.
+      - name: ci
+        run: scripts/ci.sh --keep-going fmt clippy doc test schema supply-chain
+
+  release:
+    name: release build (${{ matrix.target }})
+    # Only build a release from a commit that passed the checks.
+    needs: check
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    env:
+      # ci.sh's release step passes this through to cargo build and to
+      # scripts/smoke_binary.sh, which runs the artefact and reports its version+digest.
+      CARGO_BUILD_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      # rust-toolchain.toml pins the toolchain; the *target* is per matrix entry, so it is
+      # added here rather than in the toolchain file (which would force every local dev to
+      # carry every platform's std).
+      - name: target
+        run: rustup target add "${{ matrix.target }}"
+
+      - name: release build and smoke test
+        run: scripts/ci.sh release
+
+      # The binary, its `--version` output and its sha256, exactly as smoke_binary.sh
+      # produced them. (`download-artifact` drops the exec bit; re-chmod after download.)
+      - name: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: act-mcp-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/act-mcp
+            target/${{ matrix.target }}/release/dist/version.txt
+            target/${{ matrix.target }}/release/dist/sha256.txt
+          if-no-files-found: error

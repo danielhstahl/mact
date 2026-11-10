@@ -1,9 +1,11 @@
 //! Benchmark extraction: a finished act run → `.evidence/benchmark` records (mact-f1w.12,
 //! ADR-0002 §3.2, §3.3, §4.1, §4.4, §5.1, §5.2, §5.3).
 //!
-//! [`extract`] is the entry point, and like [`super::coverage::extract`] it is a function of
-//! two things that already exist when a run finishes: the runner's terminal
-//! [`RunOutcome`] and the [`ValidatedRunTarget`] the run was validated against. Nothing is
+//! [`extract`] is the entry point, and like
+//! [`crate::evidence::coverage::extract`] it is a function of two things that already exist
+//! when a run finishes: the runner's terminal
+//! [`crate::evidence::benchmark::RunOutcome`] and the
+//! [`crate::workspace::ValidatedRunTarget`] the run was validated against. Nothing is
 //! spawned, nothing is published, and no problem found here changes a run's status —
 //! extraction problems are data (ADR-0002 §5.1).
 //!

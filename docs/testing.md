@@ -13,6 +13,12 @@ cargo test --test <name>      # one suite, e.g. cargo test --test protocol_confo
 cargo test -- --ignored       # the two PR_SET_PDEATHSIG tests, which wait on wall-clock time
 ```
 
+`scripts/ci.sh` is the one command CI runs, and it is this section as a script: fmt, clippy
+`-D warnings`, rustdoc, `cargo test --all-features`, the schema checkers, `cargo deny`, and
+a release build that is then run to prove it works. `scripts/ci.sh --help` lists the steps;
+[docs/ci.md](ci.md) documents them, including the `rust-toolchain.toml` pin that makes a
+local run and a CI run the same claim.
+
 Two environment quirks worth knowing before the first red build:
 
 * on this repo's dev box `rustc` takes SIGBUS while linking inside a bind-mounted `/workspace`,

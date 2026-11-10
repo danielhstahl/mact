@@ -44,7 +44,7 @@
 //! anything else runs, writes **no** evidence file, and says so with `warnings:
 //! ["unknown_category"]` plus `evidence_files: []`, so an agent reading an empty scan is not left
 //! to guess whether it broke. Adding a category later is additive: one arm in
-//! [`pipeline::harvest`] and one extractor.
+//! `pipeline::harvest` (private, in this module's `pipeline` submodule) and one extractor.
 //!
 //! ## Errors
 //!

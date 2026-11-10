@@ -31,7 +31,7 @@
 //! Single-writer discipline is ADR-0002 §6.3: cross-process serialization is the
 //! workspace run lock of ADR-0003 (this layer adds no `flock` of its own), and
 //! in-process writers are serialized by an async mutex keyed on the canonical
-//! destination path — see [`guards`].
+//! destination path — see `guards` (private, same module).
 
 use std::{
     io::Write as _,
