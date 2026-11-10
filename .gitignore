@@ -11,5 +11,7 @@ __pycache__/
 # act-mcp evidence (local only)
 # Local runs of act-mcp write .evidence/ into whatever workspace they point at,
 # including this repo when it is used as a fixture workspace. Layout and rules:
-# docs/adr/0002-evidence-jsonl-contract.md §6.4
+# docs/adr/0002-evidence-jsonl-contract.md §6.4. .act-mcp.lock is the workspace
+# run lock: docs/adr/0003-commit-isolation-and-serialization.md §6.
 .evidence/
+.act-mcp.lock

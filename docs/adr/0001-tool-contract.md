@@ -423,7 +423,7 @@ table verbatim and `scripts/validate_tool_contract.py` fails the build if the tw
 | `task_not_found` | true | false | resolution | That job id is not declared in the resolved workflow. `detail.workflow_file`, `detail.task`, `detail.jobs` |
 | `commit_unknown` | true | false | resolution | `git rev-parse --verify <sha>^{commit}` failed; never fetched. `detail.commit`, `detail.reason` |
 | `commit_ambiguous` | true | false | resolution | Abbreviation matches more than one object; pass a longer prefix. `detail.commit`, `detail.candidates` |
-| `isolation_failed` | true | true | precondition | ADR-0003 could not produce a tree for that commit (head-only policy, or worktree create/cleanup failed); nothing was started. `detail.mode`, `detail.requested`, `detail.head`, `detail.reason` |
+| `isolation_failed` | true | true | precondition | ADR-0003 could not produce a tree for that commit (the head-only policy, or the tree gate refused the tree: dirty, sparse, bare, submodules); nothing was started. A worktree failure *after* registration is `runner_internal_error` with `detail.stage: "preparing_tree"` (ADR-0003 §4.4, §15.3). `detail.mode`, `detail.requested`, `detail.head`, `detail.reason` |
 | `workspace_busy` | true | true | precondition | The workspace single-flight lock is held; there is no queue. `detail.run_id`, `detail.phase`, `detail.started_at` |
 | `too_many_runs` | true | true | precondition | Server-wide `--max-concurrent-runs` (default 2) reached across workspaces. `detail.limit`, `detail.active` |
 | `idempotency_conflict` | true | false | precondition | That `idempotency_key` is remembered for a different tuple. `detail.idempotency_key`, `detail.run_id`, `detail.previous`, `detail.requested` |
@@ -449,7 +449,8 @@ definition unclassified.
 
 `warnings` (and `meta.json.warnings`) is an **open** vocabulary of caveats that never change `status`:
 `unknown_category`, `deduplicated`, `exit_nonzero`, `process_group_killed`, `partial_evidence_dropped`,
-`already_terminal`, `orphaned_containers` (added by ADR-0004 §5.6), `parse_error`, plus every
+`already_terminal`, `orphaned_containers` (added by ADR-0004 §5.6), `isolation_worktree`, `dirty_worktree`,
+`worktree_cleanup_failed` (added by ADR-0003 §9.3), `parse_error`, plus every
 ADR-0002 §5.1 code (`no_coverage_found`, `parse_failed`,
 `unsupported_format`, `payload_too_large`, `payload_unreadable`, `payload_transport_unavailable`,
 `coverage_source_shadowed`, `malformed_metric`, `marker_cap_reached`, `truncated`). Unknown warning codes are
@@ -711,7 +712,7 @@ restated verbatim in its own ADR (ticket acceptance says exactly that):
 - **ADR-0003** owns HEAD-gate versus worktree isolation and the workspace lock. It must keep:
   `isolation_failed` as the only code for "we cannot run this commit here" and `workspace_busy` as the busy
   answer with the in-flight run's identity in `detail`; one run per workspace, no queue; and the invariant
-  that the `commit` in a result is the commit that was actually executed.
+  that the `commit` in a result is the commit that was actually executed. (Kept: ADR-0003 §2, §4, §6.)
 - **mact-f1w.6** implements the validation order of 2.9 and the resolution rules of 2.2 / 2.5 with exactly
   these code names (`commit_unknown`, `workflow_not_found`, `ambiguous_workflow`, `task_not_found`,
   `act_missing`, `docker_unreachable` are the names mact-f1w.6 already used; `isolation_failed`,

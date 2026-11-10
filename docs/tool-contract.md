@@ -12,7 +12,8 @@ field sets drift apart between the ADR, this file and
   `*_result`, `run_view`, `tool_error` and the `x-error-codes` registry live there.
 - Fixtures (the e2e oracle): [`tests/e2e/testdata/tool-io`](../tests/e2e/testdata/tool-io).
 - Related decisions: [ADR-0002](adr/0002-evidence-jsonl-contract.md) (the on-disk contract, already
-  accepted), ADR-0003 (commit isolation), ADR-0004 (run lifecycle).
+  accepted), [ADR-0003](adr/0003-commit-isolation-and-serialization.md) (commit isolation and the workspace
+  lock), [ADR-0004](adr/0004-run-lifecycle.md) (run lifecycle).
 
 ## 1. Endpoint and transport
 
@@ -257,12 +258,12 @@ ADR, `$defs/error_code`, `x-error-codes`), `isError` and `retryable` columns inc
 | `task_not_found` | true | false | resolution | That job id is not declared in the resolved workflow. `detail.workflow_file`, `detail.task`, `detail.jobs` |
 | `commit_unknown` | true | false | resolution | `git rev-parse --verify <sha>^{commit}` failed; never fetched. `detail.commit`, `detail.reason` |
 | `commit_ambiguous` | true | false | resolution | Abbreviation matches more than one object; pass a longer prefix. `detail.commit`, `detail.candidates` |
-| `isolation_failed` | true | true | precondition | ADR-0003 could not produce a tree for that commit (head-only policy, or worktree create/cleanup failed); nothing was started. `detail.mode`, `detail.requested`, `detail.head`, `detail.reason` |
+| `isolation_failed` | true | true | precondition | ADR-0003 could not produce a tree for that commit (the head-only policy, or the tree gate refused the tree: dirty, sparse, bare, submodules); nothing was started. A worktree failure *after* registration is `runner_internal_error` with `detail.stage: "preparing_tree"`. `detail.mode`, `detail.requested`, `detail.head`, `detail.reason` |
 | `workspace_busy` | true | true | precondition | The workspace single-flight lock is held; there is no queue. `detail.run_id`, `detail.phase`, `detail.started_at` |
 | `too_many_runs` | true | true | precondition | Server-wide `--max-concurrent-runs` (default 2) reached across workspaces. `detail.limit`, `detail.active` |
 | `idempotency_conflict` | true | false | precondition | That `idempotency_key` is remembered for a different tuple. `detail.idempotency_key`, `detail.run_id`, `detail.previous`, `detail.requested` |
 | `run_not_found` | true | false | control | No such run in this process's registry; durable trace is `.evidence/runs/<run_id>/`. `detail.run_id`, `detail.known_runs` |
-| `internal_error` | true | true | call | Unpredicted server failure before any run was created; nothing was written. `detail.panic` |
+| `internal_error` | true | true | call | Unpredicted server failure before any run was created; nothing was written. `detail.panic`, plus `detail.reason`/`detail.path`/`detail.os_error` when the workspace lock could not be opened (ADR-0003 §6.3) |
 | `act_spawn_failed` | false | true | runner | act could not be exec'd (fork/exec, cwd, argv assembly). Terminal `status: error`. `detail.os_error`, `detail.argv` |
 | `act_crashed` | false | true | runner | act died by signal with no exit status, not a timeout and not a cancel. Terminal `status: error`. `detail.signal`, `detail.exit_code` |
 | `runner_internal_error` | false | true | runner | Supervisor failure after act started (state inconsistency, worktree vanished, log pipe died). Terminal `status: error`. `detail.stage`, `detail.reason` |
@@ -277,7 +278,8 @@ The `isError: false` rows live in `run_view.error` on a `status: "error"` run; t
 
 Open vocabulary in `warnings[]` (and in `.evidence/runs/<run_id>/meta.json`); a warning never changes
 `status`: `unknown_category`, `deduplicated`, `exit_nonzero`, `process_group_killed`,
-`partial_evidence_dropped`, `already_terminal`, `orphaned_containers`, `parse_error`, plus the
+`partial_evidence_dropped`, `already_terminal`, `orphaned_containers`, `isolation_worktree`,
+`dirty_worktree`, `worktree_cleanup_failed`, `parse_error`, plus the
 ADR-0002 §5.1 set (`no_coverage_found`, `parse_failed`, `unsupported_format`, `payload_too_large`,
 `payload_unreadable`, `payload_transport_unavailable`, `coverage_source_shadowed`, `malformed_metric`,
 `marker_cap_reached`, `truncated`). Unknown warnings are ignored, never fatal.

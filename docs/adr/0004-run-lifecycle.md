@@ -27,8 +27,8 @@ date: 2026-11-10
   the supervisor and runner tests listed in §13 (stub `act`, no docker). `scripts/validate_tool_contract.py`
   still guards the tool contract and the two documentation edits §16 asks for.
 - **Related:** ADR-0001 (tool contract — accepted, and it binds this one; §16 lists the reconciliations),
-  ADR-0002 (evidence JSONL contract — accepted), ADR-0003 (commit isolation / workspace lock — sibling,
-  not yet written; §8 states what this ADR needs from it)
+  ADR-0002 (evidence JSONL contract — accepted), ADR-0003 (commit isolation / workspace lock — accepted,
+  and it answers §8 and the §18 handoff)
 - **Consumers inside the epic:** mact-f1w.8 (runner: the only code that signals a process), mact-f1w.11
   (supervisor + `run_status` / `cancel_run`), mact-f1w.14 (`run_workflow` wiring), mact-f1w.13 (caps),
   mact-f1w.15 (e2e harness), mact-f1w.16 (protocol conformance: cancellation notification), mact-f1w.18

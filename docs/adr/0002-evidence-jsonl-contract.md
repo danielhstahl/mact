@@ -170,15 +170,19 @@ workspace at `/srv`, and leaking that into the record is both a portability and 
 act-mcp passes **`--bind`** and creates a per-run scratch directory:
 
 - host: `<worktree>/.evidence/incoming/<run_id>/`, mode `0777`
-- container: `/srv/.evidence/incoming/<run_id>/`
-- told to the job via two `--env` variables (values are the **container** paths):
-  - `ACTMCP_EVIDENCE_OUT=/srv/.evidence/incoming/<run_id>`
+- container: **the same absolute path** — `--bind` binds `<workdir>:<workdir>`, so there is no path
+  translation on Linux (amended by ADR-0003 §15.1, which found that the `/srv/...` path spelled here
+  originally was not the mount at all: a job writing to it wrote into its own container filesystem and the
+  payload was lost with it)
+- told to the job via two `--env` variables (values are the **container** paths, which under `--bind` are
+  the host paths):
+  - `ACTMCP_EVIDENCE_OUT=<worktree>/.evidence/incoming/<run_id>`
   - `ACTMCP_RUN_ID=<run_id>`
 
 `<worktree>` is the directory act was pointed at (the primary workspace, or the ADR-0003 worktree for
-a non-HEAD commit). That is why the scratch dir is described relative to the working tree while the
-*evidence root* of section 1.1 stays in the primary workspace: the scratch dir must live inside
-whatever is bind-mounted; the durable JSONL must not.
+a non-HEAD commit; ADR-0003 calls it `<tree>`). That is why the scratch dir is described relative to the
+working tree while the *evidence root* of section 1.1 stays in the primary workspace: the scratch dir must
+live inside whatever is bind-mounted; the durable JSONL must not.
 
 `--bind` means containers write into the **real** working tree. Accepted consequences, and the
 mitigations:
@@ -483,7 +487,8 @@ what makes section 7's version policy trivially safe.
   - this repository ignores `.evidence/` (a developer running the server on this repo must not dirty
     it);
   - when act-mcp creates an evidence root inside a *target* workspace that is a git repository, it
-    appends `.evidence/` to that workspace's `.gitignore` — idempotent (skip if already ignored,
+    appends `.evidence/` and `.act-mcp.lock` (the workspace run lock of ADR-0003 §6) to that workspace's
+    `.gitignore` — idempotent (skip if already ignored,
     checked with `git check-ignore`), under a `# act-mcp evidence (local only)` marker comment,
     never reordering or rewriting existing content, and skipped silently if the workspace is not a
     git repo or `.gitignore` is not writable.

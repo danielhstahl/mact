@@ -114,7 +114,7 @@
       "retryable": true,
       "group": "precondition",
       "tools": ["run_workflow"],
-      "meaning": "ADR-0003 could not produce a working tree for the requested commit: the running policy refuses a commit other than HEAD (head-only mode), or the temporary worktree could not be created or removed. The run was not started.",
+      "meaning": "ADR-0003 could not produce a working tree for the requested commit: the running policy refuses a commit other than HEAD (head-only mode), or the tree gate refused the tree it was pointed at (dirty working tree, sparse checkout, bare repository, submodules in the target commit). The run was not started; a worktree that fails to build or to be removed after registration is runner_internal_error with detail.stage preparing_tree (ADR-0003 section 4.4).",
       "detail": "{mode: head_only | worktree, requested: string, head: string, reason: string}"
     },
     "workspace_busy": {
@@ -155,7 +155,7 @@
       "group": "call",
       "tools": ["run_workflow", "list_tasks", "run_status", "cancel_run"],
       "meaning": "The server failed in a way it did not predict, before any run was created. No run exists and nothing was written.",
-      "detail": "{panic: string}"
+      "detail": "{panic: string} | {reason: string, path: relpath, os_error: string} (workspace lock unavailable, ADR-0003 section 6.3)"
     },
     "act_spawn_failed": {
       "is_error": false,
