@@ -232,6 +232,102 @@ jobs:
       - run: echo linting
 ";
 
+/// The `list_tasks` acceptance fixture: three workflow files, one with an explicit
+/// `name:` and a matrix, one plain whose step `uses:` a remote action, and one that
+/// is not valid YAML at all.
+///
+/// These are the three files ADR-0001 §6.1's fixtures describe ("one with an explicit
+/// `name:`, one with a matrix, one malformed"), and
+/// `tests/e2e/testdata/tool-io/valid/list_tasks.result.full.json` is the expected
+/// answer for them, so the Rust tests and the schema fixtures are pointed at the same
+/// repository rather than at three hand-written stories about one.
+pub const LIST_TASKS_FIXTURE: [(&str, &str); 3] = [
+    ("benchmark.yml", LIST_TASKS_BENCHMARK),
+    ("coverage.yml", LIST_TASKS_COVERAGE),
+    ("broken.yml", LIST_TASKS_BROKEN),
+];
+
+/// `benchmark.yml`: declared `name:`, two jobs, one of them a matrix benchmark.
+pub const LIST_TASKS_BENCHMARK: &str = "\
+name: Benchmark
+on:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: cargo build --release
+  hyperfine-bench:
+    name: Run hyperfine benchmarks
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [dev, release]
+    steps:
+      - uses: actions/download-artifact@v5
+      - name: Bench
+        run: hyperfine \"./target/${{ matrix.profile }}/cli\" --warmup 3
+";
+
+/// `coverage.yml`: no declared name, one job whose step `uses:` a remote action.
+pub const LIST_TASKS_COVERAGE: &str = "\
+on:
+  pull_request:
+jobs:
+  coverage:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run tests
+        uses: nick-fields/retry@v3
+        with:
+          command: cargo llvm-cov --lcov --output-path lcov.info
+";
+
+/// `broken.yml`: valid file name, invalid YAML (`key: a: b`).
+pub const LIST_TASKS_BROKEN: &str = "\
+name: broken
+on: push
+jobs:
+  broken:
+    runs-on: ubuntu-latest
+    steps:
+      - name: broken step
+        run: echo hi
+    extra: this: is not yaml
+";
+
+impl TestRepo {
+    /// Make this repository the [`LIST_TASKS_FIXTURE`]: the three workflow files and
+    /// nothing else under `.github/workflows`.
+    pub fn with_list_tasks_fixture(&self) -> &Self {
+        self.remove_all_workflows();
+        for (file, body) in LIST_TASKS_FIXTURE {
+            self.write_workflow(file, body);
+        }
+        self
+    }
+}
+
+/// A workflow whose trigger is the bare `on:` key — the YAML 1.1 boolean trap that
+/// pins the parser choice (see [`crate::workflow_yaml`]).
+pub const BARE_ON_WORKFLOW: &str = "\
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      full:
+        description: everything
+        default: off
+jobs:
+  on:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'a job id that reads as a YAML boolean'
+";
+
 /// A second workflow, for tests about which file a name resolves to.
 pub fn workflow_body(job: &str) -> String {
     format!(

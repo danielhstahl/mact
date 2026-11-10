@@ -196,7 +196,17 @@ async fn stops_promptly(signal: libc::c_int, signal_name: &str) {
     )
     .await;
     assert_eq!(status, 200, "tools/list over the real binary: {body}");
-    assert_eq!(body["result"]["tools"], json!([]), "body: {body}");
+    // The one tool so far, advertised by the real binary over its real socket.
+    assert_eq!(
+        body["result"]["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        vec!["list_tasks"],
+        "body: {body}"
+    );
 
     let pid = child.id().expect("child pid");
     // The way a supervisor (or a terminal) stops us.

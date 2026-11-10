@@ -122,6 +122,7 @@ Regenerate the whole tree (it is generated once, from a reviewable script, so th
 | `list_tasks.args.empty.json` | no arguments is legal |
 | `list_tasks.args.filtered.json` | `workflow` filter + `include_steps` |
 | `list_tasks.result.full.json` | jobs with needs / matrix / runs_on / steps, advisory `category_hint`, and a `parse_error` file inside a successful call |
+| `list_tasks.result.filtered.json` | the answer to `list_tasks.args.filtered.json` on the same three files: one entry, step summary, no `parse_error` warning because the broken file was not selected |
 | `run_status.args.list.json` | listing mode: `{}` |
 | `run_status.args.single.json` | single-run mode with `log_tail_bytes` |
 | `run_status.result.running.json` | exactly one of `run` / `runs`: here `run` |

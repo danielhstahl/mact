@@ -59,6 +59,15 @@ pub struct Config {
     /// Container-runtime socket the reachability probe dials, when the operator
     /// pinned one (`--container-daemon-socket`). `None` probes the runtime default.
     pub container_daemon_socket: Option<PathBuf>,
+    /// `--list-tasks-act-cross-check`: ask `act list` which workflow files it can
+    /// actually load during `list_tasks`, and report the files it refuses.
+    ///
+    /// Off by default. `list_tasks` is meant to be the cheapest call on the server —
+    /// no act, no docker, no lock — and act's listing has no machine-readable form
+    /// (see `tools::list_tasks::cross_check_with_act`), so the cross-check costs a
+    /// subprocess and a fragile table parse per call. It is an operator opt-in for
+    /// repositories where "act refuses this file" is worth paying that for.
+    pub list_tasks_act_cross_check: bool,
 }
 
 /// Reasons `act-mcp serve` refuses to start.
@@ -214,6 +223,15 @@ pub struct ServeArgs {
     )]
     pub minimum_act_version: String,
 
+    /// Cross-check `list_tasks` against `act list`.
+    #[arg(
+        long,
+        default_value_t = false,
+        env = "ACT_MCP_LIST_TASKS_ACT_CROSS_CHECK",
+        help = "During list_tasks, also run `act list` and report workflow files act refuses to load. Costs a subprocess per call; off by default."
+    )]
+    pub list_tasks_act_cross_check: bool,
+
     /// Container-runtime socket to probe.
     #[arg(
         long,
@@ -237,6 +255,7 @@ impl Default for ServeArgs {
             git_timeout_secs: 30,
             minimum_act_version: MINIMUM_ACT_VERSION.to_owned(),
             container_daemon_socket: None,
+            list_tasks_act_cross_check: false,
         }
     }
 }
@@ -290,6 +309,7 @@ impl Config {
             git_timeout,
             minimum_act_version,
             container_daemon_socket,
+            list_tasks_act_cross_check: args.list_tasks_act_cross_check,
         })
     }
 

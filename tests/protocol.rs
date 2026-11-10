@@ -1,5 +1,6 @@
 //! Protocol-surface tests: what a client can and cannot negotiate, and what
-//! `tools/list` looks like while the tool set is still empty.
+//! `tools/list` answers. There is one tool (`list_tasks`, mact-f1w.7); the tool-specific
+//! assertions live in `tests/list_tasks.rs`, and these stay focused on the protocol.
 //!
 //! Half of these use rmcp's own client (the "stock MCP client" in the ticket's
 //! definition of done); the other half speak raw JSON-RPC over HTTP, because they
@@ -18,10 +19,10 @@ use rmcp::{
 };
 use serde_json::json;
 
-/// Definition of done, literally: a stock client lists tools and gets a valid,
-/// empty envelope back.
+/// Definition of done, literally: a stock client lists tools and gets a valid
+/// envelope back — a single page with no cursor, and the tool set we advertise.
 #[tokio::test]
-async fn a_stock_client_can_list_tools_and_gets_an_empty_envelope() {
+async fn a_stock_client_can_list_tools() {
     let fixture = Fixture::new();
     let server = TestServer::start(fixture.config()).await;
 
@@ -41,19 +42,18 @@ async fn a_stock_client_can_list_tools_and_gets_an_empty_envelope() {
         .list_tools(None)
         .await
         .expect("tools/list returns a result envelope");
-    assert!(
-        tools.tools.is_empty(),
-        "no tools are registered yet, got: {:?}",
+    assert_eq!(
         tools
             .tools
             .iter()
             .map(|tool| tool.name.as_ref())
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>(),
+        vec!["list_tasks"],
+        "the tool set is exactly the tools this build registers"
     );
-    // The envelope must still be well-formed (next_cursor absent, result present).
     assert!(
         tools.next_cursor.is_none(),
-        "empty page must not advertise a cursor"
+        "a one-page listing must not advertise a cursor"
     );
 
     client.cancel().await.expect("client shuts down cleanly");
@@ -62,7 +62,7 @@ async fn a_stock_client_can_list_tools_and_gets_an_empty_envelope() {
 
 /// The endpoint answers a raw `tools/list` too — i.e. it is not rmcp-client-only.
 #[tokio::test]
-async fn a_raw_tools_list_request_returns_an_empty_tool_array() {
+async fn a_raw_tools_list_request_returns_the_tool_array() {
     let fixture = Fixture::new();
     let server = TestServer::start(fixture.config()).await;
 
@@ -76,7 +76,16 @@ async fn a_raw_tools_list_request_returns_an_empty_tool_array() {
     .await;
 
     assert_eq!(status, 200, "body: {body}");
-    assert_eq!(body["result"]["tools"], json!([]), "body: {body}");
+    assert_eq!(
+        body["result"]["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        vec!["list_tasks"],
+        "body: {body}"
+    );
     assert!(
         body.get("error").is_none(),
         "expected a result, got an error: {body}"

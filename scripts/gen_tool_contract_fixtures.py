@@ -218,7 +218,32 @@ VALID: dict[str, dict] = {
         ],
         "warnings": ["parse_error"],
     },
-    # ---- run_status ---------------------------------------------------------
+    # The answer to `list_tasks.args.filtered.json` on the same three-file repository:
+    # one workflow entry (so `workflow_count` is 1, not 3), `include_steps` step
+    # summary on its job, and no `parse_error` warning because the broken file was not
+    # selected. Hand-written from ADR-0001 §6.1 like every other fixture here.
+    "list_tasks.result.filtered.json": {
+        "workflows_dir": ".github/workflows",
+        "workflow_count": 1,
+        "workflows": [
+            {
+                "name": "coverage",
+                "file": ".github/workflows/coverage.yml",
+                "job_count": 1,
+                "jobs": [
+                    {
+                        "id": "coverage",
+                        "category_hint": "coverage",
+                        "runs_on": ["ubuntu-24.04"],
+                        "uses_composite": True,
+                        "steps": [{"name": "Run tests", "uses": "nick-fields/retry@v3"}],
+                    }
+                ],
+            }
+        ],
+        "warnings": [],
+    },
+    # ---- run_status --- ---------------------------------------------------------
     "run_status.args.list.json": {},
     "run_status.args.single.json": {"run_id": COV_RUN, "log_tail_bytes": 2048},
     "run_status.result.running.json": {

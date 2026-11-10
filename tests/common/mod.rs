@@ -8,7 +8,9 @@ use std::{net::SocketAddr, path::Path, sync::Arc};
 
 use act_mcp::{
     config::{ServeArgs, DEFAULT_BIND},
-    server, Config,
+    server,
+    workspace::{SemVer, DEFAULT_GIT_TIMEOUT},
+    Config,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -94,6 +96,33 @@ impl Fixture {
     }
 }
 
+/// A [`Config`] for an arbitrary workspace and act binary, bypassing
+/// [`Config::build`]'s boot gates.
+///
+/// Two things this is for, both of them acceptance criteria for `list_tasks`:
+/// pointing `act_binary` at a path that does not exist (the call must work with no
+/// act and no docker), and a workspace the boot gate would refuse (no `.github`, so
+/// only the tool's own `workflows_dir_missing` can be reached).
+pub fn config_at(workspace: &Path, act_binary: &Path) -> Arc<Config> {
+    Arc::new(Config {
+        workspace: canonical(workspace),
+        evidence_dir: workspace.join(".evidence"),
+        bind: DEFAULT_BIND.parse().expect("loopback default parses"),
+        act_binary: act_binary.to_path_buf(),
+        log_dir: None,
+        isolation: Default::default(),
+        allow_dirty_worktree: false,
+        git_timeout: DEFAULT_GIT_TIMEOUT,
+        minimum_act_version: SemVer {
+            major: 0,
+            minor: 2,
+            patch: 62,
+        },
+        container_daemon_socket: None,
+        list_tasks_act_cross_check: false,
+    })
+}
+
 /// A running server on an ephemeral loopback port.
 pub struct TestServer {
     pub addr: SocketAddr,
@@ -177,6 +206,11 @@ pub async fn post_jsonrpc(
         .json(&body);
     if let Some(version) = protocol_version {
         request = request.header("MCP-Protocol-Version", version);
+    }
+    // The stateless 2026-07-28 revision routes a `tools/call` from headers, and rmcp
+    // requires `Mcp-Name` (the tool being called) alongside `Mcp-Method`.
+    if let Some(name) = params.get("name").and_then(Value::as_str) {
+        request = request.header("Mcp-Name", name);
     }
     let response = request.send().await.expect("request reaches the server");
     let status = response.status().as_u16();

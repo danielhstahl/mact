@@ -536,7 +536,7 @@ fn insert_if_some(detail: &mut Map<String, Value>, key: &str, value: Option<&str
 }
 
 /// Truncate to at most `max` bytes without splitting a UTF-8 sequence.
-fn truncate_bytes(text: &str, max: usize) -> String {
+pub(crate) fn truncate_bytes(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_owned();
     }

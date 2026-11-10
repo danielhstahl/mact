@@ -182,12 +182,34 @@ non-terminal ⇒ no `finished_at`, no `exit_code`, no `error`, `terminal: false`
 ```
 
 - `category_hint` ∈ `benchmark | coverage | other` is **advisory**; you still pass `category` explicitly.
+  It is a substring scan of one job, in this order: the job `id`, then the job's `name:`, then each step's
+  `name` / `uses` / the head of its `run:` script — against two marker lists: measured coverage (`coverage`,
+  `lcov`, `coveralls`, `codecov`, `llvm-cov`, `tarpaulin`, `kcov`, `gcov`, `nyc`, `istanbul`, `--coverage`,
+  `--cov`) and measured benchmarks (`benchmark`, `bench`, `hyperfine`, `criterion`, `benchmark.json(.l)`).
+  The first level containing any marker wins, and coverage beats benchmark at a level — coverage tool names
+  are distinctive while `bench` is a substring of half the English language. A job that only says `build`
+  stays `other` even inside a workflow called `Benchmark`: the job is what a caller picks, so the job is
+  what the hint describes.
+- A workflow file whose name cannot be passed back as `workflow` (`.disabled.yml`, `weird:name.yml`) is left
+  out of the listing — advertising it would advertise a task nothing can run — and `warnings` says
+  `skipped_workflow`. It is a warning, never an error: the call still succeeded.
+- `warnings` here is `parse_error` (one file carried a `parse_error`), `skipped_workflow`, `truncated` (an
+  ADR-0001 §9 cap dropped whole elements) and, only with the operator's opt-in
+  `--list-tasks-act-cross-check`, `act_view_unavailable` / `unresolvable_workflow`. The last two are opt-in
+  because they need act, and discovery must not: a file act refuses to load is a caveat about the workspace,
+  so it is a warning naming nothing but itself (which file is a server log line, since `warnings[]` has no
+  room for act's text) and never a re-written `parse_error`.
 - A file that will not parse is returned with
   `"parse_error": {"code": "invalid_yaml", "message": "…line 7 column 3"}` and the call still succeeds. That
   code namespace (`invalid_yaml | not_a_map | jobs_missing | unsupported_yaml`) is separate from the tool
-  error codes on purpose.
+  error codes on purpose, and this tool adds no member to it.
 - Takes no workspace lock: safe while a benchmark is mid-flight. Errors: `invalid_arguments`,
-  `unknown_argument`, `workspace_not_found`, `workflows_dir_missing`.
+  `unknown_argument`, `workspace_not_found`, `workflows_dir_missing`, and — when `workflow` names a file —
+  `workflow_not_found` / `ambiguous_workflow`. ADR-0001 §6.1 lists the four that apply to a call with no
+  arguments; the two resolution codes are what makes a mistyped filter distinguishable from a repository
+  that simply has no such workflow, which is the difference between a caller retrying and a caller giving up.
+- There is no `category_reason` field and cannot be one (`additionalProperties: false`): the "reason" a hint
+  carries is the rule above, published here and in the tool description, not a per-job explanation.
 
 ## 5. `run_status`
 
@@ -279,7 +301,8 @@ The `isError: false` rows live in `run_view.error` on a `status: "error"` run; t
 Open vocabulary in `warnings[]` (and in `.evidence/runs/<run_id>/meta.json`); a warning never changes
 `status`: `unknown_category`, `deduplicated`, `exit_nonzero`, `process_group_killed`,
 `partial_evidence_dropped`, `already_terminal`, `orphaned_containers`, `isolation_worktree`,
-`dirty_worktree`, `worktree_cleanup_failed`, `parse_error`, plus the
+`dirty_worktree`, `worktree_cleanup_failed`, `parse_error`, `skipped_workflow`, `act_view_unavailable`,
+`unresolvable_workflow`, plus the
 ADR-0002 §5.1 set (`no_coverage_found`, `parse_failed`, `unsupported_format`, `payload_too_large`,
 `payload_unreadable`, `payload_transport_unavailable`, `coverage_source_shadowed`, `malformed_metric`,
 `marker_cap_reached`, `truncated`). Unknown warnings are ignored, never fatal.

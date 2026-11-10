@@ -11,7 +11,7 @@ use std::{
 
 use crate::{
     config::Config,
-    workflow_yaml::{self},
+    workflows::{self, IndexError, ResolveError, WorkflowFile},
     workspace::{
         display_path, parse_act_version, ActMissingReason, ArgumentError, Clock, CommandError,
         CommandOutput, CommitUnknownReason, ContainerRuntime, Environment, IsolationMode,
@@ -218,25 +218,6 @@ impl TreeSelector for DefaultTreeSelector {
     }
 }
 
-/// One `.github/workflows` file, indexed.
-#[derive(Debug)]
-struct WorkflowEntry {
-    /// Workspace-relative forward-slash path.
-    relpath: String,
-    /// Path on disk (workdir mode), or the workspace-anchored equivalent (commit mode).
-    on_disk: PathBuf,
-    /// e.g. `ci.yml`.
-    file_name: String,
-    /// e.g. `ci` — the display name and the form callers usually pass.
-    stem: String,
-    /// The `name:` key the file declares, if it declares one.
-    declared_name: Option<String>,
-    /// The job ids it declares (empty when `index` is).
-    index: workflow_yaml::WorkflowIndex,
-    /// Why the file could not be indexed, if it could not.
-    parse_error: Option<workflow_yaml::WorkflowYamlError>,
-}
-
 /// Remembers the last environment probe so a burst of calls does not re-run
 /// `which` and `docker info` (ADR-0001 §5.3).
 #[derive(Debug)]
@@ -361,7 +342,7 @@ impl Validator {
         let warnings = self.isolation_gate(&root, mode, head.as_deref(), &commit)?;
 
         Ok(ValidatedRunTarget {
-            workflow_file: workflow.workflow_file(&root, &plan),
+            workflow_file: workflow_path(workflow, &root, &plan),
             workflow_display: workflow.stem.clone(),
             workflow_relpath: workflow.relpath.clone(),
             job_id,
@@ -488,7 +469,7 @@ impl Validator {
                 reason: "`.github/workflows` resolves outside the workspace".to_owned(),
             });
         }
-        if !has_workflow_files(&canonical) {
+        if !workflows::has_workflow_files(&canonical) {
             return Err(ValidationError::WorkflowsDirMissing {
                 path: WORKFLOWS_DIR.to_owned(),
                 reason:
@@ -604,7 +585,7 @@ impl Validator {
         root: &Path,
         commit: &str,
         plan: &TreePlan,
-    ) -> Result<Vec<WorkflowEntry>, ValidationError> {
+    ) -> Result<Vec<WorkflowFile>, ValidationError> {
         match &plan.root {
             TreeRoot::Workspace => self.list_workdir_workflows(root),
             TreeRoot::Materialized { root: tree } => self.list_workdir_workflows(tree),
@@ -615,71 +596,22 @@ impl Validator {
     /// Index every workflow file under `tree`'s `.github/workflows`. Relpaths are
     /// tree-relative, which for a materialized worktree is the same string the
     /// workspace would report — that relpath is what the run carries.
-    fn list_workdir_workflows(&self, tree: &Path) -> Result<Vec<WorkflowEntry>, ValidationError> {
-        let directory = tree.join(WORKFLOWS_DIR);
-        let canonical =
-            directory
-                .canonicalize()
-                .map_err(|_| ValidationError::WorkflowsDirMissing {
-                    path: WORKFLOWS_DIR.to_owned(),
-                    reason: "`.github/workflows` could not be resolved".to_owned(),
-                })?;
-        let mut entries = Vec::new();
-        let mut stack = vec![canonical.clone()];
-        while let Some(directory) = stack.pop() {
-            let read = match std::fs::read_dir(&directory) {
-                Ok(read) => read,
-                Err(error) => {
-                    return Err(ValidationError::Internal {
-                        reason: format!("could not read `{WORKFLOWS_DIR}`: {error}"),
-                    });
-                }
-            };
-            for item in read.flatten() {
-                let path = item.path();
-                // `metadata` follows symlinks, which is the point: a symlinked
-                // directory is descended into only if its files then canonicalize
-                // back under `.github/workflows`, and a symlink pointing out of the
-                // workspace is dropped below.
-                let metadata = match path.metadata() {
-                    Ok(metadata) => metadata,
-                    Err(_) => continue,
-                };
-                if metadata.is_dir() {
-                    stack.push(path);
-                    continue;
-                }
-                if !is_workflow_file(&path) {
-                    continue;
-                }
-                let resolved = match path.canonicalize() {
-                    Ok(resolved) => resolved,
-                    Err(_) => continue,
-                };
-                // ADR-0001 §2.2: resolution must end *under* `.github/workflows`.
-                // A symlink out of it is not a workflow file of this repository, and
-                // is not listed as an option either, so the caller's next guess is a
-                // real file.
-                if !resolved.starts_with(&canonical) {
-                    continue;
-                }
-                let relpath = relative_path(tree, &resolved);
-                let bytes = match read_bounded(&resolved) {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        return Err(ValidationError::Internal {
-                            reason: format!(
-                                "could not read `{}`: {error}",
-                                workflow_display_name(&relpath)
-                            ),
-                        });
-                    }
-                };
-                entries.push(WorkflowEntry::new(relpath, resolved, bytes));
-            }
-        }
-        entries.sort_by(|left, right| left.relpath.cmp(&right.relpath));
-        Ok(entries)
+    ///
+    /// The walk itself is [`workflows::index_directory`], shared with `list_tasks` so
+    /// the two tools cannot disagree about which files exist.
+    fn list_workdir_workflows(&self, tree: &Path) -> Result<Vec<WorkflowFile>, ValidationError> {
+        workflows::index_directory(tree).map_err(|error| match error {
+            IndexError::Unresolvable => ValidationError::WorkflowsDirMissing {
+                path: WORKFLOWS_DIR.to_owned(),
+                reason: "`.github/workflows` could not be resolved".to_owned(),
+            },
+            IndexError::ReadDir { reason } => ValidationError::Internal {
+                reason: format!("could not read `{WORKFLOWS_DIR}`: {reason}"),
+            },
+            IndexError::ReadFile { file, reason } => ValidationError::Internal {
+                reason: format!("could not read `{file}`: {reason}"),
+            },
+        })
     }
 
     /// Read the workflow files of a commit's tree, without creating anything:
@@ -689,7 +621,7 @@ impl Validator {
         &self,
         root: &Path,
         sha: &str,
-    ) -> Result<Vec<WorkflowEntry>, ValidationError> {
+    ) -> Result<Vec<WorkflowFile>, ValidationError> {
         let listing = self
             .git(
                 root,
@@ -729,10 +661,10 @@ impl Validator {
                     ),
                 });
             }
-            entries.push(WorkflowEntry::new(
+            entries.push(WorkflowFile::new(
                 path.to_owned(),
                 root.join(path),
-                content.stdout,
+                &content.stdout,
             ));
         }
         entries.sort_by(|left, right| left.relpath.cmp(&right.relpath));
@@ -1043,85 +975,29 @@ fn category_shape(text: &str) -> bool {
 }
 
 /// Resolve one workflow name through ADR-0001 §2.2's four forms.
+///
+/// The precedence itself lives in [`workflows::resolve`], shared with `list_tasks`;
+/// this only translates the outcome into ADR-0001 §5.3's codes.
 fn resolve_workflow<'a>(
-    entries: &'a [WorkflowEntry],
+    entries: &'a [WorkflowFile],
     requested: &str,
-) -> Result<&'a WorkflowEntry, ValidationError> {
-    let not_found = |reason: Option<String>| ValidationError::WorkflowNotFound {
-        workflow: requested.to_owned(),
-        workflows_dir: WORKFLOWS_DIR,
-        available: ValidationError::option_list(
-            entries.iter().map(|entry| entry.stem.clone()).collect(),
-        ),
-        reason,
-    };
-
-    // Form 1: a path. An explicit path that is not there is not silently retried as
-    // a bare name — the caller said which file they meant.
-    let explicit = requested
-        .strip_prefix(&format!("{WORKFLOWS_DIR}/"))
-        .map(str::to_owned)
-        .or_else(|| requested.contains('/').then(|| requested.to_owned()));
-    if let Some(relative) = explicit {
-        let wanted = format!("{WORKFLOWS_DIR}/{relative}");
-        return entries
-            .iter()
-            .find(|entry| entry.relpath == wanted)
-            .ok_or_else(|| {
-                not_found(Some(
-                    "no file at that path under `.github/workflows`".to_owned(),
-                ))
-            });
-    }
-
-    // Forms 2 and 3: file name with extension, then basename without it. Two files
-    // matching one bare name is `ambiguous_workflow`, never a precedence coin flip.
-    for matches in [
-        entries
-            .iter()
-            .filter(|entry| entry.file_name == requested)
-            .collect::<Vec<_>>(),
-        entries
-            .iter()
-            .filter(|entry| entry.stem == requested)
-            .collect::<Vec<_>>(),
-    ] {
-        match matches.len() {
-            0 => continue,
-            1 => return Ok(matches[0]),
-            _ => {
-                return Err(ambiguous(
-                    requested,
-                    matches.iter().map(|entry| entry.relpath.clone()),
-                ))
-            }
-        }
-    }
-
-    // Form 4: the `name:` key, if exactly one file declares it.
-    let declared: Vec<&WorkflowEntry> = entries
-        .iter()
-        .filter(|entry| entry.declared_name.as_deref() == Some(requested))
-        .collect();
-    match declared.len() {
-        0 => Err(not_found(None)),
-        1 => Ok(declared[0]),
-        _ => Err(ambiguous(
-            requested,
-            declared.iter().map(|entry| entry.relpath.clone()),
-        )),
-    }
-}
-
-fn ambiguous(workflow: &str, candidates: impl Iterator<Item = String>) -> ValidationError {
-    ValidationError::AmbiguousWorkflow {
-        workflow: workflow.to_owned(),
-        candidates: ValidationError::option_list(candidates.collect()),
-    }
+) -> Result<&'a WorkflowFile, ValidationError> {
+    workflows::resolve(entries, requested).map_err(|error| match error {
+        ResolveError::NotFound { available, reason } => ValidationError::WorkflowNotFound {
+            workflow: requested.to_owned(),
+            workflows_dir: WORKFLOWS_DIR,
+            available: ValidationError::option_list(available),
+            reason,
+        },
+        ResolveError::Ambiguous { candidates } => ValidationError::AmbiguousWorkflow {
+            workflow: requested.to_owned(),
+            candidates: ValidationError::option_list(candidates),
+        },
+    })
 }
 
 /// ADR-0001 §2.3: the job id must be one the resolved file declares.
-fn confirm_task(workflow: &WorkflowEntry, task: &str) -> Result<String, ValidationError> {
+fn confirm_task(workflow: &WorkflowFile, task: &str) -> Result<String, ValidationError> {
     if let Some(error) = &workflow.parse_error {
         return Err(ValidationError::TaskNotFound {
             workflow_file: workflow.relpath.clone(),
@@ -1140,101 +1016,28 @@ fn confirm_task(workflow: &WorkflowEntry, task: &str) -> Result<String, Validati
         Err(ValidationError::TaskNotFound {
             workflow_file: workflow.relpath.clone(),
             task: task.to_owned(),
-            jobs: workflow.index.jobs.clone(),
+            // Job ids keep file order (the caller is scanning for their typo),
+            // so this list is truncated rather than sorted.
+            jobs: workflow
+                .index
+                .job_ids()
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
             reason: None,
         })
     }
 }
 
-impl WorkflowEntry {
-    fn new(relpath: String, on_disk: PathBuf, bytes: Vec<u8>) -> Self {
-        let file_name = relpath
-            .rsplit('/')
-            .next()
-            .unwrap_or(relpath.as_str())
-            .to_owned();
-        let stem = match file_name.rfind('.') {
-            Some(index) if index > 0 => file_name[..index].to_owned(),
-            _ => file_name.clone(),
-        };
-        let (index, parse_error) = match workflow_yaml::index_workflow(&bytes) {
-            Ok(index) => (index, None),
-            Err(error) => (workflow_yaml::WorkflowIndex::default(), Some(error)),
-        };
-        let declared_name = index.declared_name.clone();
-        Self {
-            relpath,
-            on_disk,
-            file_name,
-            stem,
-            declared_name,
-            index,
-            parse_error,
-        }
+/// The file in the tree being inspected; for a commit tree that does not exist on
+/// disk yet, the workspace-anchored path (see [`ValidatedRunTarget::workflow_file`]).
+fn workflow_path(workflow: &WorkflowFile, root: &Path, plan: &TreePlan) -> PathBuf {
+    match plan.root {
+        TreeRoot::Workspace | TreeRoot::Materialized { .. } => workflow.on_disk.clone(),
+        // The tree does not exist on disk yet, so anchor the relpath at the
+        // workspace; whoever materializes the tree re-anchors it.
+        TreeRoot::CommitTree => root.join(&workflow.relpath),
     }
-
-    /// The file in the tree being inspected; for a commit tree that does not exist
-    /// on disk yet, the workspace-anchored path (see [`ValidatedRunTarget::workflow_file`]).
-    fn workflow_file(&self, root: &Path, plan: &TreePlan) -> PathBuf {
-        match plan.root {
-            TreeRoot::Workspace | TreeRoot::Materialized { .. } => self.on_disk.clone(),
-            // The tree does not exist on disk yet, so anchor the relpath at the
-            // workspace; whoever materializes the tree re-anchors it.
-            TreeRoot::CommitTree => root.join(&self.relpath),
-        }
-    }
-}
-
-/// Whether `directory` holds at least one workflow file, recursively.
-fn has_workflow_files(directory: &Path) -> bool {
-    let mut stack = vec![directory.to_path_buf()];
-    while let Some(current) = stack.pop() {
-        let Ok(read) = std::fs::read_dir(&current) else {
-            continue;
-        };
-        for item in read.flatten() {
-            let path = item.path();
-            let Ok(metadata) = path.metadata() else {
-                continue;
-            };
-            if metadata.is_dir() {
-                stack.push(path);
-            } else if is_workflow_file(&path) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn is_workflow_file(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|extension| extension.to_str()),
-        Some("yml") | Some("yaml")
-    )
-}
-
-/// Read at most [`MAX_WORKFLOW_BYTES`] + 1 bytes; the YAML indexer then rejects
-/// anything longer without it having been slurped into memory.
-fn read_bounded(path: &Path) -> std::io::Result<Vec<u8>> {
-    use std::io::Read;
-    let mut file = std::fs::File::open(path)?;
-    let mut buffer = Vec::new();
-    file.by_ref()
-        .take((workflow_yaml::MAX_WORKFLOW_BYTES + 1) as u64)
-        .read_to_end(&mut buffer)?;
-    Ok(buffer)
-}
-
-fn relative_path(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
-}
-
-fn workflow_display_name(relpath: &str) -> String {
-    relpath.rsplit('/').next().unwrap_or(relpath).to_owned()
 }
 
 /// Probe TTL in the clock's unit, saturating on absurd values.

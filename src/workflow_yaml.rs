@@ -1,17 +1,37 @@
-//! The slice of workflow-file YAML that validation needs.
+//! The slice of workflow-file YAML this server needs, and nothing more.
 //!
-//! [`index_workflow`] answers exactly two questions about a `.github/workflows/*.yml`
-//! file, and nothing else:
+//! [`index_workflow`] answers these questions about a `.github/workflows/*.yml`
+//! file, and no others:
 //!
-//! * what `name:` it declares (form 4 of ADR-0001 §2.2 workflow resolution), and
+//! * what `name:` it declares (form 4 of ADR-0001 §2.2 workflow resolution),
 //! * which job ids its `jobs:` map declares (the set `task` must be a member of,
-//!   ADR-0001 §2.3 — the same string `act -j` receives).
+//!   ADR-0001 §2.3 — the same string `act -j` receives), and
+//! * per job, the handful of fields `list_tasks` advertises (mact-f1w.7): the
+//!   display `name`, `needs`, `runs-on`, the `strategy.matrix` axis names, every
+//!   `uses:` the job or its steps reference, and the step `name`/`uses` summary.
 //!
 //! It is a thin, allocation-light layer over [`yaml_rust2`] rather than a
 //! deserialization of the document: act owns actually *running* the workflow, and
 //! a second full model of the schema here would be a second thing to keep correct.
-//! The same crate is the base `list_tasks` (mact-f1w.7) builds its richer job index
-//! on, so there is one YAML parser in the tree.
+//! That is also why the per-job fields are read as *text*: `list_tasks` shows them
+//! to a caller who is choosing a job, and nothing here has to understand what
+//! `runs-on: [self-hosted, gpu]` means to a runner.
+//!
+//! ## Why this crate, pinned
+//!
+//! `yaml-rust2` (not the unmaintained `serde_yaml`, RUSTSEC-2024-0320) resolves
+//! plain scalars with a **restricted** YAML 1.1 core schema: `true/True/TRUE`,
+//! `false/False/FALSE`, `null/~/''`, integers and reals — and *nothing else*. That
+//! is load-bearing. GitHub Actions files are full of bare `on:`, and a parser that
+//! follows YAML 1.1's full boolean list (`y`, `yes`, `on`, `off`, `no`, …) turns
+//! the `on:` key into `Yaml::Boolean(true)`, so a name-based lookup silently finds
+//! no `on` key and a job id of `no` or `on` turns into `false`/`true` in the list
+//! a caller is handed. The tests `bare_on_key_survives_the_yaml_boolean_trap` and
+//! `boolean_looking_job_ids_stay_text` pin that behaviour, so a parser swap that
+//! reintroduces the trap fails here rather than in `list_tasks`. There is no
+//! `serde_yaml`-style `apply_implicit_schema` knob to get wrong: the resolution
+//! table above *is* the crate's behaviour, and it is the reason this module is the
+//! only YAML entry point in the tree.
 //!
 //! The error codes are ADR-0001 §6.1's `parse_error` namespace
 //! (`invalid_yaml | not_a_map | jobs_missing | unsupported_yaml`), which is
@@ -85,21 +105,85 @@ impl WorkflowYamlError {
     }
 }
 
-/// What validation needs to know about one workflow file.
+/// What this server needs to know about one workflow file.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WorkflowIndex {
     /// The `name:` key the file declares, if any (ADR-0001 §2.2 form 4).
     pub declared_name: Option<String>,
-    /// Job ids in declaration order, exactly as `jobs:` lists them.
-    pub jobs: Vec<String>,
+    /// The declared jobs, in file order.
+    pub jobs: Vec<JobIndex>,
 }
 
 impl WorkflowIndex {
     /// Whether `task` is one of the declared job ids.
     pub fn has_job(&self, task: &str) -> bool {
-        self.jobs.iter().any(|job| job == task)
+        self.jobs.iter().any(|job| job.id == task)
+    }
+
+    /// The declared job ids, in file order — the list a `task_not_found` detail and
+    /// `list_tasks` both show.
+    pub fn job_ids(&self) -> Vec<&str> {
+        self.jobs.iter().map(|job| job.id.as_str()).collect()
+    }
+
+    /// Look one job up by id.
+    pub fn job(&self, task: &str) -> Option<&JobIndex> {
+        self.jobs.iter().find(|job| job.id == task)
     }
 }
+
+/// One job (`jobs.<id>`) as far as this server cares.
+///
+/// Every field is the *text* of the workflow file, normalized into strings; an
+/// empty `Vec` means "the file says nothing here", never "empty by inheritance".
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct JobIndex {
+    /// The job id — the key under `jobs:`, and what `act -j` receives.
+    pub id: String,
+    /// The job's `name:` key, if it declares one.
+    pub name: Option<String>,
+    /// Job ids this job `needs:`, flattened from a scalar, a sequence, or the
+    /// `{job: <id>, …}` form.
+    pub needs: Vec<String>,
+    /// The `runs-on:` labels, one element per label (`runs-on: ubuntu-latest` and
+    /// `runs-on: [self-hosted, gpu]` both land here).
+    pub runs_on: Vec<String>,
+    /// Axis names declared by `strategy.matrix`, in file order. `include` and
+    /// `exclude` are matrix *entries*, not axes, so they are not axes here.
+    pub matrix_axes: Vec<String>,
+    /// Every `uses:` string this job references — the job-level reusable-workflow
+    /// call and each step's action — in file order.
+    pub uses: Vec<String>,
+    /// The `steps:` summary, in order: `name` and `uses` per step.
+    pub steps: Vec<StepIndex>,
+}
+
+impl JobIndex {
+    /// Whether anything here points at an action or reusable workflow that act has
+    /// to fetch or check out to resolve (`uses:` is the only marker there is).
+    pub fn uses_external(&self) -> bool {
+        !self.uses.is_empty()
+    }
+}
+
+/// One entry of a job's `steps:` list.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StepIndex {
+    /// The step's `name:`, if it declares one.
+    pub name: Option<String>,
+    /// The action or reusable workflow this step `uses:`, if any.
+    pub uses: Option<String>,
+    /// The first [`MAX_STEP_RUN_BYTES`] bytes of the step's `run:` script.
+    ///
+    /// Scan-only: `list_tasks`'s category hint looks for the project's known
+    /// coverage/benchmark commands here, and a whole `run:` block of a real workflow
+    /// can be kilobytes of shell nobody asked for. Never advertised verbatim in a tool
+    /// result — the advertised step summary is `name` and `uses` only.
+    pub run_snippet: Option<String>,
+}
+
+/// How much of a step's `run:` script is kept for the category hint.
+pub const MAX_STEP_RUN_BYTES: usize = 2048;
 
 /// Index a workflow file's bytes.
 ///
@@ -156,12 +240,114 @@ fn parse(text: &str) -> Result<WorkflowIndex, WorkflowYamlError> {
     // Insertion order is preserved by yaml-rust2's hash type, so the job list
     // handed back to a caller (and shown in a `task_not_found` detail) reads in
     // file order rather than in hash order.
-    for (key, _value) in jobs_map {
-        if let Some(job) = scalar_to_string(key) {
-            index.jobs.push(job);
-        }
+    for (key, value) in jobs_map {
+        let Some(id) = scalar_to_string(key) else {
+            continue;
+        };
+        index.jobs.push(index_job(id, value));
     }
     Ok(index)
+}
+
+/// Index one job.
+///
+/// Deliberately forgiving: a job whose value is not a mapping still gets an id, so
+/// `list_tasks` shows what the file declares and `run_workflow`'s resolution (which
+/// only needs the id) keeps agreeing with it. act is the one that has to accept the
+/// job, and it says so itself when it cannot.
+fn index_job(id: String, value: &Yaml) -> JobIndex {
+    let mut job = JobIndex {
+        id,
+        ..JobIndex::default()
+    };
+    let Yaml::Hash(job_map) = value else {
+        return job;
+    };
+
+    job.name = lookup(job_map, "name").and_then(scalar_to_string);
+    job.needs = needs(lookup(job_map, "needs"));
+    job.runs_on = string_list(lookup(job_map, "runs-on").or_else(|| lookup(job_map, "runs_on")));
+    job.matrix_axes = matrix_axes(lookup(job_map, "strategy"));
+
+    // A job that `uses:` a reusable workflow has no `steps:` at all, so both are
+    // collected into one list in file order.
+    if let Some(uses) = lookup(job_map, "uses").and_then(scalar_to_string) {
+        job.uses.push(uses);
+    }
+    if let Some(Yaml::Array(steps)) = lookup(job_map, "steps") {
+        for step in steps {
+            let Yaml::Hash(step_map) = step else {
+                continue;
+            };
+            let uses = lookup(step_map, "uses").and_then(scalar_to_string);
+            if let Some(uses) = uses.clone() {
+                job.uses.push(uses);
+            }
+            job.steps.push(StepIndex {
+                name: lookup(step_map, "name").and_then(scalar_to_string),
+                uses,
+                run_snippet: lookup(step_map, "run")
+                    .and_then(scalar_to_string)
+                    .map(truncate),
+            });
+        }
+    }
+    job
+}
+
+/// `needs:` in all three spellings GitHub accepts: one job id, a sequence of ids,
+/// or a sequence of `{job: <id>, …}` mappings.
+fn needs(value: Option<&Yaml>) -> Vec<String> {
+    match value {
+        None => Vec::new(),
+        Some(Yaml::Array(items)) => items
+            .iter()
+            .flat_map(|item| match item {
+                Yaml::Hash(entry) => lookup(entry, "job").and_then(scalar_to_string),
+                other => scalar_to_string(other),
+            })
+            .collect(),
+        Some(other) => scalar_to_string(other).into_iter().collect(),
+    }
+}
+
+/// Keep at most [`MAX_STEP_RUN_BYTES`] of a scalar, on a character boundary.
+fn truncate(text: String) -> String {
+    if text.len() <= MAX_STEP_RUN_BYTES {
+        return text;
+    }
+    let mut end = MAX_STEP_RUN_BYTES;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
+}
+
+/// A scalar or a sequence of scalars, as strings.
+fn string_list(value: Option<&Yaml>) -> Vec<String> {
+    match value {
+        None => Vec::new(),
+        Some(Yaml::Array(items)) => items.iter().filter_map(scalar_to_string).collect(),
+        Some(other) => scalar_to_string(other).into_iter().collect(),
+    }
+}
+
+/// The axis names of `strategy.matrix`, excluding `include`/`exclude`, which are
+/// matrix *entries* rather than axes a caller could pick a value for.
+fn matrix_axes(strategy: Option<&Yaml>) -> Vec<String> {
+    let Some(Yaml::Hash(strategy_map)) = strategy else {
+        return Vec::new();
+    };
+    let Some(Yaml::Hash(matrix)) = lookup(strategy_map, "matrix") else {
+        return Vec::new();
+    };
+    matrix
+        .iter()
+        .filter_map(|(key, _)| {
+            let name = scalar_to_string(key)?;
+            (!matches!(name.as_str(), "include" | "exclude")).then_some(name)
+        })
+        .collect()
 }
 
 /// Look up a top-level key by name.
@@ -299,7 +485,7 @@ jobs:
 ";
         let got = index(text);
         assert_eq!(got.declared_name.as_deref(), Some("Continuous Bench"));
-        assert_eq!(got.jobs, vec!["zulu", "alpha"]);
+        assert_eq!(got.job_ids(), vec!["zulu", "alpha"]);
         assert!(got.has_job("alpha"));
         assert!(!got.has_job("missing"));
     }
@@ -321,7 +507,7 @@ jobs:
 ";
         let got = index(text);
         assert_eq!(got.declared_name, None);
-        assert_eq!(got.jobs, vec!["build"]);
+        assert_eq!(got.job_ids(), vec!["build"]);
     }
 
     #[test]
@@ -332,7 +518,7 @@ jobs:
   'with spaces': {}
   plain: {}
 ";
-        assert_eq!(index(text).jobs, vec!["2024", "with spaces", "plain"]);
+        assert_eq!(index(text).job_ids(), vec!["2024", "with spaces", "plain"]);
     }
 
     #[test]
@@ -341,7 +527,7 @@ jobs:
             "name: flow\njobs: { one: {runs-on: ubuntu-latest}, two: {runs-on: ubuntu-latest} }\n";
         let got = index(text);
         assert_eq!(got.declared_name.as_deref(), Some("flow"));
-        assert_eq!(got.jobs, vec!["one", "two"]);
+        assert_eq!(got.job_ids(), vec!["one", "two"]);
     }
 
     #[test]
@@ -357,7 +543,7 @@ jobs:
 ";
         let got = index(text);
         assert_eq!(got.declared_name, None);
-        assert_eq!(got.jobs, vec!["test"]);
+        assert_eq!(got.job_ids(), vec!["test"]);
     }
 
     #[test]
@@ -374,13 +560,156 @@ jobs:
 ";
         let got = index(text);
         assert_eq!(got.declared_name.as_deref(), Some("real"));
-        assert_eq!(got.jobs, vec!["build"]);
+        assert_eq!(got.job_ids(), vec!["build"]);
     }
 
     #[test]
     fn crlf_line_endings_parse() {
         let text = "name: crlf\r\non: push\r\njobs:\r\n  build:\r\n    runs-on: ubuntu-latest\r\n";
-        assert_eq!(index(text).jobs, vec!["build"]);
+        assert_eq!(index(text).job_ids(), vec!["build"]);
+    }
+
+    /// The YAML 1.1 trap this parser is pinned to avoid.
+    ///
+    /// GitHub Actions writes `on:` (and jobs full of `if:`), and YAML 1.1 lists
+    /// `on`/`off`/`y`/`n`/`yes`/`no` as booleans. A parser that applies that table
+    /// to plain scalars makes the `on:` key `Yaml::Boolean(true)`, and a name-based
+    /// lookup then reports a perfectly good workflow as having no trigger — or,
+    /// worse, reports a job id as `true`. See the module docs for why `yaml_rust2`
+    /// does not do this.
+    #[test]
+    fn bare_on_key_survives_the_yaml_boolean_trap() {
+        for text in [
+            // The plainest file a real repository ships: bare `on:`, bare `push:`.
+            "on:\n  push:\n  pull_request:\njobs:\n  build:\n    runs-on: ubuntu-latest\n",
+            // `on:` as a one-line scalar trigger, and a mapping-valued trigger list.
+            "on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n",
+            // `on:` with the other YAML 1.1 boolean spellings as *values* below it.
+            "on:\n  schedule:\n    - cron: '0 4 * * *'\n  workflow_dispatch:\n    inputs:\n      full:\n        description: everything\n        default: off\njobs:\n  build:\n    runs-on: ubuntu-latest\n",
+        ] {
+            let got = index(text);
+            assert_eq!(got.job_ids(), vec!["build"], "{text}");
+            // The trigger key is still reachable *as text*, which is what a caller
+            // grepping a workflow for `on:` expects.
+            assert!(
+                text.contains("on"),
+                "fixture must actually exercise the trap: {text}"
+            );
+        }
+    }
+
+    /// Job ids and matrix values that *look* like YAML 1.1 booleans stay text.
+    #[test]
+    fn boolean_looking_job_ids_stay_text() {
+        let text = "\
+on: push
+jobs:
+  yes:
+    runs-on: ubuntu-latest
+  on:
+    runs-on: ubuntu-latest
+  no:
+    runs-on: ubuntu-latest
+  off:
+    runs-on: ubuntu-latest
+    steps:
+      - name: gate
+        if: on
+        run: echo hi
+";
+        let got = index(text);
+        assert_eq!(got.job_ids(), vec!["yes", "on", "no", "off"]);
+        // …and a boolean-valued `if:` does not disturb the step summary either.
+        assert_eq!(got.job("off").expect("job").steps.len(), 1);
+    }
+
+    #[test]
+    fn job_details_are_read_as_text() {
+        let text = "\
+name: bench
+on: push
+jobs:
+  bench:
+    name: Run hyperfine benchmarks
+    needs: build
+    runs-on: [self-hosted, bench]
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [dev, release]
+        include:
+          - profile: release
+            extra: yes
+    steps:
+      - uses: actions/checkout@v5
+      - name: bench
+        run: hyperfine './target/release/thing'
+";
+        let job = index(text).job("bench").expect("bench job").clone();
+        assert_eq!(job.name.as_deref(), Some("Run hyperfine benchmarks"));
+        assert_eq!(job.needs, vec!["build"]);
+        assert_eq!(job.runs_on, vec!["self-hosted", "bench"]);
+        assert_eq!(job.matrix_axes, vec!["profile"]);
+        assert_eq!(job.uses, vec!["actions/checkout@v5"]);
+        assert!(job.uses_external());
+        assert_eq!(job.steps.len(), 2);
+        assert_eq!(job.steps[0].uses.as_deref(), Some("actions/checkout@v5"));
+        assert_eq!(job.steps[1].name.as_deref(), Some("bench"));
+        assert_eq!(job.steps[1].uses, None);
+    }
+
+    #[test]
+    fn needs_accepts_every_github_shape() {
+        let text = "\
+on: push
+jobs:
+  a:
+    needs: build
+  b:
+    needs: [build, lint]
+  c:
+    needs:
+      - job: build
+        needs: whatever
+  d:
+    needs: 42
+";
+        let got = index(text);
+        assert_eq!(got.job("a").expect("a").needs, vec!["build"]);
+        assert_eq!(got.job("b").expect("b").needs, vec!["build", "lint"]);
+        assert_eq!(got.job("c").expect("c").needs, vec!["build"]);
+        assert_eq!(got.job("d").expect("d").needs, vec!["42"]);
+    }
+
+    #[test]
+    fn a_job_that_uses_a_reusable_workflow_has_no_steps_but_is_still_indexed() {
+        let text = "\
+on: push
+jobs:
+  call:
+    uses: ././.github/workflows/reusable.yml
+    with:
+      profile: release
+  matrix:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04]
+";
+        let got = index(text);
+        assert_eq!(got.job_ids(), vec!["call", "matrix"]);
+        let call = got.job("call").expect("call");
+        assert_eq!(call.uses, vec!["././.github/workflows/reusable.yml"]);
+        assert!(call.steps.is_empty());
+        assert!(call.runs_on.is_empty());
+        assert!(got.job("matrix").expect("matrix").uses.is_empty());
+    }
+
+    #[test]
+    fn a_job_that_is_not_a_mapping_still_has_an_id() {
+        // `jobs: {broken: null}` is nonsense to act, but the id is what a caller is
+        // choosing, so it is listed rather than dropped.
+        let got = index("on: push\njobs:\n  broken:\n  fine:\n    runs-on: x\n");
+        assert_eq!(got.job_ids(), vec!["broken", "fine"]);
     }
 
     #[test]
@@ -452,6 +781,6 @@ jobs:
             filler
         );
         let got = index(&text);
-        assert_eq!(got.jobs, vec!["build"]);
+        assert_eq!(got.job_ids(), vec!["build"]);
     }
 }

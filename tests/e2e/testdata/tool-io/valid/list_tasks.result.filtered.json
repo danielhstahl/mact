@@ -1,0 +1,28 @@
+{
+  "warnings": [],
+  "workflow_count": 1,
+  "workflows": [
+    {
+      "file": ".github/workflows/coverage.yml",
+      "job_count": 1,
+      "jobs": [
+        {
+          "category_hint": "coverage",
+          "id": "coverage",
+          "runs_on": [
+            "ubuntu-24.04"
+          ],
+          "steps": [
+            {
+              "name": "Run tests",
+              "uses": "nick-fields/retry@v3"
+            }
+          ],
+          "uses_composite": true
+        }
+      ],
+      "name": "coverage"
+    }
+  ],
+  "workflows_dir": ".github/workflows"
+}

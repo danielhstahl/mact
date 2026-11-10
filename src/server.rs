@@ -1,16 +1,17 @@
 //! The MCP service and the axum mount that serves it.
 //!
-//! The service is intentionally empty in this ticket: no tool logic and no `act`
-//! invocation (those are mact-f1w.7 … mact-f1w.14). What has to be right here is
-//! the shell everything else hangs on — the pinned protocol revision, the
-//! loopback-only bind, the shared immutable [`Config`], and a cancellation token
-//! that actually drains.
+//! The service holds no run state: the only tool so far is the read-only
+//! `list_tasks` (mact-f1w.7), and there is no `act` invocation yet (mact-f1w.8 …
+//! mact-f1w.14). What has to be right here is the shell everything else hangs on —
+//! the pinned protocol revision, the loopback-only bind, the shared immutable
+//! [`Config`], and a cancellation token that actually drains.
 
 use std::{borrow::Cow, net::SocketAddr, sync::Arc, time::Duration};
 
 use rmcp::{
-    model::{Implementation, ProtocolVersion, ServerCapabilities, ServerConfig},
-    tool_handler, tool_router,
+    handler::server::wrapper::{Json, Parameters},
+    model::{Implementation, JsonObject, ProtocolVersion, ServerCapabilities, ServerConfig},
+    tool, tool_handler, tool_router,
     transport::streamable_http_server::{
         session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
     },
@@ -21,6 +22,7 @@ use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
 
 use crate::config::Config;
+use crate::tools::{list_tasks, ToolError};
 
 /// Server name reported in `serverInfo` / `discover` responses.
 pub const SERVER_NAME: &str = "act-mcp";
@@ -64,12 +66,60 @@ impl ActMcp {
     }
 }
 
-/// Empty tool router: `tools/list` answers a valid, empty envelope.
+/// The tools this server advertises.
 ///
-/// `allow_empty` is deliberate — the impl has no `#[tool]` fns until
-/// `list_tasks` (mact-f1w.7) and `run_workflow` (mact-f1w.14) land.
-#[tool_router(allow_empty)]
-impl ActMcp {}
+/// `list_tasks` is the first (mact-f1w.7); `run_workflow`, `run_status` and
+/// `cancel_run` (mact-f1w.11/.14) join it here. ADR-0001 §1 pins the names, titles
+/// and annotations each of them must carry.
+#[tool_router]
+impl ActMcp {
+    /// Enumerate this workspace's workflows and job ids (ADR-0001 §6.1).
+    ///
+    /// The body is deliberately thin — parse, read on the blocking pool, optionally
+    /// cross-check against act, wrap in `Json` — because every decision that shapes
+    /// the answer lives in [`list_tasks`], so the contract has one home and its unit
+    /// tests do not need a server.
+    #[tool(
+        name = "list_tasks",
+        title = "List workflows and job ids in this workspace",
+        description = list_tasks::DESCRIPTION,
+        input_schema = list_tasks::input_schema(),
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
+    )]
+    async fn list_tasks(
+        &self,
+        Parameters(arguments): Parameters<JsonObject>,
+    ) -> Result<Json<list_tasks::ListTasksResult>, ToolError> {
+        let args = list_tasks::ListTasksArgs::parse(Some(&arguments))?;
+        let config = Arc::clone(self.config());
+        // Reading a workflows directory is a handful of small file reads — except on
+        // a cold network mount, where `readdir` alone is seconds. Either way it does
+        // not belong on an I/O worker, so it goes to the blocking pool exactly like
+        // validation does (`Validator::validate_async`). Taking no workspace lock is
+        // what makes waiting here safe while a benchmark holds the workspace.
+        let mut result =
+            tokio::task::spawn_blocking(move || list_tasks::list_tasks(&config, &args))
+                .await
+                .map_err(|join_error| {
+                    ToolError::new(
+                        list_tasks::TOOL,
+                        "internal_error",
+                        format!("the listing did not complete: {join_error}"),
+                        true,
+                        serde_json::Map::new(),
+                    )
+                })??;
+        if self.config().list_tasks_act_cross_check {
+            list_tasks::cross_check_with_act(self.config(), &mut result).await;
+        }
+        Ok(Json(result))
+    }
+}
 
 #[tool_handler]
 impl ServerHandler for ActMcp {
@@ -80,7 +130,8 @@ impl ServerHandler for ActMcp {
             .with_instructions(format!(
                 "act-mcp {} — runs GitHub Actions workflows via act and writes .evidence JSONL.\n\
                  Workspace: {} (evidence: {})\n\
-                 No tools are registered yet; tools/list is empty in this build.",
+                 Start with list_tasks: it enumerates workflow files, their job ids, and an advisory \n\
+                 benchmark/coverage hint, and is safe to call at any time (read-only, no run lock).",
                 env!("CARGO_PKG_VERSION"),
                 self.config.workspace.display(),
                 self.config.evidence_dir.display(),

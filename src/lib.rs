@@ -41,7 +41,9 @@
 pub mod config;
 pub mod fixtures;
 pub mod server;
+pub mod tools;
 pub mod workflow_yaml;
+pub mod workflows;
 pub mod workspace;
 
 pub use config::{Config, ConfigError, ServeArgs};
