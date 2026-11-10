@@ -398,17 +398,8 @@ where
 
 /// Pull the `bind=` field out of the startup log line.
 ///
-/// `tracing_subscriber::fmt` renders a display-formatted field as
-/// `bind=127.0.0.1:39281`, optionally quoted.
+/// Lives in `tests/common` now that the e2e suite boots the same binary and reads the
+/// same line.
 fn listen_addr_from_log_line(line: &str) -> Option<SocketAddr> {
-    if !line.contains("act-mcp listening") {
-        return None;
-    }
-    let token = line
-        .split("bind=")
-        .nth(1)?
-        .split([' ', '\t'])
-        .next()?
-        .trim_matches('"');
-    token.parse::<SocketAddr>().ok()
+    common::listen_addr_from_log_line(line)
 }

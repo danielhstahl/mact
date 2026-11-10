@@ -1,0 +1,5 @@
+12	README.md
+4	coverage/{COMMIT}/{RUN_ID}.jsonl
+32	incoming/{RUN_ID}/lcov.info
+8	runs/{RUN_ID}/act.jsonl
+61	runs/{RUN_ID}/meta.json

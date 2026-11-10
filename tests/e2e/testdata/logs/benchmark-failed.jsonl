@@ -1,0 +1,8 @@
+{"dryrun":false,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"info","msg":"🚀  Start image=catthehacker/ubuntu:act-24.04","time":"2026-11-10T01:00:00Z"}
+{"dryrun":false,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"info","msg":"  ▶  Set up job","stage":"pre","step":"Set up job","stepID":["0"],"time":"2026-11-10T01:00:00Z"}
+{"dryrun":false,"executionTime":500000000,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"info","msg":"  ✅  Success - Pre Set up job [500ms]","stage":"pre","step":"Set up job","stepID":["0"],"stepResult":"success","time":"2026-11-10T01:00:01Z"}
+{"dryrun":false,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"info","msg":"  ▶  Run Bench","stage":"main","step":"Bench","stepID":["1"],"time":"2026-11-10T01:00:01Z"}
+{"dryrun":false,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"error","msg":"hyperfine: benchmark binary exited with status 101","raw_output":true,"stage":"main","step":"Bench","stepID":["1"],"time":"2026-11-10T01:00:31Z"}
+{"dryrun":false,"executionTime":30000000000,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"info","msg":"  ❌  Failure - Main Run Bench [30s]","stage":"main","step":"Bench","stepID":["1"],"stepResult":"failure","time":"2026-11-10T01:00:31Z"}
+{"dryrun":false,"executionTime":1500000000,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"info","msg":"  ✅  Success - Post Complete job [1.5s]","stage":"post","step":"Complete job","stepID":["2"],"stepResult":"success","time":"2026-11-10T01:00:33Z"}
+{"dryrun":false,"job":"hyperfine-bench","jobID":"hyperfine-bench","jobResult":"failure","level":"info","msg":"🏁 Job failed","time":"2026-11-10T01:00:33Z"}

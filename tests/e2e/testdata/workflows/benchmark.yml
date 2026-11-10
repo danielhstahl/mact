@@ -1,0 +1,13 @@
+name: Benchmark
+on:
+  push:
+    branches: [main]
+jobs:
+  hyperfine-bench:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build
+        run: cargo build --release
+      - name: Bench
+        run: hyperfine "./target/release/cli" --warmup 3 --export-json bench.json

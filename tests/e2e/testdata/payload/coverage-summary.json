@@ -1,0 +1,20 @@
+{
+ "total": {
+  "lines": { "total": 9, "covered": 4, "skipped": 0, "pct": 44.44 },
+  "statements": { "total": 9, "covered": 4, "skipped": 0, "pct": 44.44 },
+  "branches": { "total": 2, "covered": 1, "pct": 50.0 },
+  "functions": { "total": 5, "covered": 2, "skipped": 0, "pct": 40.0 }
+ },
+ "src/parser/mod.rs": {
+  "lines": { "total": 4, "covered": 3, "skipped": 0, "pct": 75.0 },
+  "statements": { "total": 4, "covered": 3, "skipped": 0, "pct": 75.0 },
+  "branches": { "total": 2, "covered": 1, "pct": 50.0 },
+  "functions": { "total": 3, "covered": 2, "skipped": 0, "pct": 66.67 }
+ },
+ "src/runner/log.rs": {
+  "lines": { "total": 5, "covered": 1, "skipped": 0, "pct": 20.0 },
+  "statements": { "total": 5, "covered": 1, "skipped": 0, "pct": 20.0 },
+  "branches": { "total": 0, "covered": 0, "skipped": 0, "pct": 100.0 },
+  "functions": { "total": 2, "covered": 0, "skipped": 0, "pct": 0.0 }
+ }
+}

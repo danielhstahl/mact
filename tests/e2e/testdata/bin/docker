@@ -1,0 +1,27 @@
+#!/bin/sh
+# tests/e2e/testdata/bin/docker — the fake container-runtime client of the e2e
+# harness (see ./act for the harness itself).
+#
+# The run validator (ADR-0001 §5.3 `docker_unreachable`) asks exactly one
+# question of the runtime: `docker info --format {{.ServerVersion}}`. This answers
+# that, answers `--version` for completeness, and refuses everything else so a new
+# probe in `src/workspace/environment.rs` shows up as a loud failure in the e2e
+# suite rather than as a run that mysteriously cannot start.
+#
+# It is found by PATH, not by a flag: the e2e harness prepends this directory to
+# the server's PATH. Nothing here contacts a daemon, so the suite runs on a machine
+# with no docker installed — which is the point.
+set -u
+
+case ${1-} in
+  info)
+    # `--format {{.ServerVersion}}` is what the probe asks for; the answer is the
+    # only thing it reads.
+    printf '27.1.1\n'
+    ;;
+  --version | version) printf 'Docker version 27.1.1, build act-mcp-e2e-stub\n' ;;
+  *)
+    printf 'stub docker: unsupported arguments: %s\n' "$*" >&2
+    exit 1
+    ;;
+esac

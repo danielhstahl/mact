@@ -1,0 +1,10 @@
+{"dryrun":false,"job":"coverage","jobID":"coverage","level":"info","msg":"🚀  Start image=catthehacker/ubuntu:act-24.04","time":"{TS}"}
+{"dryrun":false,"job":"coverage","jobID":"coverage","level":"info","msg":"  ▶  Set up job","stage":"pre","step":"Set up job","stepID":["0"],"time":"{TS}"}
+{"dryrun":false,"executionTime":400000000,"job":"coverage","jobID":"coverage","level":"info","msg":"  ✅  Success - Pre Set up job [400ms]","stage":"pre","step":"Set up job","stepID":["0"],"stepResult":"success","time":"{TS}"}
+{"dryrun":false,"job":"coverage","jobID":"coverage","level":"info","msg":"  ▶  Run Run tests with coverage","stage":"main","step":"Run tests with coverage","stepID":["1"],"time":"{TS}"}
+{"dryrun":false,"job":"coverage","jobID":"coverage","level":"info","msg":"info: 12 tests passed","raw_output":true,"stage":"main","step":"Run tests with coverage","stepID":["1"],"time":"{TS}"}
+{"dryrun":false,"executionTime":90000000000,"job":"coverage","jobID":"coverage","level":"info","msg":"  ✅  Success - Main Run tests with coverage [1m30s]","stage":"main","step":"Run tests with coverage","stepID":["1"],"stepResult":"success","time":"{TS}"}
+{"dryrun":false,"executionTime":1000000000,"job":"coverage","jobID":"coverage","level":"info","msg":"  ✅  Success - Post Complete job [1s]","stage":"post","step":"Complete job","stepID":["2"],"stepResult":"success","time":"{TS}"}
+{"dryrun":false,"job":"coverage","jobID":"coverage","jobResult":"success","level":"info","msg":"🏁 Job succeeded","time":"{TS}"}
+job env: API_TOKEN=***REDACTED***
+job env: GITHUB_TOKEN=***REDACTED***

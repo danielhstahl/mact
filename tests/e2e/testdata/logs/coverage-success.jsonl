@@ -1,0 +1,8 @@
+{"dryrun":false,"job":"coverage","jobID":"coverage","level":"info","msg":"🚀  Start image=catthehacker/ubuntu:act-24.04","time":"2026-11-10T02:00:00Z"}
+{"dryrun":false,"job":"coverage","jobID":"coverage","level":"info","msg":"  ▶  Set up job","stage":"pre","step":"Set up job","stepID":["0"],"time":"2026-11-10T02:00:00Z"}
+{"dryrun":false,"executionTime":400000000,"job":"coverage","jobID":"coverage","level":"info","msg":"  ✅  Success - Pre Set up job [400ms]","stage":"pre","step":"Set up job","stepID":["0"],"stepResult":"success","time":"2026-11-10T02:00:01Z"}
+{"dryrun":false,"job":"coverage","jobID":"coverage","level":"info","msg":"  ▶  Run Run tests with coverage","stage":"main","step":"Run tests with coverage","stepID":["1"],"time":"2026-11-10T02:00:01Z"}
+{"dryrun":false,"job":"coverage","jobID":"coverage","level":"info","msg":"info: 12 tests passed","raw_output":true,"stage":"main","step":"Run tests with coverage","stepID":["1"],"time":"2026-11-10T02:01:31Z"}
+{"dryrun":false,"executionTime":90000000000,"job":"coverage","jobID":"coverage","level":"info","msg":"  ✅  Success - Main Run tests with coverage [1m30s]","stage":"main","step":"Run tests with coverage","stepID":["1"],"stepResult":"success","time":"2026-11-10T02:01:31Z"}
+{"dryrun":false,"executionTime":1000000000,"job":"coverage","jobID":"coverage","level":"info","msg":"  ✅  Success - Post Complete job [1s]","stage":"post","step":"Complete job","stepID":["2"],"stepResult":"success","time":"2026-11-10T02:01:32Z"}
+{"dryrun":false,"job":"coverage","jobID":"coverage","jobResult":"success","level":"info","msg":"🏁 Job succeeded","time":"2026-11-10T02:01:32Z"}

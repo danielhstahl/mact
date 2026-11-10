@@ -1,0 +1,21 @@
+{
+  "metrics": [
+    {
+      "name": "tokenizer_throughput",
+      "value": 184320.4,
+      "unit": "ops/s",
+      "labels": { "os": "ubuntu-24.04", "runner": "self-hosted" }
+    },
+    {
+      "name": "tokenizer_throughput",
+      "value": 185012.7,
+      "unit": "ops/s",
+      "labels": { "os": "ubuntu-24.04", "runner": "self-hosted" }
+    },
+    {
+      "name": "startup_latency",
+      "value": 412.5,
+      "unit": "ms"
+    }
+  ]
+}

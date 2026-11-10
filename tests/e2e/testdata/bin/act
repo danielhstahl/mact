@@ -1,0 +1,336 @@
+#!/bin/sh
+# ===========================================================================
+# tests/e2e/testdata/bin/act — the fake `nektos/act` of the e2e harness.
+#
+# Everything about this script is a stand-in for one real external process. It
+# is spawned by the *real* runner (own process group, ADR-0003 §7.2 argv, the
+# real secret file, the real log tee), so `--directory`, `--job`, `--secret-file`
+# and the exit status the e2e scenarios assert on are real observations and not
+# mocks of themselves. No docker, no act, no network.
+#
+# ## 1. It checks the argv it was promised
+#
+# The first thing it does is parse its arguments the way act does and refuse
+# anything act would refuse — plus the flags ADR-0003 §7 says this server must
+# *never* emit, which act would happily accept and which would then be a silent
+# contract regression:
+#
+#   * an unknown `-` flag                 -> exit 64, "unknown flag" on stderr
+#   * a missing mandatory flag            -> exit 64, names the flag
+#   * a relative path where §7.1 demands an absolute one
+#   * `--secret`/`-s` (a secret in argv is `ps`-visible: ADR-0001 §2.7 sends
+#     secrets in `--secret-file` instead) and `--container-daemon-socket`,
+#     `--act-arg`, `--network`, `--platform`, `--default-image`,
+#     `--container-options` (ADR-0003 §7.5's never-passed list)
+#
+# So an argv change in `src/runner/argv.rs` that adds, renames or drops a flag
+# fails here, loudly, with the reason in `act.jsonl`.
+#
+# ## 2. Its behaviour is steered by environment variables
+#
+# Set on the `act-mcp serve` process by the test (the runner hands its own
+# environment to act, so they arrive here unchanged). Nothing about a scenario is
+# smuggled into argv, which is exactly what makes the argv check above
+# meaningful.
+#
+#   STUB_ARGV_FILE=<path>        write "$@", one token per line
+#   STUB_CWD_FILE=<path>         write $PWD (act's cwd is the run's scratch dir)
+#   STUB_PID_FILE=<path>         write $$ (the run's act pid; also meta.json's)
+#   STUB_CHILD_PID_FILE=<path>   write the background child's pid (orphan check)
+#   STUB_LOG=<path>              copy this file to stdout verbatim (act's --json log)
+#   STUB_LOG_LINE=<text>         print one extra literal line on stdout
+#   STUB_PAYLOAD_DIR=<path>      where the checked-in payload fixtures live
+#   STUB_PAYLOAD=<mode>          none|coverage|coverage-summary|benchmark|both|all (default all)
+#   STUB_PAYLOAD_DELAY=<secs>    sleep before writing the payload (fractional ok)
+#   STUB_BENCHMARK_MARKER=1      print the in-band ACTMCP_BENCHMARK marker lines
+#   STUB_ECHO_SECRETS=1          print the secret file's `key=value` lines (redaction check)
+#   STUB_SLEEP=<secs>            sleep this long (fractional ok)
+#   STUB_IGNORE_SIGTERM=1        trap TERM/INT ignored: forces SIGKILL escalation
+#   STUB_CHILD_SLEEP=<secs>      background a `sleep`, same process group
+#   STUB_EXIT_CODE=<n>           exit status (default 0)
+#
+# Order of operations: parse argv → record files → print the log → delay → sleep →
+# write the payload → echo secrets → exit. The payload lands *after* the sleep by
+# default, because that is what a real job does (run, then report);
+# `STUB_PAYLOAD_DELAY` exists so the cancel scenario can put a payload on disk
+# that the run is then killed before it can publish.
+# ===========================================================================
+set -u
+
+me=stub-act
+
+# Exit 64 (EX_USAGE): outside every workflow exit code a scenario uses, so "the
+# stub refused its argv" can never be mistaken for "the workflow failed".
+die() {
+  printf '%s: %s\n' "$me" "$*" >&2
+  exit 64
+}
+
+is_absolute() {
+  case $1 in
+    /*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+takes_value() { # $1 flag, $2 value-or-empty
+  [ -n "$2" ] || die "$1 needs a value"
+}
+
+write_file() { # $1 path, $2 content
+  printf '%s\n' "$2" >"$1" || die "cannot write $1"
+}
+
+# Record the argv exactly as it arrived — before the parse loop consumes it, and
+# including argv[0], because the test compares a whole command line, not a flag bag.
+if [ -n "${STUB_ARGV_FILE:-}" ]; then
+  {
+    printf '%s\n' "$0"
+    for arg in "$@"; do printf '%s\n' "$arg"; done
+  } >"$STUB_ARGV_FILE" || die "cannot write $STUB_ARGV_FILE"
+fi
+
+# ---------------------------------------------------------------- argv parsing
+#
+# The flags `src/runner/argv.rs` is allowed to build, and the short forms act
+# documents for the same ones. Anything else beginning with `-` is refused.
+directory=''
+workflows=''
+job=''
+secret_file=''
+eventpath=''
+event=''
+json=0
+bind=0
+dryrun=0
+evidence_out=''
+run_id=''
+secret_on_disk=no
+
+while [ $# -gt 0 ]; do
+  token=$1
+  shift
+  value=''
+  case $token in
+    --*=*) value=${token#*=} ;;
+    -?*=*) value=${token#*=} ;;
+  esac
+
+  case $token in
+    # Flags act answers without running anything.
+    --version | -v)
+      printf 'act version 0.2.68 (act-mcp e2e stub)\n'
+      exit 0
+      ;;
+    --help | -h)
+      printf 'act-mcp e2e stub act; its behaviour is documented in %s\n' "$0"
+      exit 0
+      ;;
+
+    # Never emitted by act-mcp. act accepts all of these, which is why they need
+    # a refusal of their own instead of falling through to "unknown flag".
+    --secret | -s | --secret=* | -s=*)
+      die '--secret is never allowed in argv: secrets travel in --secret-file (ADR-0001 §2.7)'
+      ;;
+    --container-daemon-socket | --container-daemon-socket=* | --act-arg | --act-arg=* | \
+      --network | --network=* | --platform | --platform=* | --default-image | --default-image=* | \
+      --container-options | --container-options=*)
+      die "$token is on ADR-0003 §7.5's never-passed list"
+      ;;
+
+    # Value flags, in ADR-0003 §7.2's order.
+    --directory | -d)
+      takes_value "$token" "${1-}"
+      directory=$1
+      shift
+      ;;
+    --directory=* | -d=*) directory=$value ;;
+    --workflows | -W)
+      takes_value "$token" "${1-}"
+      workflows=$1
+      shift
+      ;;
+    --job | -j)
+      takes_value "$token" "${1-}"
+      job=$1
+      shift
+      ;;
+    --secret-file)
+      takes_value "$token" "${1-}"
+      secret_file=$1
+      shift
+      ;;
+    --secret-file=*) secret_file=$value ;;
+    --eventpath)
+      takes_value "$token" "${1-}"
+      eventpath=$1
+      shift
+      ;;
+    --eventpath=*) eventpath=$value ;;
+
+    # Boolean-ish flags. The `=` spellings are what the runner emits; a bare
+    # `--pull` would make act read the next token as its positional event name,
+    # so refusing the bare form here is the same check act effectively makes.
+    --bind | --bind=true | --bind=false) bind=1 ;;
+    --reuse=false | --pull=false | --pull=true | --quiet=false) ;;
+    --reuse | --pull | --quiet)
+      die "$token must be spelled '$token=...' (act would read the next token as its event name)"
+      ;;
+    --rm | --rebuild | --use-gitignore | --dryrun)
+      [ "$token" = --dryrun ] && dryrun=1
+      ;;
+    --json) json=1 ;;
+    --var-file | --env-file | --input-file)
+      # Value flags: the runner always passes the inert project-config file, and a
+      # value left unconsumed would land in act's positional event-name slot.
+      takes_value "$token" "${1-}"
+      shift
+      ;;
+    --var-file=* | --env-file=* | --input-file=*) ;;
+    --defaultbranch | --defaultbranch=*)
+      [ "$token" = --defaultbranch ] && {
+        takes_value "$token" "${1-}"
+        shift
+      }
+      ;;
+    --env | --input | --var | --matrix)
+      takes_value "$token" "${1-}"
+      value=$1
+      shift
+      ;;
+
+    --env=* | --input=* | --var=* | --matrix=*) ;;
+
+    -*) die "unknown flag '$token' (the runner changed its argv: see src/runner/argv.rs)" ;;
+    *)
+      # act's positional event name (`act pull_request`), at most one, and shaped
+      # like one — a leaked flag value landing here is a bug worth stopping for.
+      case $token in
+        *[!A-Za-z0-9._-]*) die "'$token' is not shaped like an event name" ;;
+      esac
+      [ -z "$event" ] || die "two positional event names: '$event' and '$token'"
+      event=$token
+      ;;
+  esac
+
+  # Whatever survived: a `k=v` pair of an accumulating flag, in either spelling,
+  # is scanned for the two environment entries the extractors depend on.
+  case $value in
+    ACTMCP_EVIDENCE_OUT=*) evidence_out=${value#ACTMCP_EVIDENCE_OUT=} ;;
+    ACTMCP_RUN_ID=*) run_id=${value#ACTMCP_RUN_ID=} ;;
+  esac
+done
+
+# The argv the runner promised (ADR-0003 §7.2). A missing one means the contract
+# moved and this harness is the only thing between it and production.
+[ -n "$directory" ] || die 'argv is missing --directory'
+is_absolute "$directory" || die "--directory must be absolute (ADR-0003 §7.1): '$directory'"
+[ -n "$workflows" ] || die 'argv is missing --workflows'
+is_absolute "$workflows" || die "--workflows must be absolute (ADR-0003 §7.1): '$workflows'"
+[ -n "$job" ] || die 'argv is missing --job'
+[ "$json" -eq 1 ] || die 'argv is missing --json: the extractors parse act'"'"'s JSON log'
+[ -n "$secret_file" ] || die 'argv is missing --secret-file (ADR-0001 §2.7)'
+is_absolute "$secret_file" || die "--secret-file must be absolute: '$secret_file'"
+[ -f "$secret_file" ] && secret_on_disk=yes
+[ -n "$evidence_out" ] || die 'argv is missing --env ACTMCP_EVIDENCE_OUT=<dir> (ADR-0002 §3.1)'
+is_absolute "$evidence_out" || die "ACTMCP_EVIDENCE_OUT must be absolute: '$evidence_out'"
+[ -n "$run_id" ] || die 'argv is missing --env ACTMCP_RUN_ID=<id>'
+if [ -n "$eventpath" ]; then
+  is_absolute "$eventpath" || die "--eventpath must be absolute (ADR-0003 §7.1): '$eventpath'"
+fi
+
+# ---------------------------------------------------------------- what was seen
+[ -n "${STUB_CWD_FILE:-}" ] && write_file "$STUB_CWD_FILE" "$(pwd)"
+[ -n "${STUB_PID_FILE:-}" ] && write_file "$STUB_PID_FILE" "$$"
+
+# ---------------------------------------------------------------- the act log
+#
+# What act's `--json` log would have said, copied verbatim so the log tee, the
+# redactor and both extractors see exactly the bytes the fixture holds.
+if [ -n "${STUB_LOG:-}" ]; then
+  [ -f "$STUB_LOG" ] || die "STUB_LOG is not a file: $STUB_LOG"
+  cat "$STUB_LOG"
+else
+  printf '{"level":"info","job":"%s","jobID":"%s","workflow":"%s","msg":"stub act started"}\n' \
+    "$job" "$job" "$workflows"
+fi
+[ -n "${STUB_LOG_LINE:-}" ] && printf '%s\n' "$STUB_LOG_LINE"
+
+if [ -n "${STUB_BENCHMARK_MARKER:-}" ]; then
+  # The in-band channel (ADR-0002 §5.2): a job that cannot write a file prints
+  # these. One carries labels, one carries no unit at all.
+  printf 'ACTMCP_BENCHMARK {"name":"cold_start_ms","value":12.5,"unit":"ms","labels":{"step":"Bench"}}\n'
+  printf 'ACTMCP_BENCHMARK {"name":"queue_depth","value":3}\n'
+fi
+
+# ---------------------------------------------------------------- signals
+if [ -n "${STUB_IGNORE_SIGTERM:-}" ]; then
+  # Ignored, not handled: the disposition is inherited by the child below, so
+  # neither dies on the runner's SIGTERM and the runner has to escalate.
+  trap '' TERM INT
+fi
+
+# ---------------------------------------------------------------- the payload
+#
+# `write_payload` is defined here and called from two places: after
+# STUB_PAYLOAD_DELAY (mid-run: the ADR-0004 §6.2 case, numbers that existed and were
+# thrown away) or, when no delay was asked for, at the end of the job, which is when a
+# real job writes its report.
+write_payload() {
+  [ -n "${STUB_PAYLOAD_DIR:-}" ] || return 0
+  case ${STUB_PAYLOAD-all} in
+    none) return 0 ;;
+  esac
+  copy_payload() { # $1 file name
+    cp "$STUB_PAYLOAD_DIR/$1" "$evidence_out/$1" ||
+      die "cannot copy $1 into $evidence_out"
+  }
+  mkdir -p "$evidence_out" || die "cannot create ACTMCP_EVIDENCE_OUT=$evidence_out"
+  case ${STUB_PAYLOAD-all} in
+    coverage) copy_payload lcov.info ;;
+    coverage-summary) copy_payload coverage-summary.json ;;
+    benchmark) copy_payload benchmark.json ;;
+    both)
+      copy_payload lcov.info
+      copy_payload benchmark.json
+      ;;
+    all)
+      copy_payload lcov.info
+      copy_payload coverage-summary.json
+      copy_payload benchmark.json
+      ;;
+    *) die "unknown STUB_PAYLOAD '${STUB_PAYLOAD-all}'" ;;
+  esac
+}
+
+# ---------------------------------------------------------------- run a while
+if [ -n "${STUB_CHILD_SLEEP:-}" ]; then
+  sleep "$STUB_CHILD_SLEEP" &
+  [ -n "${STUB_CHILD_PID_FILE:-}" ] && write_file "$STUB_CHILD_PID_FILE" "$!"
+fi
+if [ -n "${STUB_PAYLOAD_DELAY:-}" ]; then
+  sleep "$STUB_PAYLOAD_DELAY"
+  write_payload
+fi
+if [ -n "${STUB_SLEEP:-}" ]; then
+  sleep "$STUB_SLEEP"
+fi
+if [ -z "${STUB_PAYLOAD_DELAY:-}" ]; then
+  write_payload
+fi
+
+# ---------------------------------------------------------------- secrets
+if [ -n "${STUB_ECHO_SECRETS:-}" ]; then
+  # A job that prints its own environment: every *value* below is a declared
+  # secret, so the runner must have eaten it before the log reached disk.
+  if [ "$secret_on_disk" = yes ]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      printf 'job env: %s\n' "$line"
+    done <"$secret_file"
+  else
+    printf 'job env: (no secret file on disk)\n'
+  fi
+fi
+
+exit "${STUB_EXIT_CODE:-0}"

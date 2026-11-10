@@ -1,0 +1,27 @@
+name: Multi job
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - run: cargo build --release
+  matrix-bench:
+    name: Bench ${{ matrix.profile }}
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [dev, release]
+        os: [ubuntu-24.04]
+    steps:
+      - run: hyperfine "./target/${{ matrix.profile }}/cli" --warmup 3
+  report:
+    needs: [build, matrix-bench]
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "all ${matrix.profile} variants are done"
