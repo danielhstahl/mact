@@ -146,8 +146,9 @@ async fn the_published_tree_is_the_layout_adr_0002_draws() {
     );
     assert_eq!(
         report.stats.total(),
-        17,
-        "the five fixtures hold 17 records"
+        20,
+        "the five fixtures hold 20 records: mact-f1w.12 re-derived the benchmark pair from \
+         its input fixtures, which added the per-step duration records"
     );
     // And nothing escaped: the writer created one directory and nothing beside it
     // (this is not a git repo, so even the `.gitignore` maintenance is a no-op here).
@@ -186,8 +187,8 @@ fn the_rust_checker_accepts_the_expected_fixtures_in_place() {
     );
     assert_eq!(
         report.stats.total(),
-        17,
-        "the Python checker counts 17 records here"
+        20,
+        "the Python checker counts 20 records here"
     );
 }
 

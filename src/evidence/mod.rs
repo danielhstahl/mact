@@ -39,6 +39,13 @@
 //! demand; `runs/<run_id>/` and `incoming/` are the runner's and the supervisor's
 //! (mact-f1w.8, mact-f1w.11), not this module's.
 
+/// Benchmark extraction: a finished run's job metrics and act's own timings → benchmark
+/// records.
+///
+/// POSIX-only for the same reason [`coverage`] is: it is built on
+/// [`crate::runner::ActRunOutcome`], and the runner, `--bind` and act are all POSIX.
+#[cfg(unix)]
+pub mod benchmark;
 /// Coverage extraction: a finished run's coverage payload → coverage records.
 ///
 /// POSIX-only for the same reason the runner is: it is built on
@@ -53,14 +60,56 @@ pub mod writer;
 
 #[cfg(unix)]
 pub use coverage::{
-    extract, extract_with, CoverageFormat, CoverageSummary, ExtractContext, ExtractError,
-    ExtractionOutcome,
+    extract, extract_with, CoverageFormat, CoverageSummary, ExtractError, ExtractionOutcome,
 };
+
 pub use records::{
     BenchmarkMetric, BenchmarkRecord, BenchmarkSource, Commit, CoverageCounts, CoverageRecord,
     CoverageSource, Envelope, EvidenceRecord, Kind, MetricValue, RelPath, ReportedMeasure, RunId,
     RunRecords, RunStatus, SchemaVersion, Scope, Tool, UtcInstant, SCHEMA_VERSION, TOOL_NAME,
 };
+
+/// Where an extractor looks for a run's payload, and what it stamps in the envelope.
+///
+/// Both extractors ([`coverage`] and [`benchmark`]) take this instead of digging it out of a
+/// [`crate::workspace::ValidatedRunTarget`] themselves, because the two questions it answers
+/// have different answers in the interesting case: a run that executed in an ADR-0003 worktree
+/// reads its payload from that worktree, while its evidence still belongs to the workspace's
+/// `.evidence` root. It is also how the golden tests pin `host` and `tool.act_version` to the
+/// values the fixtures use, instead of inheriting whatever machine the tests happen to run on.
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+pub struct ExtractContext {
+    /// The tree act was pointed at — the workspace, or an ADR-0003 worktree.
+    pub tree_root: std::path::PathBuf,
+    /// The workspace the evidence root belongs to; a second root paths may be relative to.
+    pub workspace_root: std::path::PathBuf,
+    /// `$ACTMCP_EVIDENCE_OUT` for this run.
+    pub payload_dir: std::path::PathBuf,
+    /// The envelope's `host`.
+    pub host: String,
+    /// The envelope's `tool.act_version`, when it is known.
+    pub act_version: Option<String>,
+    /// The envelope's `tool.version`; `env!("CARGO_PKG_VERSION")` by default.
+    pub server_version: String,
+}
+
+#[cfg(unix)]
+impl ExtractContext {
+    /// The context a run's extraction uses by default: the validated target's own tree, the
+    /// payload directory the runner told the job about, and this machine's hostname.
+    #[must_use]
+    pub fn for_run(target: &crate::workspace::ValidatedRunTarget, run_id: &str) -> Self {
+        Self {
+            tree_root: target.workspace_root.clone(),
+            workspace_root: target.workspace_root.clone(),
+            payload_dir: crate::runner::default_payload_dir(&target.workspace_root, run_id),
+            host: writer::hostname(),
+            act_version: None,
+            server_version: env!("CARGO_PKG_VERSION").to_owned(),
+        }
+    }
+}
 pub use schema::{SchemaError, SchemaProblem};
 pub use validate::{validate_tree, Problem, Report, Stats, ValidateError, ValidateOptions};
 pub use writer::{

@@ -26,6 +26,10 @@ tests/fixtures/coverage/             # the payloads the coverage goldens are re-
 ├── lcov-malformed.info, lcov-empty.info, coverage-summary-malformed.json # parse_failed / no_coverage_found
 ├── coverage.xml                     # Cobertura: recognised, and refused by decision
 └── act-log-{scrape,quiet}.jsonl     # act's captured log, with and without a coverage line
+tests/fixtures/benchmark/            # the inputs the benchmark goldens are re-derived from (mact-f1w.12)
+├── benchmark.json                   # the job's own metrics payload, as written into $ACTMCP_EVIDENCE_OUT
+├── act.jsonl                        # the success run's `--json` log: step timings, two jobs' output, two markers
+└── act-failed.jsonl                 # the failed run's log: no payload, and a step that reported an error
 ```
 
 ## Shape of the goldens
@@ -54,9 +58,24 @@ scenario labels, not layout, and `<run_id>` inside each file must match the file
 
 ## Which goldens the implementation reproduces
 
-The coverage goldens are not merely hand-written any more: `tests/fixtures/coverage/` holds the
-payloads they came from, and `tests/coverage_extraction.rs` re-derives each file byte for byte
-from them (mact-f1w.10).
+The coverage and benchmark goldens are not merely hand-written any more: `tests/fixtures/coverage/`
+and `tests/fixtures/benchmark/` hold the payloads and the captured act logs they came from, and
+`tests/coverage_extraction.rs` / `tests/benchmark_extraction.rs` re-derive each file byte for byte
+from them (mact-f1w.10, mact-f1w.12).
+
+The benchmark pair was amended when it was first reproduced, in two places, and both amendments are
+value-preserving re-derivations rather than contract changes:
+
+* `benchmark.jsonl` gained the `step_duration_s` rows for the run's `Set up job` and `Complete job`
+  steps (and `benchmark-failed.jsonl` the `Set up job` row). act logs a duration for every step it
+  ran, including its own setup and teardown, and ADR-0002 §5.3 says act-mcp emits one row per step —
+  an implementation that dropped the housekeeping steps could not also make `job_duration_s` equal the
+  sum of the step rows it emitted, which is what the golden's `91.8 = 0.5 + 88.234 + 3.066` says.
+* `benchmark-failed.jsonl` lost a `"flags":["truncated"]` on its step row. Nothing about that run was
+  truncated — the run *failed*, which is what `run_status` says — and §3.3 reserves `truncated` for a
+  record whose run hit a cap, so no derivation of that fixture produces it.
+
+Neither file's first line moved, which is what `tests/evidence_golden.rs` pins.
 
 | golden | fixture that reproduces it | notes |
 |---|---|---|

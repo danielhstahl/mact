@@ -58,10 +58,7 @@ use crate::{
         RelPath, RunId, RunRecords, RunStatus as WireStatus, Scope, Tool, UtcInstant,
         FLAG_LOW_CONFIDENCE, FLAG_TRUNCATED,
     },
-    runner::{
-        default_payload_dir, ActRunOutcome, RunStatus as RunnerStatus,
-        WARNING_PAYLOAD_TRANSPORT_UNAVAILABLE,
-    },
+    runner::{ActRunOutcome, RunStatus as RunnerStatus, WARNING_PAYLOAD_TRANSPORT_UNAVAILABLE},
     workspace::ValidatedRunTarget,
 };
 
@@ -313,43 +310,9 @@ impl ExtractError {
     }
 }
 
-/// Where to look, and what to stamp in the envelope.
-///
-/// [`extract`] builds one with [`ExtractContext::for_run`]. A caller that ran act against a
-/// synthesized ADR-0003 worktree, or that has act's version to hand, builds its own — which
-/// is also how the golden tests pin `host` and `tool.act_version` instead of inheriting
-/// whatever machine the tests happen to run on.
-#[derive(Debug, Clone)]
-pub struct ExtractContext {
-    /// The tree act was pointed at — the workspace, or an ADR-0003 worktree.
-    pub tree_root: PathBuf,
-    /// The workspace the evidence root belongs to; a second root paths may be relative to.
-    pub workspace_root: PathBuf,
-    /// `$ACTMCP_EVIDENCE_OUT` for this run.
-    pub payload_dir: PathBuf,
-    /// The envelope's `host`.
-    pub host: String,
-    /// The envelope's `tool.act_version`, when it is known.
-    pub act_version: Option<String>,
-    /// The envelope's `tool.version`; `env!("CARGO_PKG_VERSION")` by default.
-    pub server_version: String,
-}
-
-impl ExtractContext {
-    /// The context a run's extraction uses by default: the validated target's own tree, the
-    /// payload directory the runner told the job about, and this machine's hostname.
-    #[must_use]
-    pub fn for_run(target: &ValidatedRunTarget, run_id: &str) -> Self {
-        Self {
-            tree_root: target.workspace_root.clone(),
-            workspace_root: target.workspace_root.clone(),
-            payload_dir: default_payload_dir(&target.workspace_root, run_id),
-            host: crate::evidence::writer::hostname(),
-            act_version: None,
-            server_version: env!("CARGO_PKG_VERSION").to_owned(),
-        }
-    }
-}
+// `ExtractContext` lives in the parent module: coverage and benchmark extraction look in
+// the same three places and stamp the same envelope, so they share one context type.
+pub use crate::evidence::ExtractContext;
 
 /// Turn a finished run's coverage payload into records, with the default
 /// [`ExtractContext`] for `target`.
@@ -752,7 +715,7 @@ fn envelope_for(
 
 /// The runner's terminal word is the evidence contract's terminal word; the mapping is
 /// total because both enums carry exactly the five ADR-0001 §3.2 words.
-const fn status_word(status: RunnerStatus) -> WireStatus {
+pub(crate) const fn status_word(status: RunnerStatus) -> WireStatus {
     match status {
         RunnerStatus::Success => WireStatus::Success,
         RunnerStatus::Failed => WireStatus::Failed,
@@ -916,7 +879,7 @@ impl Candidate {
 }
 
 /// The workspace-relative spelling a record cites for its payload file.
-fn display_path(path: &Path, context: &ExtractContext) -> String {
+pub(crate) fn display_path(path: &Path, context: &ExtractContext) -> String {
     for root in [&context.tree_root, &context.workspace_root] {
         if let Ok(relative) = path.strip_prefix(root) {
             let text = relative.to_string_lossy().replace('\\', "/");

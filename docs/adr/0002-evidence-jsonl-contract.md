@@ -412,8 +412,15 @@ Rules:
   not the primary path.
 - Scraping runs over act's `--json` log *after* secret redaction (mact-f1w.8 / mact-f1w.13), so a
   secret can never be laundered into evidence via a marker line.
+- Where the scan looks: act writes a step's stdout into the JSON log's `msg` field (one line per
+  process write, but a single `msg` may hold several), so the grammar is applied to each line of
+  `msg` — and of the `Output`/`Error` spellings this log has used — rather than to the JSON log line,
+  which never starts with the literal. A log captured without `--log-format=json` is scanned line by
+  line instead, which is why the scan must never depend on the JSON form.
 - Malformed marker lines are counted (`malformed_metric`) and ignored; they never fail a run. Cap
-  5000 marker lines per run (`marker_cap_reached`).
+  5000 marker lines per run (`marker_cap_reached`). A line that starts with the literal and carries
+  no JSON behind it is not a malformed marker — it does not match the grammar at all, so it is a line
+  that mentions the marker, the same way a README does.
 - **Precedence:** a `job_file` metric wins over an identical `in_band_stdout` metric (same
   `name` + `labels` + `value`); the duplicate is dropped and the surviving record keeps
   `source: "job_file"`. Use the marker when a job cannot write files (no `--bind`, read-only fs, a
@@ -430,6 +437,26 @@ For every benchmark run, act-mcp emits `job_duration_s` (labels `job`) and `step
 least one row, so "did it run at all, and how long did it take" is answerable even for a job that
 emits nothing, and a benchmark regression can be compared against total job time in the same file.
 
+How the derivation reads the log (pinned by mact-f1w.12, because two implementations of "the run's
+duration" that disagree would be worse than none):
+
+- A line counts for this run when it carries `jobID` (or `job`) equal to the requested job id; a line
+  naming no job at all is ambient to this run, and a line naming a **different** job — a `needs:`
+  dependency act ran through the same log stream — is dropped. None of a dependency's steps may
+  become this run's duration.
+- One `step_duration_s` row per step that logged a duration, including act's own `Set up job` and
+  `Complete job` steps: act's `executionTime` is the step's own and act does not fold its setup into
+  the workflow step, so a row per step is what lets `job_duration_s` be the sum of the emitted step
+  rows. A step that logged a duration but no name contributes to the total and gets no row of its own
+  (a label that says nothing groups nothing).
+- `job_duration_s` is that sum when at least one step logged a duration. Otherwise — act killed the
+  run mid-step, so nothing ever logged a completion — it is the span of the run's own log timestamps,
+  which act writes at whole-second precision: a coarser number, and honest about being one.
+- Suppression is per label set: a `job_file` or `in_band_stdout` metric named `job_duration_s` (or
+  `step_duration_s` for a given `step`) suppresses the act-derived row with the same `(name, labels)`
+  only. act measured the whole job and the workflow measured a step are different measurements and
+  both stay.
+
 If a job emits its own `job_duration_s`, the **job's value wins** and the act-derived one is
 suppressed — a job measuring its own phase beats act measuring the whole job, and silently keeping
 both would double-count a duration.
@@ -437,6 +464,11 @@ both would double-count a duration.
 Note the deliberate asymmetry: the envelope's `duration_ms` is integer **milliseconds** (plumbing),
 the metric names are human-facing **seconds** (`*_s`). The name carries the unit precisely so the
 metric is self-describing.
+
+One consequence of the caps in §3.3 worth stating plainly: the per-run metric cap is shared by the
+three sources, so a job that emits 5000 marker lines leaves no room for these fallback rows. Every
+record of such a run carries `truncated`, which is the point of the flag — a consumer must never sum
+what survived and call it the run.
 
 ### 6. Concurrency, atomicity, creation
 

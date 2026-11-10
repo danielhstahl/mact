@@ -1,0 +1,7 @@
+{"dryrun":false,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"info","msg":"🚀  Start image=catthehacker/ubuntu:act-24.04","time":"2026-11-10T04:15:31Z"}
+{"dryrun":false,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"info","msg":"  ▶  Set up job","stage":"pre","step":"Set up job","stepID":["0"],"time":"2026-11-10T04:15:31Z"}
+{"dryrun":false,"executionTime":1500000000,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"info","msg":"  ✅  Success - Pre Set up job [1.5s]","stage":"pre","step":"Set up job","stepID":["0"],"stepResult":"success","time":"2026-11-10T04:15:32Z"}
+{"dryrun":false,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"info","msg":"  ▶  Run benchmark","stage":"main","step":"Run benchmark","stepID":["1"],"time":"2026-11-10T04:15:32Z"}
+{"dryrun":false,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"info","msg":"iter 1/50","raw_output":true,"stage":"main","step":"Run benchmark","stepID":["1"],"time":"2026-11-10T04:16:02Z"}
+{"dryrun":false,"executionTime":299400000000,"job":"hyperfine-bench","jobID":"hyperfine-bench","level":"info","msg":"  ❌  Failure - Main Run benchmark [4m59.4s]","stage":"main","step":"Run benchmark","stepID":["1"],"stepResult":"failure","time":"2026-11-10T04:20:31Z"}
+{"job":"hyperfine-bench","jobID":"hyperfine-bench","jobResult":"failure","level":"info","msg":"🏁 Job failed","time":"2026-11-10T04:20:32Z"}
