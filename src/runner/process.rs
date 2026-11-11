@@ -138,6 +138,26 @@ fn stat_state_and_pgrp(stat: &str) -> Option<(u8, i32)> {
     Some((state, pgrp))
 }
 
+#[cfg(target_os = "linux")]
+unsafe fn die_with_parent() -> io::Result<()> {
+    match libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) {
+        0 => Ok(()),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn die_with_parent() -> io::Result<()> {
+    let parent = libc::getppid();
+    let child = libc::getpid();
+
+    match libc::fork() {
+        -1 => Err(io::Error::last_os_error()),
+        0 => watcher(parent, child), // never returns
+        _ => Ok(()),
+    }
+}
+
 /// `prctl(PR_SET_PDEATHSIG, SIGKILL)` in the child, before `exec`.
 ///
 /// The ADR (§5.1) requires this to be *verified*, not assumed, because `PDEATHSIG` is
@@ -155,12 +175,63 @@ pub fn set_pdeathsig_on_parent_death(command: &mut tokio::process::Command) {
     // locks. It is installed before spawn and runs only in the child, between fork and
     // exec.
     unsafe {
-        command.pre_exec(
-            || match libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) {
-                0 => Ok(()),
-                _ => Err(io::Error::last_os_error()),
-            },
-        );
+        command.pre_exec(|| die_with_parent());
+    }
+}
+/// Runs in the helper process. Only async-signal-safe calls, no allocation.
+#[cfg(target_os = "macos")]
+unsafe fn watcher(parent: libc::pid_t, child: libc::pid_t) -> ! {
+    // Don't hold the child's stdio open.
+    let devnull = libc::open(b"/dev/null\0".as_ptr().cast(), libc::O_RDWR);
+    if devnull >= 0 {
+        libc::dup2(devnull, 0);
+        libc::dup2(devnull, 1);
+        libc::dup2(devnull, 2);
+        if devnull > 2 {
+            libc::close(devnull);
+        }
+    }
+
+    // kqueues aren't inherited across fork, so create it here.
+    let kq = libc::kqueue();
+    if kq < 0 {
+        libc::_exit(1);
+    }
+
+    let reg = |pid: libc::pid_t| -> libc::c_int {
+        let mut ev: libc::kevent = std::mem::zeroed();
+        ev.ident = pid as libc::uintptr_t;
+        ev.filter = libc::EVFILT_PROC;
+        ev.flags = libc::EV_ADD | libc::EV_ONESHOT;
+        ev.fflags = libc::NOTE_EXIT;
+        libc::kevent(kq, &ev, 1, std::ptr::null_mut(), 0, std::ptr::null())
+    };
+
+    // Parent already dead (or dies before we register): kill the child now.
+    if libc::getppid() != parent || reg(parent) < 0 {
+        libc::kill(child, libc::SIGKILL);
+        libc::_exit(0);
+    }
+    // Child already gone: nothing to do.
+    if reg(child) < 0 {
+        libc::_exit(0);
+    }
+
+    loop {
+        let mut out: libc::kevent = std::mem::zeroed();
+        let n = libc::kevent(kq, std::ptr::null(), 0, &mut out, 1, std::ptr::null());
+        if n < 0 {
+            if *libc::__error() == libc::EINTR {
+                continue;
+            }
+            libc::_exit(1);
+        }
+        if n > 0 {
+            if out.ident == parent as libc::uintptr_t {
+                libc::kill(child, libc::SIGKILL);
+            }
+            libc::_exit(0);
+        }
     }
 }
 
