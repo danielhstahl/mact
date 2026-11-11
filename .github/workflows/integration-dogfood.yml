@@ -48,7 +48,7 @@ jobs:
             --tool-name list_tasks \
             http://localhost:8080/mcp  2>/dev/null)
           result=$(echo $list_tasks | jq '.structuredContent.workflow_count')
-          if [ $result != "4" ]; then
+          if [ $result != "5" ]; then
             echo "Assertion failed: $result"
             exit 1
           fi

@@ -18,6 +18,7 @@ on:
       - "deny.toml"
       - ".github/workflows/ci.yml"
   pull_request:
+    branches: [intentionallynonexistant]
     # No path filter here on purpose: a required status check that does not run for some
     # PRs blocks that PR from merging, so PRs always get a run.
   workflow_dispatch:
