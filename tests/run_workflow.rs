@@ -495,15 +495,24 @@ async fn a_coverage_run_writes_evidence_and_returns_the_terminal_view() {
             .any(|token| token.starts_with("ACTMCP_EVIDENCE_OUT=")),
         "the payload transport is announced through act's own --env: {argv:?}"
     );
+    // The stub records its own `pwd`, which is the *physical* path, and a scratch root spelled
+    // through a symlink — macOS' `$TMPDIR`, under `/var`, a link into `/private/var` — is one
+    // directory with two strings, so the comparison is made canonically (which is also why
+    // `TestServer` hands the harness canonical paths, tests/common). Canonically means the
+    // scratch root here: teardown has wiped the per-run directory by now (ADR-0003 §11) and
+    // `canonical` can only resolve what exists, so the root is resolved and the run id is put
+    // back on — the two halves of "act's cwd is this run's scratch directory".
+    let cwd = PathBuf::from(fixture.cwd().trim());
     assert_eq!(
-        fixture.cwd(),
-        fixture
-            .config
-            .run_scratch
-            .join(&run_id)
-            .display()
-            .to_string(),
-        "act's cwd is the per-run scratch directory (ADR-0003 §5.2)"
+        cwd.parent().map(canonical),
+        Some(canonical(&fixture.config.run_scratch)),
+        "act's cwd is inside the per-run scratch root (ADR-0003 §5.2): {cwd:?}"
+    );
+    assert_eq!(
+        cwd.file_name()
+            .map(|name| name.to_string_lossy().into_owned()),
+        Some(run_id.clone()),
+        "act's cwd is this run's scratch directory, not another run's: {cwd:?}"
     );
 
     server.shutdown().await;
