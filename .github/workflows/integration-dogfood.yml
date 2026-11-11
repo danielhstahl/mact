@@ -20,7 +20,7 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/nektos/act/master/install.sh | sudo bash
           cargo build --release
-          ./target/release/act-mcp serve & # nohup
+          ./target/release/act-mcp serve --act-binary $(pwd)/bin/act & # nohup
 
       - name: Wait for port 8080
         run: |
