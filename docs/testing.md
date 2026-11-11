@@ -12,7 +12,8 @@ that reason.
 ```sh
 cargo test                    # everything: unit tests + every integration suite
 cargo test --test <name>      # one suite, e.g. cargo test --test protocol_conformance
-cargo test -- --ignored       # the two PR_SET_PDEATHSIG tests (they wait on wall-clock time)
+cargo test -- --ignored       # the runner_pdeathsig tests (they wait on wall-clock time),
+                              # the one helper they re-spawn to test themselves with,
                               # …and, since mact-f1w.19, the real-act gate, which needs act and
                               # a container runtime: run it as §7 describes, not by reflex
 ```
@@ -38,6 +39,16 @@ A few environment quirks worth knowing before the first red build:
   either gated `#[cfg(target_os = "linux")]` or cross-checked against a syscall that exists
   on both (`getpgrp(2)`, `getpgid(2)`, `killpg(2, 0)`), because the library's own `/proc` read
   has a fallback and the test must not be the only thing that assumes procfs.
+* "act dies with act-mcp" is a different mechanism per platform, and they are not scoped the
+  same way: Linux arms the child with `PR_SET_PDEATHSIG`, which is tied to the spawning
+  **thread**, while macOS has no such option and `runner::process::watcher` forks a helper
+  that `kevent`s for the server's exit — a net scoped to the **process**. `tests/runner_pdeathsig.rs`
+  (`--ignored`) retires a thread on Linux and a process on both, because a mechanism that is
+  process-scoped is not proved by a thread vanishing and vice versa. Anything that changes
+  `die_with_parent` gets run there **on both platforms**: a watcher that misidentifies its own
+  parent `SIGKILL`s act at `exec`, and every run on macOS then goes `pending → error`
+  (`act_crashed`, because a signalled process has no exit code) — which reads like a server
+  that never booted, not like a signal bug.
 * `scripts/validate_evidence.py` needs the `jsonschema` Python package. If the interpreter and
   `pip` on your box disagree (they do here), use the built-in checker instead:
   `cargo run -- validate-evidence <workspace>`.

@@ -43,7 +43,8 @@ matters on boxes where `pip` and `python3` disagree about where packages live.
 | `release` | `cargo build --release` + `scripts/smoke_binary.sh` | that the artefact exists, reports its version, answers `--help`, refuses a bad flag, and validates evidence with its embedded schemas |
 
 `test` does not pass `--ignored`. The `#[ignore]`d tests are the ones that wait on
-wall-clock time (the two `PR_SET_PDEATHSIG` ones) or that need a 20 s term grace; nothing in
+wall-clock time (the `runner_pdeathsig` net, and its helper) or that need a 20 s term grace;
+nothing in
 the default suite needs docker or `act`, and nothing in it may start needing them — a test
 that needs a container daemon belongs behind `#[ignore]` with the reason in its
 `reason =`, on a docker-capable runner, not in this pipeline.

@@ -12,7 +12,9 @@
 //! * **`prctl(PR_SET_PDEATHSIG)` lives in a `pre_exec` closure**, which is `unsafe`
 //!   because the compiler cannot check what runs between `fork` and `exec` in a
 //!   multithreaded process. The closure here calls exactly one syscall and allocates
-//!   nothing, which is the documented requirement.
+//!   nothing, which is the documented requirement — and on macOS, where there is no
+//!   `PDEATHSIG` to set, it forks one helper process and that helper then allocates nothing
+//!   either (`watcher`).
 //!
 //! Everything else in the runner goes through the four safe functions below, so the
 //! audited surface stays this file.
@@ -146,14 +148,21 @@ unsafe fn die_with_parent() -> io::Result<()> {
     }
 }
 
+/// macOS has no `PR_SET_PDEATHSIG`, so a helper process is forked to do the same job.
+///
+/// `pre_exec` already runs in a forked child, which decides what the two pids are: the
+/// *child* is the process that is about to `exec` act, and the *server* is act-mcp — the
+/// process whose death this net is meant to answer. The fork below makes a **grandchild**
+/// of act-mcp, so the watcher's real parent is the act process and never the server; see
+/// [`watcher`] for what gets broken when those two are the other way round.
 #[cfg(target_os = "macos")]
 unsafe fn die_with_parent() -> io::Result<()> {
-    let parent = libc::getppid();
-    let child = libc::getpid();
+    let server = libc::getppid();
+    let act = libc::getpid();
 
     match libc::fork() {
         -1 => Err(io::Error::last_os_error()),
-        0 => watcher(parent, child), // never returns
+        0 => watcher(server, act), // never returns
         _ => Ok(()),
     }
 }
@@ -167,8 +176,13 @@ unsafe fn die_with_parent() -> io::Result<()> {
 /// is the case it is defense for. It is never the *only* guarantee: ADR-0004 §9.2's
 /// shutdown sweep and §5.1's group kill are.
 ///
-/// The closure runs between `fork` and `exec` in a multithreaded process: one syscall,
-/// no allocation, no locks — the documented contract for `pre_exec`.
+/// On macOS the same guarantee is `watcher`'s `kqueue` note, which is **process**-scoped
+/// rather than thread-scoped — the difference the two halves of that test file are written
+/// around.
+///
+/// The closure runs between `fork` and `exec` in a multithreaded process: one syscall on
+/// Linux, one `fork` plus a `kqueue` helper on macOS, and no allocation and no locks in
+/// either — the documented contract for `pre_exec`.
 pub fn set_pdeathsig_on_parent_death(command: &mut tokio::process::Command) {
     // SAFETY: the closure is async-signal-safe — one prctl(2) (varargs passed as 0, as
     // the man page requires) and `last_os_error()` on failure, no allocation and no
@@ -178,19 +192,36 @@ pub fn set_pdeathsig_on_parent_death(command: &mut tokio::process::Command) {
         command.pre_exec(|| die_with_parent());
     }
 }
-/// Runs in the helper process. Only async-signal-safe calls, no allocation.
+
+/// The macOS stand-in for `PR_SET_PDEATHSIG`: park in `kevent(2)` and `SIGKILL` `act` the
+/// instant `server` dies.
+///
+/// Only async-signal-safe calls: no allocation, no locks, nothing that can wait on a lock
+/// another thread of act-mcp held at `fork` time.
+///
+/// The two pid arguments are the trap this function used to fall into. This process is the
+/// fork [`die_with_parent`] made *inside* the already-forked child, so its parent is `act`
+/// and `server` is its grandparent: comparing `getppid()` with `server` — the shape an
+/// ordinary `PDEATHSIG`-emulation snippet uses, where the watcher *is* the child — is
+/// never equal, and so the first version of this function SIGKILLed every act on macOS
+/// the moment it was born. The runs did not fail loudly either: a signal-killed act has no
+/// exit code, which is `RunStatus::Error` (`act_crashed`), so a `run_view` went
+/// `pending → error` and looked like a server that had not booted.
 #[cfg(target_os = "macos")]
-unsafe fn watcher(parent: libc::pid_t, child: libc::pid_t) -> ! {
-    // Don't hold the child's stdio open.
+unsafe fn watcher(server: libc::pid_t, act: libc::pid_t) -> ! {
+    // Nothing inherited may stay open. This process never `exec`s, so `FD_CLOEXEC` never
+    // fires, and std's stdio redirections live on their own descriptors as well as on 0/1/2
+    // — a lingering copy of act's log pipe would make the run's log pumps wait for an EOF
+    // that only arrives when this process exits, and would hold the run's process group
+    // live after act died (with no procfs to ask, `group_is_live` falls back to
+    // `killpg(pgid, 0)`, which a surviving member answers).
     let devnull = libc::open(c"/dev/null".as_ptr().cast(), libc::O_RDWR);
     if devnull >= 0 {
         libc::dup2(devnull, 0);
         libc::dup2(devnull, 1);
         libc::dup2(devnull, 2);
-        if devnull > 2 {
-            libc::close(devnull);
-        }
     }
+    close_inherited(devnull);
 
     // kqueues aren't inherited across fork, so create it here.
     let kq = libc::kqueue();
@@ -207,13 +238,26 @@ unsafe fn watcher(parent: libc::pid_t, child: libc::pid_t) -> ! {
         libc::kevent(kq, &ev, 1, std::ptr::null_mut(), 0, std::ptr::null())
     };
 
-    // Parent already dead (or dies before we register): kill the child now.
-    if libc::getppid() != parent || reg(parent) < 0 {
-        libc::kill(child, libc::SIGKILL);
+    // Our parent is `act`. Any other answer means act is already gone and we were
+    // reparented — and a pid we do not own may have been recycled, so the only safe move
+    // is to quit and let act's own exit status say what happened.
+    if libc::getppid() != act {
         libc::_exit(0);
     }
-    // Child already gone: nothing to do.
-    if reg(child) < 0 {
+    // `server` is the process we exist to die with. If it is already gone, or died before
+    // the note was registered, that is the event: take act down with it. A failure that is
+    // *not* "no such process" (a sandbox that refuses `EVFILT_PROC` notes, say) must not be
+    // read as "the server died" — this net is defense-in-depth, and the group kill and the
+    // §9.2 sweep are the guarantees; a watcher that cannot register has to cost a missing
+    // net, never a run.
+    if reg(server) < 0 {
+        if matches!(*libc::__error(), libc::ENOENT | libc::ESRCH) {
+            libc::kill(act, libc::SIGKILL);
+        }
+        libc::_exit(0);
+    }
+    // Act is already gone: nothing to watch, and nothing to hold open.
+    if reg(act) < 0 {
         libc::_exit(0);
     }
 
@@ -227,11 +271,36 @@ unsafe fn watcher(parent: libc::pid_t, child: libc::pid_t) -> ! {
             libc::_exit(1);
         }
         if n > 0 {
-            if out.ident == parent as libc::uintptr_t {
-                libc::kill(child, libc::SIGKILL);
+            // Whichever note fired, this watcher is finished: the server's means act must
+            // go with it, act's own means there is nothing left to guard.
+            if out.ident == server as libc::uintptr_t {
+                libc::kill(act, libc::SIGKILL);
             }
             libc::_exit(0);
         }
+    }
+}
+
+/// Close every descriptor the fork inherited except 0/1/2, which the caller has already
+/// pointed at `/dev/null` (`devnull`, if it opened, is one of them and is closed too).
+///
+/// macOS has no `closefrom(3)`, so the bound is `sysconf(_SC_OPEN_MAX)` — a handful of
+/// `close(2)`s that fail with `EBADF` in a process that has a dozen descriptors, and
+/// capped so a machine advertising an absurd limit cannot stall a forked child. `sysconf`
+/// is async-signal-safe; a failure to read the limit falls back to a comfortable 1024.
+#[cfg(target_os = "macos")]
+unsafe fn close_inherited(devnull: libc::c_int) {
+    let limit = libc::sysconf(libc::_SC_OPEN_MAX);
+    let last = if limit > 0 {
+        u32::try_from(limit).unwrap_or(u32::MAX).clamp(3, 65_536)
+    } else {
+        1024
+    };
+    for fd in 3..last as libc::c_int {
+        libc::close(fd);
+    }
+    if devnull > 2 {
+        libc::close(devnull);
     }
 }
 
