@@ -44,6 +44,7 @@ jobs:
 
       - name: Test workflow execution
         run: |
+          set +e
           tool_call=$(npx @modelcontextprotocol/inspector \
             --cli http://localhost:8080/mcp \
             --transport http \
@@ -54,11 +55,12 @@ jobs:
             --tool-arg commit=9c017e83a7b3d07a945b81d4a31a025ce83a015a \
             --tool-arg task=check \
             --tool-arg workflow=.github/workflows/ci.yml \
-            )
-          result=$(echo $tool_call | jq -r '.isError ')
-          if [ $result != "false" ]; then
-            echo "Assertion failed: $result"
-            echo "Tool call: $tool_call"
+            2>inspector.err)
+          status=$?
+          echo "inspector exit code: $status"
+          echo "stdout: $tool_call"
+          echo "stderr:"; cat inspector.err
+          if [ "$status" -ne 0 ] || ! echo "$tool_call" | jq -e '(.isError // false) == false' >/dev/null; then
+            echo "Assertion failed"
             exit 1
           fi
-          echo $result
