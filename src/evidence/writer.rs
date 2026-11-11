@@ -1201,8 +1201,7 @@ mod tests {
                 // the watched file where `record_path` says it goes, the reader would
                 // otherwise wait on a file that never arrives. Generous because a loaded
                 // box really does need the writer's whole run before it exists.
-                let deadline =
-                    std::time::Instant::now() + std::time::Duration::from_secs(60);
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
                 loop {
                     gate.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     let has_observed = {
