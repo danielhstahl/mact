@@ -296,12 +296,33 @@ mod tests {
         assert!(!group_exists(i32::MAX));
     }
 
+    /// What teardown needs to be able to say about a live group, checked against the one
+    /// group this test is certainly part of: its own.
+    ///
+    /// `getpgrp(2)` is the question, so `getpgrp(2)` answers it. `/proc` is only how Linux
+    /// spells that answer — there is no procfs on the macOS this crate also runs on (that is
+    /// why [`die_with_parent`] has a `kqueue` variant) — so the `/proc` parse is asserted on
+    /// Linux and skipped where there is no procfs to parse. Asserting it unconditionally
+    /// fails on macOS for a reason that has nothing to do with anything the code got wrong.
     #[test]
     fn this_process_is_in_its_own_group() {
-        let pid = std::process::id() as i32;
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).expect("our own stat line");
-        let (_state, pgrp) = stat_state_and_pgrp(&stat).expect("parses");
-        assert!(pgrp > 0, "a real process has a real group");
-        assert!(group_is_live(pgrp), "we are, after all, running");
+        // SAFETY: getpgrp(2) takes no arguments, cannot fail, and returns this process's own
+        // process group id — the same number `signal_group` would act on.
+        let pgid = unsafe { libc::getpgrp() };
+        assert!(pgid > 0, "a real process has a real group: {pgid}");
+        assert!(group_is_live(pgid), "we are, after all, running");
+        assert!(group_exists(pgid), "signal 0 reaches our own group");
+
+        // The reader teardown actually uses, cross-checked against the syscall so a
+        // miscounted `stat` field cannot quietly agree with itself.
+        #[cfg(target_os = "linux")]
+        {
+            let pid = std::process::id() as i32;
+            let stat =
+                std::fs::read_to_string(format!("/proc/{pid}/stat")).expect("our own stat line");
+            let (state, pgrp) = stat_state_and_pgrp(&stat).expect("parses");
+            assert_eq!(pgrp, pgid, "procfs and getpgrp(2) agree about our group");
+            assert_ne!(state, b'Z', "a running test is not a zombie");
+        }
     }
 }
