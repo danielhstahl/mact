@@ -67,7 +67,7 @@ jobs:
             --tool-arg category=test \
             --tool-arg commit=${{ github.sha }} \
             --tool-arg task=check \
-            --tool-arg workflow=.github/workflows/ci.yml \
+            --tool-arg workflow=.github/workflows/dogfood.yml \
             2>inspector.err)
           status=$?
           echo "inspector exit code: $status"
