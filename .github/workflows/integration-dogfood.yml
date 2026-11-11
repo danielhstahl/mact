@@ -69,7 +69,9 @@ jobs:
           echo "stdout: $tool_call"
           echo "stderr:"; cat inspector.err
           workflow_status=$(echo $tool_call | jq '.structuredContent.status')
+          run_id=$(echo $tool_call | jq '.structuredContent.run_id')
           if [ "$status" -ne 0 ] || workflow_status == 'failed' || ! echo "$tool_call" | jq -e '(.isError // false) == false' >/dev/null; then
             echo "Assertion failed"
             exit 1
           fi
+          cat .evidence/runs/$run_id/act.jsonl
