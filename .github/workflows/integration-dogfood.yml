@@ -68,7 +68,7 @@ jobs:
           echo "inspector exit code: $status"
           echo "stdout: $tool_call"
           echo "stderr:"; cat inspector.err
-          workflow_status=$(echo $tool_call | jq '.structuredContent.status')
+          workflow_status=$(echo $tool_call | jq -r '.structuredContent.status')
           run_id=$(echo $tool_call | jq -r '.structuredContent.run_id')
           cat $(pwd)/.evidence/runs/$run_id/act.jsonl
           if [ "$status" -ne 0 ] || $workflow_status == 'failed' || ! echo "$tool_call" | jq -e '(.isError // false) == false' >/dev/null; then
