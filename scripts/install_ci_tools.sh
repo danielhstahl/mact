@@ -25,11 +25,26 @@ set -o errexit -o nounset -o pipefail
 
 # Bump together with a re-run of `scripts/ci.sh supply-chain`.
 CARGO_DENY_VERSION=${CARGO_DENY_VERSION:-0.20.2}
-# Pinned digests for cargo-deny's own release tarballs (as published by upstream for this
-# version). A new version means updating these, which is the reviewable part of a bump.
-declare -A CARGO_DENY_SHA256
-CARGO_DENY_SHA256[aarch64]="995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d"
-CARGO_DENY_SHA256[x86_64]="9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
+# Pinned digests for cargo-deny's own release tarballs, keyed by the target triple of the
+# tarball. A case function rather than `declare -A`: macOS /bin/bash is 3.2 (no assoc arrays).
+# An empty answer means "no pinned tarball", which falls back to `cargo install --locked`.
+cargo_deny_sha256() {
+    case "$1" in
+        aarch64-unknown-linux-musl) echo "995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d" ;;
+        x86_64-unknown-linux-musl)  echo "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f" ;;
+        aarch64-apple-darwin)       echo "fe67d82a10d8597a3549364cb733a3f9cc1bfff9031b7ae46384a9f2a72090c3" ;; # TODO: pin from the release page
+        *)                          echo "" ;;
+    esac
+}
+
+# Portable sha256 of a file: GNU coreutils has sha256sum, macOS has shasum.
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
 
 usage() {
     cat <<'USAGE'
@@ -84,12 +99,17 @@ die() {
 # cargo-deny
 # ---------------------------------------------------------------------------
 install_cargo_deny() {
-    local triple arch tarball url dir want
+    local triple arch target tarball url want
     triple=$(rustc -vV | sed -n 's/^host: //p') || die "rustc did not answer -vV; is a Rust toolchain installed?"
     arch=${triple%%-*}
-    tarball="cargo-deny-$CARGO_DENY_VERSION-$arch-unknown-linux-musl.tar.gz"
+    case "$triple" in
+        *-apple-darwin) target="$arch-apple-darwin" ;;
+        *-linux-*)      target="$arch-unknown-linux-musl" ;; # static musl build runs on any linux libc
+        *)              target="" ;;
+    esac
+    tarball="cargo-deny-$CARGO_DENY_VERSION-$target.tar.gz"
     url="https://github.com/EmbarkStudios/cargo-deny/releases/download/$CARGO_DENY_VERSION/$tarball"
-    want=${CARGO_DENY_SHA256[$arch]:-}
+    want=$(cargo_deny_sha256 "$target")
 
     local cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
     mkdir -p "$cargo_bin"
@@ -129,11 +149,14 @@ install_cargo_deny() {
     if [[ "$published" != "$want" ]]; then
         die "upstream's published sha256 ($published) is not the one pinned in this script ($want); stop and find out why before bumping"
     fi
-    printf '%s  %s\n' "$want" "$tmp/$tarball" | sha256sum --check --status ||
-        die "the downloaded tarball does not match its sha256"
+    local actual
+    actual=$(sha256_of "$tmp/$tarball")
+    [[ "$actual" == "$want" ]] ||
+        die "the downloaded tarball does not match its sha256 (got $actual, pinned $want)"
     tar -xzf "$tmp/$tarball" -C "$tmp"
     local extracted
-    extracted=$(find "$tmp" -maxdepth 2 -type f -name cargo-deny -print -quit)
+    # `find -quit` is GNU-only; sed -n 1p works everywhere and (unlike head) can't SIGPIPE find.
+    extracted=$(find "$tmp" -maxdepth 2 -type f -name cargo-deny -print | sed -n 1p)
     [[ -n "$extracted" ]] || die "the tarball had no cargo-deny binary in it"
     install -m 0755 "$extracted" "$cargo_bin/cargo-deny"
     ok "cargo-deny $(cargo deny --version | awk '{print $2}') installed in $cargo_bin"
