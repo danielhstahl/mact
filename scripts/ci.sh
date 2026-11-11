@@ -217,7 +217,12 @@ step_schema() {
     # `act-mcp validate-evidence` does in production. `--schema`/`--meta-schema` name the
     # files on disk so this step fails on the file, not only on the embedded copy.
     cargo build
-    local bin="$target_dir/debug/act-mcp"
+    local bin
+    if [[ -n "${CARGO_BUILD_TARGET:-}" ]]; then
+        bin="$target_dir/$CARGO_BUILD_TARGET/debug/act-mcp"
+    else
+        bin="$target_dir/debug/act-mcp"
+    fi
     if [[ ! -x "$bin" ]]; then
         echo "schema: expected a built binary at $bin and did not find one" >&2
         return 1

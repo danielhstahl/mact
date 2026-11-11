@@ -182,7 +182,7 @@ pub fn set_pdeathsig_on_parent_death(command: &mut tokio::process::Command) {
 #[cfg(target_os = "macos")]
 unsafe fn watcher(parent: libc::pid_t, child: libc::pid_t) -> ! {
     // Don't hold the child's stdio open.
-    let devnull = libc::open(b"/dev/null\0".as_ptr().cast(), libc::O_RDWR);
+    let devnull = libc::open(c"/dev/null".as_ptr().cast(), libc::O_RDWR);
     if devnull >= 0 {
         libc::dup2(devnull, 0);
         libc::dup2(devnull, 1);
