@@ -12,7 +12,9 @@
 //! * **`prctl(PR_SET_PDEATHSIG)` lives in a `pre_exec` closure**, which is `unsafe`
 //!   because the compiler cannot check what runs between `fork` and `exec` in a
 //!   multithreaded process. The closure here calls exactly one syscall and allocates
-//!   nothing, which is the documented requirement.
+//!   nothing, which is the documented requirement — and on macOS, where there is no
+//!   `PDEATHSIG` to set, it forks one helper process and that helper then allocates nothing
+//!   either (`watcher`).
 //!
 //! Everything else in the runner goes through the four safe functions below, so the
 //! audited surface stays this file.
@@ -138,6 +140,33 @@ fn stat_state_and_pgrp(stat: &str) -> Option<(u8, i32)> {
     Some((state, pgrp))
 }
 
+#[cfg(target_os = "linux")]
+unsafe fn die_with_parent() -> io::Result<()> {
+    match libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) {
+        0 => Ok(()),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
+/// macOS has no `PR_SET_PDEATHSIG`, so a helper process is forked to do the same job.
+///
+/// `pre_exec` already runs in a forked child, which decides what the two pids are: the
+/// *child* is the process that is about to `exec` act, and the *server* is act-mcp — the
+/// process whose death this net is meant to answer. The fork below makes a **grandchild**
+/// of act-mcp, so the watcher's real parent is the act process and never the server; see
+/// [`watcher`] for what gets broken when those two are the other way round.
+#[cfg(target_os = "macos")]
+unsafe fn die_with_parent() -> io::Result<()> {
+    let server = libc::getppid();
+    let act = libc::getpid();
+
+    match libc::fork() {
+        -1 => Err(io::Error::last_os_error()),
+        0 => watcher(server, act), // never returns
+        _ => Ok(()),
+    }
+}
+
 /// `prctl(PR_SET_PDEATHSIG, SIGKILL)` in the child, before `exec`.
 ///
 /// The ADR (§5.1) requires this to be *verified*, not assumed, because `PDEATHSIG` is
@@ -147,20 +176,131 @@ fn stat_state_and_pgrp(stat: &str) -> Option<(u8, i32)> {
 /// is the case it is defense for. It is never the *only* guarantee: ADR-0004 §9.2's
 /// shutdown sweep and §5.1's group kill are.
 ///
-/// The closure runs between `fork` and `exec` in a multithreaded process: one syscall,
-/// no allocation, no locks — the documented contract for `pre_exec`.
+/// On macOS the same guarantee is `watcher`'s `kqueue` note, which is **process**-scoped
+/// rather than thread-scoped — the difference the two halves of that test file are written
+/// around.
+///
+/// The closure runs between `fork` and `exec` in a multithreaded process: one syscall on
+/// Linux, one `fork` plus a `kqueue` helper on macOS, and no allocation and no locks in
+/// either — the documented contract for `pre_exec`.
 pub fn set_pdeathsig_on_parent_death(command: &mut tokio::process::Command) {
     // SAFETY: the closure is async-signal-safe — one prctl(2) (varargs passed as 0, as
     // the man page requires) and `last_os_error()` on failure, no allocation and no
     // locks. It is installed before spawn and runs only in the child, between fork and
     // exec.
     unsafe {
-        command.pre_exec(
-            || match libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) {
-                0 => Ok(()),
-                _ => Err(io::Error::last_os_error()),
-            },
-        );
+        command.pre_exec(|| die_with_parent());
+    }
+}
+
+/// The macOS stand-in for `PR_SET_PDEATHSIG`: park in `kevent(2)` and `SIGKILL` `act` the
+/// instant `server` dies.
+///
+/// Only async-signal-safe calls: no allocation, no locks, nothing that can wait on a lock
+/// another thread of act-mcp held at `fork` time.
+///
+/// The two pid arguments are the trap this function used to fall into. This process is the
+/// fork [`die_with_parent`] made *inside* the already-forked child, so its parent is `act`
+/// and `server` is its grandparent: comparing `getppid()` with `server` — the shape an
+/// ordinary `PDEATHSIG`-emulation snippet uses, where the watcher *is* the child — is
+/// never equal, and so the first version of this function SIGKILLed every act on macOS
+/// the moment it was born. The runs did not fail loudly either: a signal-killed act has no
+/// exit code, which is `RunStatus::Error` (`act_crashed`), so a `run_view` went
+/// `pending → error` and looked like a server that had not booted.
+#[cfg(target_os = "macos")]
+unsafe fn watcher(server: libc::pid_t, act: libc::pid_t) -> ! {
+    // Nothing inherited may stay open. This process never `exec`s, so `FD_CLOEXEC` never
+    // fires, and std's stdio redirections live on their own descriptors as well as on 0/1/2
+    // — a lingering copy of act's log pipe would make the run's log pumps wait for an EOF
+    // that only arrives when this process exits, and would hold the run's process group
+    // live after act died (with no procfs to ask, `group_is_live` falls back to
+    // `killpg(pgid, 0)`, which a surviving member answers).
+    let devnull = libc::open(c"/dev/null".as_ptr().cast(), libc::O_RDWR);
+    if devnull >= 0 {
+        libc::dup2(devnull, 0);
+        libc::dup2(devnull, 1);
+        libc::dup2(devnull, 2);
+    }
+    close_inherited(devnull);
+
+    // kqueues aren't inherited across fork, so create it here.
+    let kq = libc::kqueue();
+    if kq < 0 {
+        libc::_exit(1);
+    }
+
+    let reg = |pid: libc::pid_t| -> libc::c_int {
+        let mut ev: libc::kevent = std::mem::zeroed();
+        ev.ident = pid as libc::uintptr_t;
+        ev.filter = libc::EVFILT_PROC;
+        ev.flags = libc::EV_ADD | libc::EV_ONESHOT;
+        ev.fflags = libc::NOTE_EXIT;
+        libc::kevent(kq, &ev, 1, std::ptr::null_mut(), 0, std::ptr::null())
+    };
+
+    // Our parent is `act`. Any other answer means act is already gone and we were
+    // reparented — and a pid we do not own may have been recycled, so the only safe move
+    // is to quit and let act's own exit status say what happened.
+    if libc::getppid() != act {
+        libc::_exit(0);
+    }
+    // `server` is the process we exist to die with. If it is already gone, or died before
+    // the note was registered, that is the event: take act down with it. A failure that is
+    // *not* "no such process" (a sandbox that refuses `EVFILT_PROC` notes, say) must not be
+    // read as "the server died" — this net is defense-in-depth, and the group kill and the
+    // §9.2 sweep are the guarantees; a watcher that cannot register has to cost a missing
+    // net, never a run.
+    if reg(server) < 0 {
+        if matches!(*libc::__error(), libc::ENOENT | libc::ESRCH) {
+            libc::kill(act, libc::SIGKILL);
+        }
+        libc::_exit(0);
+    }
+    // Act is already gone: nothing to watch, and nothing to hold open.
+    if reg(act) < 0 {
+        libc::_exit(0);
+    }
+
+    loop {
+        let mut out: libc::kevent = std::mem::zeroed();
+        let n = libc::kevent(kq, std::ptr::null(), 0, &mut out, 1, std::ptr::null());
+        if n < 0 {
+            if *libc::__error() == libc::EINTR {
+                continue;
+            }
+            libc::_exit(1);
+        }
+        if n > 0 {
+            // Whichever note fired, this watcher is finished: the server's means act must
+            // go with it, act's own means there is nothing left to guard.
+            if out.ident == server as libc::uintptr_t {
+                libc::kill(act, libc::SIGKILL);
+            }
+            libc::_exit(0);
+        }
+    }
+}
+
+/// Close every descriptor the fork inherited except 0/1/2, which the caller has already
+/// pointed at `/dev/null` (`devnull`, if it opened, is one of them and is closed too).
+///
+/// macOS has no `closefrom(3)`, so the bound is `sysconf(_SC_OPEN_MAX)` — a handful of
+/// `close(2)`s that fail with `EBADF` in a process that has a dozen descriptors, and
+/// capped so a machine advertising an absurd limit cannot stall a forked child. `sysconf`
+/// is async-signal-safe; a failure to read the limit falls back to a comfortable 1024.
+#[cfg(target_os = "macos")]
+unsafe fn close_inherited(devnull: libc::c_int) {
+    let limit = libc::sysconf(libc::_SC_OPEN_MAX);
+    let last = if limit > 0 {
+        u32::try_from(limit).unwrap_or(u32::MAX).clamp(3, 65_536)
+    } else {
+        1024
+    };
+    for fd in 3..last as libc::c_int {
+        libc::close(fd);
+    }
+    if devnull > 2 {
+        libc::close(devnull);
     }
 }
 
@@ -225,12 +365,33 @@ mod tests {
         assert!(!group_exists(i32::MAX));
     }
 
+    /// What teardown needs to be able to say about a live group, checked against the one
+    /// group this test is certainly part of: its own.
+    ///
+    /// `getpgrp(2)` is the question, so `getpgrp(2)` answers it. `/proc` is only how Linux
+    /// spells that answer — there is no procfs on the macOS this crate also runs on (that is
+    /// why [`die_with_parent`] has a `kqueue` variant) — so the `/proc` parse is asserted on
+    /// Linux and skipped where there is no procfs to parse. Asserting it unconditionally
+    /// fails on macOS for a reason that has nothing to do with anything the code got wrong.
     #[test]
     fn this_process_is_in_its_own_group() {
-        let pid = std::process::id() as i32;
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).expect("our own stat line");
-        let (_state, pgrp) = stat_state_and_pgrp(&stat).expect("parses");
-        assert!(pgrp > 0, "a real process has a real group");
-        assert!(group_is_live(pgrp), "we are, after all, running");
+        // SAFETY: getpgrp(2) takes no arguments, cannot fail, and returns this process's own
+        // process group id — the same number `signal_group` would act on.
+        let pgid = unsafe { libc::getpgrp() };
+        assert!(pgid > 0, "a real process has a real group: {pgid}");
+        assert!(group_is_live(pgid), "we are, after all, running");
+        assert!(group_exists(pgid), "signal 0 reaches our own group");
+
+        // The reader teardown actually uses, cross-checked against the syscall so a
+        // miscounted `stat` field cannot quietly agree with itself.
+        #[cfg(target_os = "linux")]
+        {
+            let pid = std::process::id() as i32;
+            let stat =
+                std::fs::read_to_string(format!("/proc/{pid}/stat")).expect("our own stat line");
+            let (state, pgrp) = stat_state_and_pgrp(&stat).expect("parses");
+            assert_eq!(pgrp, pgid, "procfs and getpgrp(2) agree about our group");
+            assert_ne!(state, b'Z', "a running test is not a zombie");
+        }
     }
 }

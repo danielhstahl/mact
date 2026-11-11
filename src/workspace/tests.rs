@@ -1579,6 +1579,12 @@ fn a_materialized_tree_is_read_instead_of_the_commit_tree() {
         !worktree.join(".github/workflows/newer.yml").exists(),
         "the worktree is the older tree"
     );
+    // The validator reports the *resolved* path of the file it read — resolving it is how it
+    // proves the file is in the tree it measured (`workflows::index_directory`, ADR-0001
+    // §2.2) — so the comparison has to be resolved against resolved. A temp directory can be
+    // spelled through a symlink (macOS' `$TMPDIR` lives under `/var`, a link into
+    // `/private`), and then the two spellings are different strings for one directory.
+    let worktree_canonical = worktree.canonicalize().expect("the worktree exists");
 
     struct Materialized(PathBuf);
     impl TreeSelector for Materialized {
@@ -1600,11 +1606,14 @@ fn a_materialized_tree_is_read_instead_of_the_commit_tree() {
         .expect("the worktree's own workflow file resolves");
     assert_eq!(
         target.workflow_file,
-        worktree.join(".github/workflows/ci.yml"),
+        worktree_canonical.join(".github/workflows/ci.yml"),
         "the file that was inspected is the file in the tree being measured"
     );
     // Relpaths stay workspace-relative, so the run reports the same path it would
-    // have reported in `head_only` mode.
+    // have reported in `head_only` mode — and they stay that way however the tree was
+    // spelled, because `Materialized` above was handed the path as written, not the
+    // resolved one: an absolute relpath here would both read wrong in the payload and
+    // leak a host path ADR-0001 §2.2 keeps out of it.
     assert_eq!(target.workflow_relpath, ".github/workflows/ci.yml");
     assert_eq!(target.mode, IsolationMode::Worktree);
 

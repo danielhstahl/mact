@@ -12,7 +12,8 @@ that reason.
 ```sh
 cargo test                    # everything: unit tests + every integration suite
 cargo test --test <name>      # one suite, e.g. cargo test --test protocol_conformance
-cargo test -- --ignored       # the two PR_SET_PDEATHSIG tests (they wait on wall-clock time)
+cargo test -- --ignored       # the runner_pdeathsig tests (they wait on wall-clock time),
+                              # the one helper they re-spawn to test themselves with,
                               # …and, since mact-f1w.19, the real-act gate, which needs act and
                               # a container runtime: run it as §7 describes, not by reflex
 ```
@@ -23,10 +24,31 @@ a release build that is then run to prove it works. `scripts/ci.sh --help` lists
 [docs/ci.md](ci.md) documents them, including the `rust-toolchain.toml` pin that makes a
 local run and a CI run the same claim.
 
-Two environment quirks worth knowing before the first red build:
+A few environment quirks worth knowing before the first red build:
 
 * on this repo's dev box `rustc` takes SIGBUS while linking inside a bind-mounted `/workspace`,
   so build and test with `CARGO_TARGET_DIR=/tmp/tt` if you see it;
+* on macOS `$TMPDIR` is under `/var`, and `/var` is a symlink to `/private/var`, so every
+  temp directory a test makes has two spellings of one directory. Anything in a test that
+  compares a path the code resolved (`Path::canonicalize`, or act's own `pwd`) against a path
+  the test assembled can therefore disagree with itself on macOS and agree on Linux, where
+  `/tmp` is a real directory. Reproduce it here without a Mac: `ln -s /tmp /tmp/link-tmp`
+  and run `TMPDIR=/tmp/link-tmp cargo test`;
+* the process-group tests read `/proc` (`runner_execution`'s `live_pids_in_group`,
+  `process_group_of`), which Linux has and macOS does not: a `/proc` assertion in a test is
+  either gated `#[cfg(target_os = "linux")]` or cross-checked against a syscall that exists
+  on both (`getpgrp(2)`, `getpgid(2)`, `killpg(2, 0)`), because the library's own `/proc` read
+  has a fallback and the test must not be the only thing that assumes procfs.
+* "act dies with act-mcp" is a different mechanism per platform, and they are not scoped the
+  same way: Linux arms the child with `PR_SET_PDEATHSIG`, which is tied to the spawning
+  **thread**, while macOS has no such option and `runner::process::watcher` forks a helper
+  that `kevent`s for the server's exit — a net scoped to the **process**. `tests/runner_pdeathsig.rs`
+  (`--ignored`) retires a thread on Linux and a process on both, because a mechanism that is
+  process-scoped is not proved by a thread vanishing and vice versa. Anything that changes
+  `die_with_parent` gets run there **on both platforms**: a watcher that misidentifies its own
+  parent `SIGKILL`s act at `exec`, and every run on macOS then goes `pending → error`
+  (`act_crashed`, because a signalled process has no exit code) — which reads like a server
+  that never booted, not like a signal bug.
 * `scripts/validate_evidence.py` needs the `jsonschema` Python package. If the interpreter and
   `pip` on your box disagree (they do here), use the built-in checker instead:
   `cargo run -- validate-evidence <workspace>`.
@@ -52,7 +74,7 @@ guards.
 ## 2. Before trusting a green run
 
 `cargo test` here is the whole contract, so a red test is a contract break and gets read as one.
-Two conventions make the suite stay honest:
+Three conventions make the suite stay honest:
 
 * **Assertions are observations.** Nothing reads a private constant to prove a behaviour; the
   protocol tests ask the endpoint over HTTP and check what came back. Removing a pin in
@@ -61,6 +83,15 @@ Two conventions make the suite stay honest:
   SDK's status code and message, not ours. They are still pinned (that is how a silent SDK
   change shows up as a diff instead of a client bug report), and the comment over each one names
   which half is whose.
+* **Paths are compared canonically, on both sides.** The crate resolves paths — the workspace
+  at boot, a workflow file to prove it did not escape `.github/workflows` (ADR-0001 §2.2),
+  act's own cwd — so a test that compares its own assembled path against a resolved one is
+  comparing a spelling against a place. It passes on Linux and fails on a `$TMPDIR` that is a
+  symlink (§1), which is how `--run-scratch` inside the workspace came to be waved through on
+  macOS: `Config` canonicalises the workspace and the comparison only resolved one side.
+  Use `crate::fixtures::canonical` (integration tests already take canonical paths from
+  `TestServer`), and expect the same of the product: a relpath that comes back absolute is a
+  bug, not a platform quirk — ADR-0001 §2.2 keeps absolute host paths out of the payloads.
 
 ## 3. Protocol conformance (`tests/protocol_conformance.rs`)
 

@@ -638,10 +638,21 @@ impl Config {
             Some(path) => path.to_path_buf(),
             None => default_run_scratch_dir(),
         };
-        // Compare canonically where possible: `--run-scratch ./work/scratch` and a workspace
-        // reached through a symlink should not be two different places.
-        let scratch_canonical = scratch.canonicalize().unwrap_or_else(|_| scratch.clone());
-        if scratch_canonical.starts_with(workspace) || scratch.starts_with(workspace) {
+        // Canonical on *both* sides of the comparison. The workspace reached this point
+        // canonicalised ([`Config::validate_workspace`]) while `--run-scratch` is whatever the
+        // operator typed, so comparing a canonical workspace against a path that spells the
+        // same directory through a symlink — macOS' `$TMPDIR`, where `/var` and `/tmp` are
+        // links into `/private` — reads as "two unrelated places" and lets
+        // `<workspace>/scratch` boot, which is precisely the directory act's `--bind` then
+        // hands to the job together with its `secrets.env` (ADR-0003 §11).
+        //
+        // Only the canonical spelling is consulted, on either side. A raw prefix test looks
+        // free to keep and is not: `<workspace>/../elsewhere` shares the workspace's raw
+        // prefix and is a different place, so the raw test refuses configurations the ADR
+        // allows, while the canonical one resolves the `..` and sees where the directory
+        // actually is.
+        let workspace_canonical = Self::canonical_path(workspace);
+        if Self::canonical_path(&scratch).starts_with(&workspace_canonical) {
             return Err(ConfigError::RunScratchInsideWorkspace {
                 path: scratch,
                 workspace: workspace.to_path_buf(),
@@ -649,6 +660,51 @@ impl Config {
         }
         Ok(scratch)
     }
+
+    /// `path` with every existing part resolved and the missing tail put back on.
+    ///
+    /// [`Path::canonicalize`] is std's only resolver and it insists that the whole path
+    /// exist, but boot has to compare paths it must not create — `--run-scratch` names a
+    /// directory the first run makes (ADR-0003 §11). So resolve as far as the filesystem
+    /// can, from the deepest existing ancestor down, and keep the rest as written. A
+    /// relative path is resolved against the working directory first, because
+    /// `--run-scratch ./work/scratch` and `--workspace .` are meant to be two spellings of
+    /// one place, not two places.
+    fn canonical_path(path: &Path) -> PathBuf {
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(path))
+                .unwrap_or_else(|_| path.to_path_buf())
+        };
+        if let Ok(canonical) = absolute.canonicalize() {
+            return canonical;
+        }
+        // Walk up until something exists, collecting the components that do not.
+        let mut missing = Vec::new();
+        let mut cursor = absolute.as_path();
+        let resolved = loop {
+            match cursor.canonicalize() {
+                Ok(canonical) => break canonical,
+                Err(_) => match (cursor.file_name(), cursor.parent()) {
+                    (Some(name), Some(parent)) => {
+                        missing.push(name);
+                        cursor = parent;
+                    }
+                    // Nothing in the path exists, or there is no component left to strip
+                    // (a root, or a bare relative name): compare what we have.
+                    _ => return absolute,
+                },
+            }
+        };
+        let mut out = resolved;
+        for name in missing.iter().rev() {
+            out.push(name);
+        }
+        out
+    }
+
     ///
     /// ADR-0004 §11's defaults, with the one cap this ticket owns overlaid. The other knobs
     /// stay with the ADR defaults on purpose: they are the budgets ADR-0004 pins, and moving
@@ -1240,6 +1296,53 @@ mod tests {
             Config::build(&args).expect_err("empty is not a secret"),
             ConfigError::SessionTokenEmpty
         ));
+    }
+
+    /// ADR-0003 §11's "not inside the workspace" rule is about a *place*, and a place can have
+    /// two spellings: macOS' `$TMPDIR` lives under `/var`, which is a link into
+    /// `/private/var`, so a test temp directory — and any workspace under it — is reachable as
+    /// two different strings. Boot canonicalises the workspace on the way in and used to
+    /// canonicalise only the scratch side of the comparison, which waved through a scratch
+    /// path spelled the other way through the link: `secrets.env` inside the tree act is
+    /// about to `--bind`.
+    #[test]
+    #[cfg(unix)]
+    fn a_scratch_inside_a_workspace_reached_through_a_symlink_is_still_refused() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let real = root.path().join("real");
+        std::fs::create_dir_all(real.join(".github/workflows")).expect("create .github");
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink the workspace");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let act = stub_act(tmp.path(), "act");
+
+        // Workspace spelled through the link, scratch spelled through what it points at.
+        let mut args = args_with(&link, &act);
+        args.run_scratch = Some(real.join("scratch"));
+        assert!(matches!(
+            Config::build(&args)
+                .expect_err("one directory is one directory, however it is spelled"),
+            ConfigError::RunScratchInsideWorkspace { .. }
+        ));
+
+        // The mirror image, which is the direction the old comparison missed: the workspace
+        // is canonical by the time this check runs, the scratch path is not.
+        let mut args = args_with(&real, &act);
+        args.run_scratch = Some(link.join("scratch"));
+        assert!(matches!(
+            Config::build(&args).expect_err("and the same the other way round"),
+            ConfigError::RunScratchInsideWorkspace { .. }
+        ));
+
+        // A scratch that really is outside the tree still boots even when it is spelled
+        // through the tree with a `..`: the rule refuses one thing, not everything it has to
+        // think about.
+        let mut args = args_with(&link, &act);
+        args.run_scratch = Some(real.join("../elsewhere"));
+        assert!(
+            Config::build(&args).is_ok(),
+            "`<workspace>/../elsewhere` is not inside the workspace"
+        );
     }
 
     #[test]

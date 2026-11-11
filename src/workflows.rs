@@ -119,7 +119,10 @@ pub enum IndexError {
 ///
 /// `tree` may be the workspace, a materialized worktree, or any directory with the
 /// same layout: relpaths are relative to `tree`, so the same string comes out
-/// whichever tree a run would actually use.
+/// whichever tree a run would actually use — whichever spelling of `tree` the caller
+/// had, since the relpath is measured from the resolved `.github/workflows` (§2.2's
+/// escape check resolves the file anyway, and a symlinked or relative `tree` is the
+/// same directory).
 pub fn index_directory(tree: &std::path::Path) -> Result<Vec<WorkflowFile>, IndexError> {
     let directory = tree.join(WORKFLOWS_DIR);
     let canonical = directory
@@ -161,7 +164,15 @@ pub fn index_directory(tree: &std::path::Path) -> Result<Vec<WorkflowFile>, Inde
             if !resolved.starts_with(&canonical) {
                 continue;
             }
-            let relpath = relative_path(tree, &resolved);
+            // Measured from the canonical `.github/workflows`, not from `tree` as written:
+            // `resolved` has had its links followed, and `tree` may be spelled through a
+            // symlink (macOS' `$TMPDIR`, where `/tmp` and `/var` are links into `/private`)
+            // or be relative (`--run-scratch ./work/scratch`). Stripping the raw `tree` off a
+            // resolved path then fails and silently returns the absolute path — which is both
+            // an absolute host path in a payload ADR-0001 §2.2 forbids and a
+            // `workflow_relpath` no reader ever asked for. Everything under `canonical` is in
+            // the tree by construction, so the two are the same string.
+            let relpath = format!("{WORKFLOWS_DIR}/{}", relative_path(&canonical, &resolved));
             let bytes = match read_bounded(&resolved) {
                 Ok(bytes) => bytes,
                 Err(error) => {
@@ -357,6 +368,53 @@ mod tests {
         assert!(files
             .iter()
             .any(|file| file.relpath == ".github/workflows/reusable/lib.yml"));
+    }
+
+    /// The tree arrives as a path, and paths get spelled in more than one way: `--run-scratch
+    /// ./work/scratch` is relative, and macOS' `$TMPDIR` is under `/var`, a link into
+    /// `/private/var`. The files themselves are always resolved (that is the escape check), so
+    /// measuring the relpath off the caller's spelling instead of off the resolved directory
+    /// used to fail the strip and hand back an absolute path — the run's `workflow_relpath`
+    /// turned into a host path ADR-0001 §2.2 keeps out of its payloads.
+    #[test]
+    #[cfg(unix)]
+    fn a_tree_reached_through_a_symlink_still_reports_tree_relatives() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let repo = TestRepo::init(&root.path().join("repo"));
+        repo.write_workflow(
+            "reusable/lib.yml",
+            "on: workflow_call\njobs:\n  lib:\n    runs-on: x\n",
+        );
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(repo.path(), &link).expect("symlink the tree");
+
+        let through_link = indexed(&link);
+        let relpaths: Vec<&str> = through_link
+            .iter()
+            .map(|file| file.relpath.as_str())
+            .collect();
+        assert_eq!(
+            relpaths,
+            vec![
+                ".github/workflows/ci.yml",
+                ".github/workflows/reusable/lib.yml",
+            ],
+            "one path per file, whichever spelling of the tree it was found through"
+        );
+        assert_eq!(
+            relpaths,
+            indexed(repo.path())
+                .iter()
+                .map(|file| file.relpath.as_str())
+                .collect::<Vec<&str>>(),
+            "the two spellings index as one tree"
+        );
+        assert!(
+            through_link.iter().all(|file| file
+                .on_disk
+                .starts_with(link.canonicalize().expect("canonical"))),
+            "`on_disk` is the resolved file, which is how a link out of the tree is catchable"
+        );
     }
 
     #[test]

@@ -47,8 +47,20 @@ permissions:
 jobs:
   check:
     name: check
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+    env:
+      CARGO_BUILD_TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v4
 
@@ -64,11 +76,12 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-${{ hashFiles('rust-toolchain.toml') }}-
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-
 
+      - name: target
+        run: rustup target add "${{ matrix.target }}"
       # No toolchain action: rustup reads rust-toolchain.toml, which is the pin, and
       # installs the components (clippy, rustfmt) listed in it. `rustup show` is what
       # triggers that resolution, and prints what CI actually built with.
@@ -97,6 +110,8 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+          - runner: macos-latest
+            target: aarch64-apple-darwin
     env:
       # ci.sh's release step passes this through to cargo build and to
       # scripts/smoke_binary.sh, which runs the artefact and reports its version+digest.
@@ -113,9 +128,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-cargo-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-
 
       # rust-toolchain.toml pins the toolchain; the *target* is per matrix entry, so it is
       # added here rather than in the toolchain file (which would force every local dev to

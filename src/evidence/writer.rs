@@ -1141,13 +1141,21 @@ mod tests {
     /// file. The gate is what makes the test mean it — the writer will not publish until
     /// the reader has made at least one observation, so "I never saw a partial line"
     /// cannot pass just because the reader finished first.
+    ///
+    /// The reader reads until the writer is down and it has read the watched file, not
+    /// until an iteration budget runs out. A budget is a second race stacked on the first:
+    /// on a loaded box the reader used to burn all its iterations on the not-yet-existing
+    /// watched file (it is the last one published) and the test then failed for having
+    /// observed nothing, which is the same blind spot as passing without observing, and
+    /// the gate cannot prevent it because the gate only orders the first publish.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_reader_never_observes_a_partial_line() {
         let home = tempfile::tempdir().expect("tempdir");
         let root = EvidenceRoot::new(&home.path().join(".evidence")).expect("root");
-        // The reader watches one specific run: the last one the writer will publish, so
-        // it is present for the tail of the run and absent at the start — both of which
-        // the assertions below rely on.
+        // The reader watches one specific run: the last one the writer will publish. It
+        // is absent for all but the last publish, which is what makes the loop below wait
+        // on the writer's whole run rather than on a guessed number of reads; a read of a
+        // file that is not there yet is simply not an observation.
         let watched_run = RunId::parse("20261110T000039Z-a1b2c3").expect("run_id");
         let path = root
             .record_path(
@@ -1164,7 +1172,18 @@ mod tests {
         let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let reader_finished = Arc::clone(&finished);
 
+        // Whatever ends the writer task — the fortieth publish, or a failed one unwinding
+        // out through `expect` — flips the flag, so the reader is never left waiting for
+        // a writer that is already gone.
+        struct WriterDown(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for WriterDown {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
         let writer = tokio::spawn(async move {
+            let _writer_down = WriterDown(reader_finished);
             for index in 0..40usize {
                 while writer_gate.load(std::sync::atomic::Ordering::SeqCst) == 0 {
                     tokio::task::yield_now().await;
@@ -1174,17 +1193,31 @@ mod tests {
                     .await
                     .expect("publish");
             }
-            reader_finished.store(true, std::sync::atomic::Ordering::SeqCst);
         });
         let reader = {
             let gate = Arc::clone(&gate);
             tokio::spawn(async move {
-                for _ in 0..200_000usize {
+                // The safety net, not the exit condition: if a publish ever fails to put
+                // the watched file where `record_path` says it goes, the reader would
+                // otherwise wait on a file that never arrives. Generous because a loaded
+                // box really does need the writer's whole run before it exists.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                loop {
                     gate.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    if let Ok(bytes) = std::fs::read(&path) {
-                        observed_reader.lock().expect("lock").push(bytes);
+                    let has_observed = {
+                        let mut attempts = observed_reader.lock().expect("lock");
+                        if let Ok(bytes) = std::fs::read(&path) {
+                            attempts.push(bytes);
+                        }
+                        !attempts.is_empty()
+                    };
+                    // Reading the watched file is the whole point, so "writer finished"
+                    // on its own is not enough to leave: stop once the writer is down
+                    // *and* this reader has seen the file.
+                    if has_observed && finished.load(std::sync::atomic::Ordering::SeqCst) {
+                        break;
                     }
-                    if finished.load(std::sync::atomic::Ordering::SeqCst) {
+                    if std::time::Instant::now() >= deadline {
                         break;
                     }
                     tokio::task::yield_now().await;
@@ -1197,7 +1230,9 @@ mod tests {
         let attempts = observed.lock().expect("lock");
         assert!(
             gate.load(std::sync::atomic::Ordering::SeqCst) > 0 && !attempts.is_empty(),
-            "the reader never looked while the writer was writing, so it proved nothing"
+            "the reader never read the watched file while the writer was publishing it, so the \
+             run proved nothing; reaching here through the reader's deadline means a publish \
+             never put its file where `record_path` pointed"
         );
         for bytes in attempts.iter() {
             // Every observation is a whole file: non-empty, LF-terminated, and every line

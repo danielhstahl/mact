@@ -1,0 +1,51 @@
+on:
+  release:
+    types: [published]
+jobs:
+  build_rust_binary:
+    name: release ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write # release changes require contents write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-
+      - name: target
+        run: rustup target add "${{ matrix.target }}"
+      - name: release build and smoke test
+        run: scripts/ci.sh release
+
+      - name: Release
+        run: |
+          cd target/${{ matrix.target }}/release
+          # target/${{ matrix.target }}/release/act-mcp
+          mv act-mcp mact
+          tar czvf ../../../mact-${{ matrix.target }}.tar.gz mact
+
+      - name: upload artifact
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload ${{ github.event.release.tag_name }} mact-${{ matrix.target }}.tar.gz

@@ -174,6 +174,12 @@ fn files_under(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
 fn live_pids_in_group(pgid: i32) -> Vec<i32> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir("/proc") else {
+        // No procfs (macOS — docs/testing.md §1). Answer the weaker question the callers
+        // actually use this for: does the group still answer signal 0. It counts a zombie as
+        // present, which can only make an orphan check stricter than it needs to be.
+        if pgid > 0 && (unsafe { libc::killpg(pgid, 0) }) == 0 {
+            out.push(pgid);
+        }
         return out;
     };
     for entry in entries.flatten() {
@@ -204,11 +210,16 @@ fn live_pids_in_group(pgid: i32) -> Vec<i32> {
     out
 }
 
-/// The process group id of `pid`, read from `/proc`.
+/// The process group id of `pid`.
+///
+/// `getpgid(2)`, not `/proc/<pid>/stat`: the question exists on every platform this crate
+/// runs on and procfs does not (docs/testing.md §1), and a helper that returns `None` on
+/// macOS would make its one caller's assertion fail for a reason the code did not cause.
 fn process_group_of(pid: u32) -> Option<i32> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let (_, rest) = stat.rsplit_once(')')?;
-    rest.split_whitespace().nth(2)?.parse().ok()
+    // SAFETY: getpgid(2) takes one pid and returns -1 with an errno on failure; nothing is
+    // dereferenced.
+    let pgid = unsafe { libc::getpgid(pid as libc::pid_t) };
+    (pgid >= 0).then_some(pgid)
 }
 
 /// Poll `predicate` until it holds or the deadline passes.

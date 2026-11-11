@@ -217,7 +217,12 @@ step_schema() {
     # `act-mcp validate-evidence` does in production. `--schema`/`--meta-schema` name the
     # files on disk so this step fails on the file, not only on the embedded copy.
     cargo build
-    local bin="$target_dir/debug/act-mcp"
+    local bin
+    if [[ -n "${CARGO_BUILD_TARGET:-}" ]]; then
+        bin="$target_dir/$CARGO_BUILD_TARGET/debug/act-mcp"
+    else
+        bin="$target_dir/debug/act-mcp"
+    fi
     if [[ ! -x "$bin" ]]; then
         echo "schema: expected a built binary at $bin and did not find one" >&2
         return 1
@@ -336,7 +341,7 @@ step_release() {
         bin="$target_dir/release/act-mcp"
     fi
 
-    cargo build --release "${build_target[@]}"
+    cargo build --release ${build_target[@]+"${build_target[@]}"}
 
     # Where the smoke script drops --version/sha256 for the artifact steps to upload.
     local report_dir
@@ -345,15 +350,19 @@ step_release() {
 }
 
 # What each step wants, printed when it fails so the log answers "now what".
-declare -A STEP_FIX=(
-    [fmt]="cargo fmt --all"
-    [clippy]="cargo clippy --all-targets --all-features, then read the lints; suppress one only with a reason"
-    [doc]="the failing link is named above; point it at a real path or make it a code span"
-    [test]="cargo test --all-features -- --nocapture <the failing test>; docs/testing.md explains the suites"
-    [schema]="act-mcp validate-evidence <path> prints every finding; ADR-0002 §7 is the contract"
-    [supply-chain]="scripts/install_ci_tools.sh installs cargo-deny; deny.toml holds the policy"
-    [release]="the binary must run --help and --version; scripts/smoke_binary.sh <path> reproduces it alone"
-)
+step_fix_hint() {
+    case "$1" in
+        fmt)          echo "cargo fmt --all" ;;
+        clippy)       echo "cargo clippy --all-targets --all-features, then read the lints; suppress one only with a reason" ;;
+        doc)          echo "the failing link is named above; point it at a real path or make it a code span" ;;
+        test)         echo "cargo test --all-features -- --nocapture <the failing test>; docs/testing.md explains the suites" ;;
+        schema)       echo "act-mcp validate-evidence <path> prints every finding; ADR-0002 §7 is the contract" ;;
+        supply-chain) echo "scripts/install_ci_tools.sh installs cargo-deny; deny.toml holds the policy" ;;
+        release)      echo "the binary must run --help and --version; scripts/smoke_binary.sh <path> reproduces it alone" ;;
+        *)            echo "" ;;
+    esac
+}
+
 
 # ---------------------------------------------------------------------------
 # run
@@ -401,8 +410,9 @@ for step in "${SELECTED[@]}"; do
         summary_status+=("fail")
         summary_line+=("$(printf '%-14s %6ss' "$step" "$elapsed")")
         printf '%s  %s FAILED%s (%ss, exit %s)\n' "$c_red" "$step" "$c_off" "$elapsed" "$status"
-        if [[ -n "${STEP_FIX[$step]:-}" ]]; then
-            fix "${STEP_FIX[$step]}"
+        hint=$(step_fix_hint "$step")
+        if [[ -n "$hint" ]]; then
+            fix "$hint"
         fi
         if [[ -n "$in_gh_actions" ]]; then
             printf '::error::ci step %s failed\n' "$step"
