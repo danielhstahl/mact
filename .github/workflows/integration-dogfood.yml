@@ -24,14 +24,14 @@ jobs:
           -P ubuntu-24.04=catthehacker/ubuntu:act-latest
           EOF
           curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/nektos/act/master/install.sh | sudo bash
-          cat -A ~/.config/act/actrc
-          $(pwd)/bin/act -v --list
-          env | grep -E '^(ACT|XDG|HOME)'
-          echo "This is home: $HOME"
+          #cat -A ~/.config/act/actrc
+          #$(pwd)/bin/act -v --list
+          #env | grep -E '^(ACT|XDG|HOME)'
+          #echo "This is home: $HOME"
       - name: Start mcp
         run: |
           cargo build --release
-          ./target/release/act-mcp serve --act-binary $(pwd)/bin/act & # nohup
+          ./target/release/act-mcp serve --act-binary $(pwd)/bin/act > /tmp/act-mcp.log 2>&1 & # nohup
 
       - name: Wait for port 8080
         run: |
@@ -65,7 +65,7 @@ jobs:
             --method tools/call \
             --tool-name run_workflow \
             --tool-arg category=test \
-            --tool-arg commit=1648604a4fb3e1407c9a45890b601ee201ff5d30 \
+            --tool-arg commit=${{ github.sha }} \
             --tool-arg task=check \
             --tool-arg workflow=.github/workflows/ci.yml \
             2>inspector.err)
@@ -82,3 +82,7 @@ jobs:
             echo "Assertion failed"
             exit 1
           fi
+      - name: Read log
+        if: always()
+        run: |
+          cat /tmp/act-mcp.log
