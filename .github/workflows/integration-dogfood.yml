@@ -58,6 +58,7 @@ jobs:
           export ACT_CONFIG="$HOME/.config/act/actrc"
           echo $ACT_CONFIG
           set +e
+          # --tool-arg 'wait:=false' \
           tool_call=$(npx @modelcontextprotocol/inspector \
             --cli http://localhost:8080/mcp \
             --transport http \
@@ -65,7 +66,7 @@ jobs:
             --method tools/call \
             --tool-name run_workflow \
             --tool-arg category=test \
-            --tool-arg commit=${{ github.sha }} \
+            --tool-arg commit=7f36ad1468e583c682e68e84f82c054949c39c19 \
             --tool-arg task=check \
             --tool-arg workflow=.github/workflows/dogfood.yml \
             2>inspector.err)
@@ -82,6 +83,32 @@ jobs:
             echo "Assertion failed"
             exit 1
           fi
+      #- name: Wait for execution
+      #  run: |
+      #    for i in $(seq 1 90); do
+      #      tool_call=$(npx @modelcontextprotocol/inspector \
+      #      --cli http://localhost:8080/mcp \
+      #      --transport http \
+      #      --protocol-era modern \
+      #      --method tools/call \
+      #      --tool-name run_workflow \
+      #      --tool-arg category=test \
+      #      --tool-arg commit=${{ github.sha }} \
+      #      --tool-arg task=check \
+      #      --tool-arg 'wait:=false' \
+      ##      --tool-arg workflow=.github/workflows/dogfood.yml \
+      #      2>/dev/null)
+      #      workflow_status=$(echo $tool_call | jq -r '.structuredContent.status')
+      ##      run_id=$(echo $tool_call | jq -r '.structuredContent.run_id')
+       #     if [ "$workflow_status" != "running" ] && break
+       #     sleep 10
+       #   done
+       #   workflow_status=$(echo $tool_call | jq -r '.structuredContent.status')
+       #   if [ "$workflow_status" != "running" ] || { echo "still running"; echo 1 }
+       #   if [ "$status" -ne 0 ] || [ "$workflow_status" = "failed" ] || ! echo "$tool_call" | jq -e '(.isError // false) == false' >/dev/null; then
+       #     echo "Assertion failed"
+       #     exit 1
+       #   fi
       - name: Read log
         if: always()
         run: |
