@@ -1,0 +1,64 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [master]
+
+  pull_request:
+    branches: [master]
+
+jobs:
+  integration-test-with-workflow:
+    name: Run integration tests against MCP
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Start mcp
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/nektos/act/master/install.sh | sudo bash
+          cargo build --release
+          ./target/release/act-mcp serve & # nohup
+
+      - name: Wait for port 8080
+        run: |
+          # Loop until localhost:8080 returns a 200 OK
+          timeout 60s bash -c 'until curl -s localhost:8080; do sleep 1; done'
+
+      - name: Test list tasks
+        run: |
+          list_tasks=$(npx @modelcontextprotocol/inspector \
+            --cli \
+            --transport http \
+            --protocol-era modern \
+            --method tools/call \
+            --tool-name list_tasks \
+            http://localhost:8080/mcp  2>/dev/null)
+          result=$(echo $list_tasks | jq '.structuredContent.workflow_count')
+          if [ $result != "4" ]; then
+            echo "Assertion failed: $result"
+            exit 1
+          fi
+
+      - name: Test workflow execution
+        run: |
+          tool_call=$(npx @modelcontextprotocol/inspector \
+            --cli http://localhost:8080/mcp \
+            --transport http \
+            --protocol-era modern \
+            --method tools/call \
+            --tool-name run_workflow \
+            --tool-arg category=test \
+            --tool-arg commit=9c017e83a7b3d07a945b81d4a31a025ce83a015a \
+            --tool-arg task=check \
+            --tool-arg workflow=.github/workflows/ci.yml \
+            )
+          result=$(echo $tool_call | jq -r '.isError ')
+          if [ $result != "false" ]; then
+            echo "Assertion failed: $result"
+            echo "Tool call: $tool_call"
+            exit 1
+          fi
+          echo $result

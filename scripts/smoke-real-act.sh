@@ -196,12 +196,6 @@ diverged=0
 # a variable instead of read back off the list.
 LAST_STEP=
 
-#declare -A RUN_ID=()          # run id per category
-#declare -A RUN_WALL=()        # wall-clock seconds of the run_workflow call
-#declare -A RUN_VIEW=()        # the structuredContent, one line of JSON
-#declare -A RUN_LOG=()         # runs/<id>/act.jsonl
-#declare -A RUN_LOG_BYTES=()
-#declare -A RUN_EVIDENCE_BYTES=()
 
 map_set() { printf -v "${1}_${2}" '%s' "$3"; }                      # map_set MAP KEY VALUE
 map_get() { local _v="${1}_${2}"; printf '%s' "${!_v:-${3-}}"; }    # map_get MAP KEY [DEFAULT]
@@ -261,7 +255,6 @@ version_lt() {
         (( ${a[i]:-0} > ${b[i]:-0} )) && return 1
     done
     return 1
-    #[[ "$1" != "$2" ]] && [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" == "$1" ]]
 }
 
 # --------------------------------------------------------------------------- MCP plumbing
@@ -274,7 +267,6 @@ mcp() {
     local name=$tool
     [[ $tool == --tools-list ]] && name=tools_list
     local file
-    #file=$(mktemp "$OUT/responses/${name}-XXXXXX.json")
     file=$(mktemp "$OUT/responses/${name}-XXXXXX")
     mv "$file" "$file.json"
     file=$file.json
@@ -670,7 +662,6 @@ step_payload_crossed_the_bind() {
 
 step_log_captured() {
     local label=$1
-    #local log=${RUN_LOG[$label]:-}
     local log
     log=$(map_get RUN_LOG "$label")
     [[ -n "$log" && -f "$log" ]] || { detail "no log to read for $label"; return 1; }
@@ -694,7 +685,6 @@ step_log_captured() {
 
 step_shape() {
     local label=$1
-    #local log=${RUN_LOG[$label]:-}
     local log
     log=$(map_get RUN_LOG "$label")
     [[ -n "$log" && -f "$log" ]] || { detail "nothing to shape-check for $label"; return 1; }
@@ -723,7 +713,6 @@ step_shape() {
 
 step_capture_golden() {
     [[ $CAPTURE_GOLDEN -eq 1 ]] || { detail "not asked for (--capture-golden)"; return 0; }
-    #local log=${RUN_LOG[coverage]:-}
     local log
     log=$(map_get RUN_LOG coverage)
     [[ -n "$log" && -f "$log" ]] || { detail "no coverage log to capture"; return 1; }
@@ -775,7 +764,6 @@ step_record_values() {
         return $ok
     fi
 
-    #local cov_id=${RUN_ID[coverage]:-} bench_id=${RUN_ID[benchmark]:-}
     local cov_id bench_id
     cov_id=$(map_get RUN_ID coverage)
     bench_id=$(map_get RUN_ID benchmark)
@@ -954,9 +942,6 @@ summary() {
 
 
     if [[ -n "$(map_get RUN_ID coverage)$(map_get RUN_ID benchmark)" ]]; then
-
-
-    #if (( ${#RUN_ID[@]} > 0 )); then
         echo
         printf '%sper-run cost — what ADR-0004 §4.2 assumed, measured%s\n' "$c_bold" "$c_off"
         printf '  %-10s %8s %11s %12s %13s %14s %s\n' \
@@ -975,19 +960,6 @@ summary() {
                 "$(map_get RUN_EVIDENCE_BYTES "$label" '?')" \
                 "$default" "$verdict"
         done
-
-
-        #for label in coverage benchmark; do
-        #    [[ -n "${RUN_ID[$label]:-}" ]] || continue
-        #    default=$([[ $label == coverage ]] && echo 900 || echo 1800)
-        #    wall=${RUN_WALL[$label]}
-        #    act_ms=$(jq -r '.duration_ms // "?"' <<<"${RUN_VIEW[$label]}")
-        #    verdict=ok
-        #    (( wall > default )) && verdict="EXCEEDED the shipped default"
-        #    printf '  %-10s %8s %11s %12s %13s %14s %s\n' \
-        #        "$label" "$wall" "$act_ms" "${RUN_LOG_BYTES[$label]:-?}" \
-        #        "${RUN_EVIDENCE_BYTES[$label]:-?}" "$default" "$verdict"
-        #done
         echo
         printf '  The coverage default is 900 s and the benchmark default 1800 s (ADR-0004 §4.2). Most\n  of what you just measured on a cold machine is the image pull, not the job: the second run\n  is the warm number. A fixture this trivial coming anywhere near a default is a finding.\n'
     fi
