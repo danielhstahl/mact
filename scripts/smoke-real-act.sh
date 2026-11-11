@@ -196,12 +196,15 @@ diverged=0
 # a variable instead of read back off the list.
 LAST_STEP=
 
-declare -A RUN_ID=()          # run id per category
-declare -A RUN_WALL=()        # wall-clock seconds of the run_workflow call
-declare -A RUN_VIEW=()        # the structuredContent, one line of JSON
-declare -A RUN_LOG=()         # runs/<id>/act.jsonl
-declare -A RUN_LOG_BYTES=()
-declare -A RUN_EVIDENCE_BYTES=()
+#declare -A RUN_ID=()          # run id per category
+#declare -A RUN_WALL=()        # wall-clock seconds of the run_workflow call
+#declare -A RUN_VIEW=()        # the structuredContent, one line of JSON
+#declare -A RUN_LOG=()         # runs/<id>/act.jsonl
+#declare -A RUN_LOG_BYTES=()
+#declare -A RUN_EVIDENCE_BYTES=()
+
+map_set() { printf -v "${1}_${2}" '%s' "$3"; }                      # map_set MAP KEY VALUE
+map_get() { local _v="${1}_${2}"; printf '%s' "${!_v:-${3-}}"; }    # map_get MAP KEY [DEFAULT]
 
 # Every server this script started, so none of them outlives it.
 declare -a server_pids=()
@@ -250,7 +253,15 @@ file_size() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1"; }
 
 # `version_lt 0.2.68 0.2.76` is true when the first is older.
 version_lt() {
-    [[ "$1" != "$2" ]] && [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" == "$1" ]]
+    [[ "$1" == "$2" ]] && return 1
+    local IFS=. a b i
+    a=($1); b=($2)
+    for i in 0 1 2; do
+        (( ${a[i]:-0} < ${b[i]:-0} )) && return 0
+        (( ${a[i]:-0} > ${b[i]:-0} )) && return 1
+    done
+    return 1
+    #[[ "$1" != "$2" ]] && [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" == "$1" ]]
 }
 
 # --------------------------------------------------------------------------- MCP plumbing
@@ -263,7 +274,10 @@ mcp() {
     local name=$tool
     [[ $tool == --tools-list ]] && name=tools_list
     local file
-    file=$(mktemp "$OUT/responses/${name}-XXXXXX.json")
+    #file=$(mktemp "$OUT/responses/${name}-XXXXXX.json")
+    file=$(mktemp "$OUT/responses/${name}-XXXXXX")
+    mv "$file" "$file.json"
+    file=$file.json
     local rc=0
     if [[ $tool == --tools-list ]]; then
         "$mcp_client" --url "$URL" --tools-list >"$file" 2>"$file.err" || rc=$?
@@ -528,46 +542,48 @@ step_list_tasks() {
 # call_run LABEL WORKFLOW TASK CATEGORY — one timed run_workflow, and its measurements.
 call_run() {
     local label=$1 workflow=$2 task=$3 category=$4
-    # `commit` is a commit abbreviation (7–40 hex), not a ref: HEAD is resolved here, in the
-    # workspace the server is about to gate against, so the run is pinned to the SHA the
-    # evidence will be keyed by.
     local sha args
     sha=$(git -C "$OUT/repo" rev-parse HEAD)
     args=$(printf '{"workflow":"%s","task":"%s","category":"%s","commit":"%s"}' \
         "$workflow" "$task" "$category" "$sha")
     [[ -n "$TIMEOUT_SECS" ]] && args=${args%\}},\"timeout_secs\":$TIMEOUT_SECS\}
-    local start end rc=0
+    local start end rc=0 wall
     start=$(seconds_now)
     mcp run_workflow "$args" >/dev/null || rc=$?
     end=$(seconds_now)
-    RUN_WALL[$label]=$((end - start))
+    wall=$((end - start))
+    map_set RUN_WALL "$label" "$wall"
     local file
     file=$(last_response run_workflow)
     if [[ $rc -ne 0 ]]; then
-        detail "run_workflow(category=$category) answered an error after ${RUN_WALL[$label]}s: $(content "$file")"
+        detail "run_workflow(category=$category) answered an error after ${wall}s: $(content "$file")"
         diagnose_run_error "$file"
         return 1
     fi
-    RUN_VIEW[$label]=$(content "$file")
-    RUN_ID[$label]=$(jq -r '.result.structuredContent.run_id // empty' "$file")
+    map_set RUN_VIEW "$label" "$(content "$file")"
+    local id
+    id=$(jq -r '.result.structuredContent.run_id // empty' "$file")
+    map_set RUN_ID "$label" "$id"
     local status duration
     status=$(jq -r '.result.structuredContent.status // "?"' "$file")
     duration=$(jq -r '.result.structuredContent.duration_ms // "?"' "$file")
-    detail "$label: status=$status wall=${RUN_WALL[$label]}s act.duration_ms=$duration run_id=${RUN_ID[$label]:-?}"
+    detail "$label: status=$status wall=${wall}s act.duration_ms=$duration run_id=${id:-?}"
     detail "evidence_files: $(jq -c '.result.structuredContent.evidence_files' "$file")"
     local warnings
     warnings=$(jq -c '.result.structuredContent.warnings // []' "$file")
     [[ "$warnings" == "[]" ]] || detail "warnings: $warnings"
     [[ "$status" == "success" ]] || { detail "status was $status, not success"; return 1; }
-    [[ -n "${RUN_ID[$label]}" ]] || { detail "no run_id came back"; return 1; }
-    local log="$OUT/repo/.evidence/runs/${RUN_ID[$label]}/act.jsonl"
+    [[ -n "$id" ]] || { detail "no run_id came back"; return 1; }
+    local log="$OUT/repo/.evidence/runs/$id/act.jsonl"
     [[ -f "$log" ]] || { detail "no captured act log at $log"; return 1; }
-    RUN_LOG[$label]=$log
-    RUN_LOG_BYTES[$label]=$(file_size "$log")
+    map_set RUN_LOG "$label" "$log"
+    map_set RUN_LOG_BYTES "$label" "$(file_size "$log")"
     local records
     records=$(jq -r '.result.structuredContent.evidence_files[0] // empty' "$file")
-    RUN_EVIDENCE_BYTES[$label]=0
-    [[ -n "$records" && -f "$OUT/repo/$records" ]] && RUN_EVIDENCE_BYTES[$label]=$(file_size "$OUT/repo/$records")
+    map_set RUN_EVIDENCE_BYTES "$label" 0
+    if [[ -n "$records" && -f "$OUT/repo/$records" ]]; then
+        map_set RUN_EVIDENCE_BYTES "$label" "$(file_size "$OUT/repo/$records")"
+    fi
 }
 
 # diagnose_run_error FILE — name the two failure shapes this script can explain better than
@@ -605,7 +621,9 @@ step_run_benchmark() {
 step_run_status() {
     local ok=0 label
     for label in coverage benchmark; do
-        local id=${RUN_ID[$label]:-}
+        #local id=${RUN_ID[$label]:-}
+        local id
+        id=$(map_get RUN_ID "$label")
         if [[ -z "$id" ]]; then detail "$label produced no run id"; ok=1; continue; fi
         local rc=0
         mcp run_status "{\"run_id\":\"$id\"}" >/dev/null || rc=$?
@@ -628,7 +646,9 @@ step_run_status() {
 step_payload_crossed_the_bind() {
     local ok=0 label
     for label in coverage benchmark; do
-        local id=${RUN_ID[$label]:-}
+        #local id=${RUN_ID[$label]:-}
+        local id
+        id=$(map_get RUN_ID "$label")
         [[ -n "$id" ]] || { ok=1; continue; }
         local meta="$OUT/repo/.evidence/runs/$id/meta.json"
         [[ -f "$meta" ]] || { detail "$label has no meta.json"; ok=1; continue; }
@@ -650,7 +670,9 @@ step_payload_crossed_the_bind() {
 
 step_log_captured() {
     local label=$1
-    local log=${RUN_LOG[$label]:-}
+    #local log=${RUN_LOG[$label]:-}
+    local log
+    log=$(map_get RUN_LOG "$label")
     [[ -n "$log" && -f "$log" ]] || { detail "no log to read for $label"; return 1; }
     local total objects
     total=$(wc -l <"$log" | tr -d ' ')
@@ -672,7 +694,9 @@ step_log_captured() {
 
 step_shape() {
     local label=$1
-    local log=${RUN_LOG[$label]:-}
+    #local log=${RUN_LOG[$label]:-}
+    local log
+    log=$(map_get RUN_LOG "$label")
     [[ -n "$log" && -f "$log" ]] || { detail "nothing to shape-check for $label"; return 1; }
     local args=(shape --capture "$log" --manifest "$GOLDEN_DIR/act-shape.json"
                 --json-out "$OUT/shape-$label.json")
@@ -699,7 +723,9 @@ step_shape() {
 
 step_capture_golden() {
     [[ $CAPTURE_GOLDEN -eq 1 ]] || { detail "not asked for (--capture-golden)"; return 0; }
-    local log=${RUN_LOG[coverage]:-}
+    #local log=${RUN_LOG[coverage]:-}
+    local log
+    log=$(map_get RUN_LOG coverage)
     [[ -n "$log" && -f "$log" ]] || { detail "no coverage log to capture"; return 1; }
     mkdir -p "$GOLDEN_DIR"
     cp "$log" "$GOLDEN_DIR/act.jsonl"
@@ -737,7 +763,9 @@ step_record_values() {
     local ok=0 label
     if [[ $MODE == stub ]]; then
         for label in coverage benchmark; do
-            local id=${RUN_ID[$label]:-}
+            #local id=${RUN_ID[$label]:-}
+            local id
+            id=$(map_get RUN_ID "$label")
             [[ -n "$id" ]] || continue
             local file
             file=$(find "$OUT/repo/.evidence/$label" -name "$id.jsonl" 2>/dev/null | head -n1)
@@ -747,7 +775,10 @@ step_record_values() {
         return $ok
     fi
 
-    local cov_id=${RUN_ID[coverage]:-} bench_id=${RUN_ID[benchmark]:-}
+    #local cov_id=${RUN_ID[coverage]:-} bench_id=${RUN_ID[benchmark]:-}
+    local cov_id bench_id
+    cov_id=$(map_get RUN_ID coverage)
+    bench_id=$(map_get RUN_ID benchmark)
     local cov_file bench_file
     cov_file=$(find "$OUT/repo/.evidence/coverage" -name "$cov_id.jsonl" 2>/dev/null | head -n1)
     bench_file=$(find "$OUT/repo/.evidence/benchmark" -name "$bench_id.jsonl" 2>/dev/null | head -n1)
@@ -787,7 +818,7 @@ step_record_values() {
         # NAMED: a scanner cannot tell "old act" from "our extractor quietly stopped working",
         # and that silent case is what mact-s3l was. See docs/benchmark-inputs.md §3.
         local warn
-        warn=$(jq -r '(.warnings // []) | join(",")' "$OUT/repo/.evidence/runs/${RUN_ID[benchmark]:-none}/meta.json" 2>/dev/null || echo "")
+        warn=$(jq -r '(.warnings // []) | join(",")' "$OUT/repo/.evidence/runs/$(map_get RUN_ID benchmark none)/meta.json" 2>/dev/null || echo "")
         if grep -qw act_step_timings_unavailable <<<"${warn:-}"; then
             detail "act ${ACT_VERSION:-?} predates v0.2.76: no act_log records, and the run says so (act_step_timings_unavailable)"
         else
@@ -921,23 +952,42 @@ summary() {
         esac
     done
 
-    if (( ${#RUN_ID[@]} > 0 )); then
+
+    if [[ -n "$(map_get RUN_ID coverage)$(map_get RUN_ID benchmark)" ]]; then
+
+
+    #if (( ${#RUN_ID[@]} > 0 )); then
         echo
         printf '%sper-run cost — what ADR-0004 §4.2 assumed, measured%s\n' "$c_bold" "$c_off"
         printf '  %-10s %8s %11s %12s %13s %14s %s\n' \
             category wall_s act_ms act_log_B evidence_B default_s verdict
         local label default wall act_ms verdict
         for label in coverage benchmark; do
-            [[ -n "${RUN_ID[$label]:-}" ]] || continue
+            [[ -n "$(map_get RUN_ID "$label")" ]] || continue
             default=$([[ $label == coverage ]] && echo 900 || echo 1800)
-            wall=${RUN_WALL[$label]}
-            act_ms=$(jq -r '.duration_ms // "?"' <<<"${RUN_VIEW[$label]}")
+            wall=$(map_get RUN_WALL "$label")
+            act_ms=$(jq -r '.duration_ms // "?"' <<<"$(map_get RUN_VIEW "$label")")
             verdict=ok
             (( wall > default )) && verdict="EXCEEDED the shipped default"
             printf '  %-10s %8s %11s %12s %13s %14s %s\n' \
-                "$label" "$wall" "$act_ms" "${RUN_LOG_BYTES[$label]:-?}" \
-                "${RUN_EVIDENCE_BYTES[$label]:-?}" "$default" "$verdict"
+                "$label" "$wall" "$act_ms" \
+                "$(map_get RUN_LOG_BYTES "$label" '?')" \
+                "$(map_get RUN_EVIDENCE_BYTES "$label" '?')" \
+                "$default" "$verdict"
         done
+
+
+        #for label in coverage benchmark; do
+        #    [[ -n "${RUN_ID[$label]:-}" ]] || continue
+        #    default=$([[ $label == coverage ]] && echo 900 || echo 1800)
+        #    wall=${RUN_WALL[$label]}
+        #    act_ms=$(jq -r '.duration_ms // "?"' <<<"${RUN_VIEW[$label]}")
+        #    verdict=ok
+        #    (( wall > default )) && verdict="EXCEEDED the shipped default"
+        #    printf '  %-10s %8s %11s %12s %13s %14s %s\n' \
+        #        "$label" "$wall" "$act_ms" "${RUN_LOG_BYTES[$label]:-?}" \
+        #        "${RUN_EVIDENCE_BYTES[$label]:-?}" "$default" "$verdict"
+        #done
         echo
         printf '  The coverage default is 900 s and the benchmark default 1800 s (ADR-0004 §4.2). Most\n  of what you just measured on a cold machine is the image pull, not the job: the second run\n  is the warm number. A fixture this trivial coming anywhere near a default is a finding.\n'
     fi
