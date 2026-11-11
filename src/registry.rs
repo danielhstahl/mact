@@ -343,13 +343,33 @@ pub struct RunPlan {
     pub identity: RunIdentity,
     /// What to spawn, with the paths already derived from `spec.run_id`.
     pub spec: RunSpec,
+    /// Warning codes the *gate* decided before the run existed, stamped onto the record as
+    /// soon as it is registered.
+    ///
+    /// These are codes the validator knew at resolution time — `isolation_worktree`,
+    /// `dirty_worktree`, a runner label with no image — which nothing downstream can
+    /// re-derive: by the time the pipeline runs, the tree is just a directory and the act
+    /// child has its own reasons. ADR-0003 §5.4 says the run *carries* `isolation_worktree`,
+    /// and this field is the carrying.
+    pub warnings: Vec<String>,
 }
 
 impl RunPlan {
     /// Pair an identity with a spec.
     #[must_use]
     pub fn new(identity: RunIdentity, spec: RunSpec) -> Self {
-        Self { identity, spec }
+        Self {
+            identity,
+            spec,
+            warnings: Vec::new(),
+        }
+    }
+
+    /// Attach the gate's warning codes to the plan (see [`RunPlan::warnings`]).
+    #[must_use]
+    pub fn carrying(mut self, warnings: &[String]) -> Self {
+        self.warnings = warnings.to_vec();
+        self
     }
 
     /// The run's id.
@@ -1140,7 +1160,12 @@ impl RunSupervisor {
             });
         }
 
-        let record = RunRecord::new(run_id.clone(), plan.identity.clone());
+        let mut record = RunRecord::new(run_id.clone(), plan.identity.clone());
+        // The gate's codes are on the record from the first publish, so a run that never
+        // gets to spawn act still says what the gate noticed about it.
+        for warning in &plan.warnings {
+            record.add_warning(warning);
+        }
         let (sender, receiver) = watch::channel(Arc::new(record));
         let cancel = CancellationToken::new();
         let slot = Arc::new(Slot {
@@ -1174,6 +1199,7 @@ impl RunSupervisor {
         let plan = RunPlan {
             identity: plan.identity.clone(),
             spec,
+            warnings: plan.warnings.clone(),
         };
         tracing::info!(
             run_id = %run_id,

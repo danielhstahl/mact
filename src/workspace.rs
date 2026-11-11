@@ -38,12 +38,17 @@
 //! [`Environment`]: environment::Environment
 //! [`Validator::validate`]: validator::Validator::validate
 
+mod act_platforms;
 mod environment;
 mod validator;
 
 #[cfg(test)]
 mod tests;
 
+pub use act_platforms::{
+    config_paths, platform_entries, runs_on_verdict, ActPlatforms, LabelSet, RunsOnVerdict,
+    BUILTIN_PLATFORMS, SELF_HOSTED_LABEL,
+};
 pub use environment::{
     parse_act_version, Clock, CommandError, CommandOutput, ContainerProbeError, ContainerRuntime,
     Environment, ProgramError, SemVer, SystemClock, SystemEnvironment,
@@ -91,6 +96,15 @@ pub const WARNING_ISOLATION_WORKTREE: &str = "isolation_worktree";
 
 /// Warning stamped when `--allow-dirty-worktree` downgraded gate G5 (ADR-0003 §9.3).
 pub const WARNING_DIRTY_WORKTREE: &str = "dirty_worktree";
+
+/// Warning stamped when a job's `runs-on` names a runner label that resolves to no
+/// container image in the environment act-mcp's act child inherits.
+///
+/// The failure this pre-flights is the one act cannot explain: an unmapped label yields an
+/// empty image, act tries to pull `""`, and the run dies in `Set up job` reporting
+/// `invalid reference format` — text that mentions neither images nor labels nor the
+/// `-P`/actrc configuration that fixes it. See [`ActPlatforms`] and how it is discovered.
+pub const WARNING_RUNS_ON_UNMAPPED: &str = "act_runs_on_unmapped";
 
 /// The four caller arguments validation consumes, as `run_workflow` defines them
 /// (ADR-0001 §2). There are no path arguments: the workspace comes from

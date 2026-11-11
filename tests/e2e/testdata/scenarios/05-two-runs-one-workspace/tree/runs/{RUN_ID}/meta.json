@@ -48,6 +48,8 @@
   "started_at": "{TS}",
   "status": "cancelled",
   "task": "coverage",
-  "warnings": [],
+  "warnings": [
+    "act_runs_on_unmapped"
+  ],
   "workflow": "coverage"
 }

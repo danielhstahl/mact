@@ -50,6 +50,7 @@
   "status": "success",
   "task": "coverage",
   "warnings": [
+    "act_runs_on_unmapped",
     "no_coverage_found"
   ],
   "workflow": "coverage"

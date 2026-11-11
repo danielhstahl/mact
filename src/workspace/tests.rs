@@ -35,6 +35,10 @@ struct StubEnvironment {
     act: Option<Result<PathBuf, ProgramError>>,
     act_version: Option<String>,
     runtime: Option<Result<ContainerRuntime, ContainerProbeError>>,
+    /// `env_var` answers. Empty means "this variable is not set", which is its own answer.
+    vars: Vec<(String, String)>,
+    /// The files this environment can read, for `read_text_file` — act config, in practice.
+    files: Vec<(PathBuf, String)>,
     git_calls: AtomicUsize,
     act_calls: AtomicUsize,
     docker_calls: AtomicUsize,
@@ -100,6 +104,19 @@ impl StubEnvironment {
         self.runtime = Some(Err(ContainerProbeError::NotFound(
             "no container runtime client: `docker` was not found".to_owned(),
         )));
+        self
+    }
+
+    /// Pretend `name=value` is in the server's environment (and so in act's).
+    fn with_env_var(mut self, name: &str, value: &str) -> Self {
+        self.vars.push((name.to_owned(), value.to_owned()));
+        self
+    }
+
+    /// Pretend `path` exists and contains `text`, which is how a test makes an actrc that
+    /// the act child would also find.
+    fn with_file(mut self, path: impl Into<PathBuf>, text: &str) -> Self {
+        self.files.push((path.into(), text.to_owned()));
         self
     }
 
@@ -173,6 +190,20 @@ impl Environment for StubEnvironment {
         self.runtime
             .clone()
             .unwrap_or_else(|| SystemEnvironment.container_runtime(socket, timeout))
+    }
+
+    fn env_var(&self, key: &str) -> Option<String> {
+        self.vars
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.clone())
+    }
+
+    fn read_text_file(&self, path: &Path) -> Option<String> {
+        self.files
+            .iter()
+            .find(|(found, _)| found == path)
+            .map(|(_, text)| text.clone())
     }
 }
 
@@ -1623,4 +1654,144 @@ fn a_materialized_tree_is_read_instead_of_the_commit_tree() {
         "workflow_not_found",
         "a newer-commit workflow is not in this tree, and saying so is the point"
     );
+}
+
+// ------------------------------------------------------- the runner-label pre-flight
+
+/// A workflow asking for a runner label act's own defaults never had.
+fn label_workflow(job: &str, runs_on: &str, matrix: &str) -> String {
+    format!(
+        "on:\n  push:\njobs:\n  {job}:\n    runs-on: {runs_on}\n{matrix}    steps:\n      - run: echo {job}\n"
+    )
+}
+
+#[test]
+fn a_runner_label_with_no_image_warns_and_a_mapped_one_does_not() {
+    let fixture = Fixture::new();
+    fixture
+        .repo
+        .add_workflow_and_commit("ci24.yml", &label_workflow("check", "ubuntu-24.04", ""));
+    let head = fixture.repo.head();
+
+    // A server with no act config anywhere: act would be about to pull an image named `""`,
+    // and the run would die in `Set up job` saying `invalid reference format`.
+    let bare = fixture.policy();
+    let validator = Validator::new(
+        bare.clone(),
+        Arc::new(StubEnvironment::new().with_env_var("HOME", "/home/build"))
+            as Arc<dyn Environment>,
+    );
+    let target = validator
+        .validate(&request("ci24", "check", &head))
+        .expect("the workflow and commit resolve");
+    assert!(
+        target.has_warning(WARNING_RUNS_ON_UNMAPPED),
+        "an unmapped label must be said out loud: {:?}",
+        target.warnings
+    );
+
+    // The same workflow, with the mapping the operator was supposed to have to add.
+    let configured = Validator::new(
+        fixture.policy(),
+        Arc::new(
+            StubEnvironment::new()
+                .with_env_var("HOME", "/home/build")
+                .with_file(
+                    "/home/build/.config/act/actrc",
+                    "-P ubuntu-24.04=catthehacker/ubuntu:act-24.04\n",
+                ),
+        ) as Arc<dyn Environment>,
+    );
+    let target = configured
+        .validate(&request("ci24", "check", &head))
+        .expect("the same call, configured");
+    assert!(
+        !target.has_warning(WARNING_RUNS_ON_UNMAPPED),
+        "act would find an image, so there is nothing to warn about: {:?}",
+        target.warnings
+    );
+
+    // And the baseline every other fixture workflow uses, unchanged.
+    let baseline = validator_for(&fixture, &Arc::new(StubEnvironment::new()))
+        .validate(&head_request(&fixture))
+        .expect("the default fixture workflow resolves");
+    assert!(
+        !baseline.has_warning(WARNING_RUNS_ON_UNMAPPED),
+        "`ubuntu-latest` is in act's own table: {:?}",
+        baseline.warnings
+    );
+}
+
+#[test]
+fn a_matrix_runner_label_is_checked_against_the_values_the_file_declares() {
+    let fixture = Fixture::new();
+    fixture.repo.add_workflow_and_commit(
+        "matrix.yml",
+        &label_workflow(
+            "check",
+            "${{ matrix.runner }}",
+            "    strategy:\n      matrix:\n        runner: [ubuntu-latest, macos-14]\n",
+        ),
+    );
+    let head = fixture.repo.head();
+
+    let stub = StubEnvironment::new().with_env_var("HOME", "/home/build");
+    let validator = Validator::new(
+        fixture.policy(),
+        Arc::new(stub.with_file(
+            // One line of actrc silences one axis value: the check is per would-be job,
+            // and `macos-14` is the only one still without an image.
+            "/home/build/.config/act/actrc",
+            "-P macos-14=ghcr.io/example/macos-14:1\n",
+        )) as Arc<dyn Environment>,
+    );
+    let target = validator
+        .validate(&request("matrix", "check", &head))
+        .expect("the matrix workflow resolves");
+    assert!(
+        !target.has_warning(WARNING_RUNS_ON_UNMAPPED),
+        "{:?}",
+        target.warnings
+    );
+
+    let validator = Validator::new(
+        fixture.policy(),
+        Arc::new(StubEnvironment::new().with_env_var("HOME", "/home/build"))
+            as Arc<dyn Environment>,
+    );
+    let target = validator
+        .validate(&request("matrix", "check", &head))
+        .expect("the same call, unconfigured");
+    assert!(target.has_warning(WARNING_RUNS_ON_UNMAPPED));
+}
+
+#[test]
+fn a_job_naming_its_own_image_or_the_host_is_left_alone() {
+    let fixture = Fixture::new();
+    fixture.repo.add_workflow_and_commit(
+        "quiet.yml",
+        &label_workflow(
+            "boxed",
+            "ubuntu-24.04",
+            "    container: {image: example/toolchain:1}\n",
+        ),
+    );
+    fixture.repo.add_workflow_and_commit(
+        "host.yml",
+        &label_workflow("bare", "[self-hosted, gpu]", ""),
+    );
+    let head = fixture.repo.head();
+
+    let stub = Arc::new(StubEnvironment::new().with_env_var("HOME", "/home/build"));
+    let validator = validator_for(&fixture, &stub);
+    for (workflow, task) in [("quiet", "boxed"), ("host", "bare")] {
+        let target = validator
+            .validate(&request(workflow, task, &head))
+            .unwrap_or_else(|error| panic!("{workflow} should resolve: {error}"));
+        assert!(
+            !target.has_warning(WARNING_RUNS_ON_UNMAPPED),
+            "{workflow} does not need a runner image: {:?}",
+            target.warnings
+        );
+    }
 }

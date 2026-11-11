@@ -429,7 +429,7 @@ scripts/evidence_recipes.sh                      # every jq recipe, run against 
 
 ## Troubleshooting
 
-The four failures people actually hit, with the message you will see. Tool errors arrive as an
+The five failures people actually hit, with the message you will see. Tool errors arrive as an
 `isError: true` result whose `structuredContent.error` is `{code, message, retryable, detail}`
 — [docs/tool-contract.md §5](docs/tool-contract.md) is the whole vocabulary.
 
@@ -469,8 +469,65 @@ A too-old act is the same code with `detail.reason: "too_old"` and both versions
 e2e stub in this repo cannot reproduce it. Raise the floor with `--minimum-act-version` only
 after installing a newer act.
 
-### `workspace_busy` — "there is no queue"
+### act has no image for the runner label — `invalid reference format`
 
+The run reaches `status: "error"` (or fails) inside act's own `Set up job` step, and act's log
+says something that has nothing to do with runners:
+
+```json
+{"msg":"🚀  Start image=","step":"Set up job","level":"info"}
+{"msg":"invalid reference format","step":"Set up job","level":"error"}
+```
+
+`Start image=` with nothing after it is the whole diagnosis: act resolves a job's container
+image from the job's `container:` or from act's runner-label → image map, and a `runs-on`
+label that is in neither leaves the image empty, so act asks docker to pull `""`. act's built
+map is four entries — `ubuntu-latest`, `ubuntu-22.04`, `ubuntu-20.04`, `ubuntu-18.04` — and has
+never contained `ubuntu-24.04`, so a current workflow needs a mapping from somewhere.
+
+When there is no actrc and no `-P` at all, act may stop even earlier and say nothing about
+images: it asks its first-run "Please choose the default image you want to use with act"
+survey, and act-mcp gives act no terminal to answer on (its stdin is `/dev/null`), so the
+question comes back as a fatal error. Same fix.
+
+act-mcp never passes `-P` itself ([ADR-0003 §7.5](docs/adr/0003-commit-isolation-and-serialization.md)
+keeps image choice with the operator, not the caller), so the mapping has to be in act's own
+config files, read with **act-mcp's** environment, because act inherits it: `$XDG_CONFIG_HOME/act/actrc`,
+`$HOME/.config/act/actrc`, `$HOME/.actrc`, `/etc/xdg/act/actrc`. That operator actrc is the
+sanctioned extension point ([docs/security.md §5](docs/security.md)), and its `-P` lines *add* to
+act's map rather than replacing it — act's `--platform` is an accumulating array flag. One line,
+`-P` prefix included:
+
+```text
+# ~/.config/act/actrc
+-P ubuntu-24.04=catthehacker/ubuntu:act-24.04
+```
+
+A benchmark that must be comparable across machines pins a digest there, not a moving tag
+([ADR-0003 §8](docs/adr/0003-commit-isolation-and-serialization.md)).
+
+Three ways that file fails to be read, all silent: it is another user's home (the service
+account's `$HOME` is not yours), it is not readable by the user running act-mcp, or the line is
+malformed — act's config is an *argument list*, so `-P␣ubuntu-24.04=image` must have exactly one
+space and a stray second space kills the line. A `.actrc` committed to the repository is never
+read either: act's third location is its working directory, and act-mcp runs act in the per-run
+scratch directory, which is deliberate (ADR-0003 §7.6) — the repository does not configure the run.
+
+The server now says this before act finds out the hard way. A run whose `runs-on` resolves to no
+image carries `warnings: ["act_runs_on_unmapped"]`, and the log names the labels and every path
+that was and was not read:
+
+```console
+WARN ... no act image maps to these `runs-on` labels: act will name an empty image ...
+  job="check" labels="ubuntu-24.04" act_config_read="none" act_config_absent="/home/build/.config/act/actrc, /etc/xdg/act/actrc, /home/build/.actrc"
+```
+
+The warning is a warning, never a refusal: labels are inferred from the workflow file, and an
+expression, an `include:`, or a reusable workflow can produce a label the file never spells out.
+`act --bug-report`, run as the user running act-mcp, is act's own answer to the same question:
+it prints each config file it found under `Config files:`, line by line.
+
+### `workspace_busy` — "there is no queue"
 ```json
 {"error":{"code":"workspace_busy","retryable":true,
  "message":"this workspace already has a run in flight (20261110T151121Z-b60b21), and there is no queue: poll it with run_status or cancel it with cancel_run",
@@ -521,6 +578,7 @@ any of it by hand, including the MCP Inspector.
 | `run_status` says `run_not_found` for a run you remember | run state is in-memory and does not survive a restart | the durable trace is `.evidence/runs/<run_id>/meta.json` |
 | a run succeeded and `evidence_files` is `[]` | the `category` was neither `benchmark` nor `coverage` (open vocabulary, but only those two extract evidence), or extraction found nothing | read `warnings` (`unknown_category`, `no_coverage_found`, `parse_failed`…) and `meta.json`'s `warnings[]` |
 | a benchmark run has no `step_duration_s` records, and `job_duration_s` looks like whole seconds | act only emits step timings (`executionTime`) from **v0.2.76**, and this server accepts act from 0.2.62; the run carries the `act_step_timings_unavailable` warning rather than a silent gap | upgrade act to ≥ 0.2.76, or have the job time its own steps; [docs/benchmark-inputs.md §3](docs/benchmark-inputs.md#3-acts-own-timings-need-act-0276-or-newer) |
+| a run fails in `Set up job` with `invalid reference format`, and act's log has `🚀  Start image=` with nothing after it | act has no container image for the job's `runs-on` label — act's own table stops at `ubuntu-22.04` | put `-P <label>=<image>` in an actrc the **server** can read; the run carries the `act_runs_on_unmapped` warning — [act has no image for the runner label](#act-has-no-image-for-the-runner-label--invalid-reference-format) |
 | `linker … Bad address (os error 14)` while building | bind-mounted `./target` | `export CARGO_TARGET_DIR=/tmp/tt` |
 | `pip` and `python3` disagree and `scripts/validate_evidence.py` cannot import `jsonschema` | dev-box packaging, not this repo | use the built-in checker: `cargo run -- validate-evidence <path>` |
 

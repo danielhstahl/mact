@@ -39,6 +39,8 @@
 //! data inside a successful `list_tasks` call, and only becomes a `run_workflow`
 //! problem because no job id can then be confirmed.
 
+use std::collections::BTreeMap;
+
 use yaml_rust2::{
     yaml::{Hash, Yaml},
     YamlLoader,
@@ -151,6 +153,21 @@ pub struct JobIndex {
     /// Axis names declared by `strategy.matrix`, in file order. `include` and
     /// `exclude` are matrix *entries*, not axes, so they are not axes here.
     pub matrix_axes: Vec<String>,
+    /// The scalar values each declared axis can take, axis name → values, in file order
+    /// and de-duplicated.
+    ///
+    /// This is what lets `runs-on: ${{ matrix.runner }}` be answered without guessing: the
+    /// values are read from the axis *and* from the `include:` entries that extend it
+    /// (`exclude:` is left out, because excluding a combination cannot be what a run asks
+    /// for). An axis whose values are objects, or a name never declared, is simply absent
+    /// here, and the reader of this map treats absence as "do not guess".
+    pub matrix_axis_values: BTreeMap<String, Vec<String>>,
+    /// The job's own `container:` image, in either spelling (`container: image:tag` and
+    /// `container: {image: image:tag}`).
+    ///
+    /// Its only consumer asks whether act has anything to ask a runner label about: a job
+    /// that names its image never reaches act's label → image map.
+    pub container_image: Option<String>,
     /// Every `uses:` string this job references — the job-level reusable-workflow
     /// call and each step's action — in file order.
     pub uses: Vec<String>,
@@ -268,6 +285,8 @@ fn index_job(id: String, value: &Yaml) -> JobIndex {
     job.needs = needs(lookup(job_map, "needs"));
     job.runs_on = string_list(lookup(job_map, "runs-on").or_else(|| lookup(job_map, "runs_on")));
     job.matrix_axes = matrix_axes(lookup(job_map, "strategy"));
+    job.matrix_axis_values = matrix_axis_values(lookup(job_map, "strategy"));
+    job.container_image = container_image(lookup(job_map, "container"));
 
     // A job that `uses:` a reusable workflow has no `steps:` at all, so both are
     // collected into one list in file order.
@@ -348,6 +367,90 @@ fn matrix_axes(strategy: Option<&Yaml>) -> Vec<String> {
             (!matches!(name.as_str(), "include" | "exclude")).then_some(name)
         })
         .collect()
+}
+
+/// The scalar values of each `strategy.matrix` axis, `include:` entries folded in.
+///
+/// `include:` is folded because that is how a workflow adds one odd runner to an otherwise
+/// ordinary matrix (`include: [{runner: macos-14}]`), and an index that missed it would
+/// report an axis with fewer labels than the run can ask for.
+fn matrix_axis_values(strategy: Option<&Yaml>) -> BTreeMap<String, Vec<String>> {
+    let Some(Yaml::Hash(strategy_map)) = strategy else {
+        return BTreeMap::new();
+    };
+    let Some(Yaml::Hash(matrix)) = lookup(strategy_map, "matrix") else {
+        return BTreeMap::new();
+    };
+
+    let mut values: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let push = |axis: String, value: String, values: &mut BTreeMap<String, Vec<String>>| {
+        let entry = values.entry(axis).or_default();
+        if !entry.iter().any(|seen| seen == &value) {
+            entry.push(value);
+        }
+    };
+
+    for (key, axis) in matrix {
+        let Some(name) = scalar_to_string(key) else {
+            continue;
+        };
+        match axis {
+            // One axis, several values.
+            Yaml::Array(items) => {
+                for item in items {
+                    if let Some(value) = scalar_to_string(item) {
+                        push(name.clone(), value, &mut values);
+                    }
+                }
+            }
+            // One axis, one value (`matrix: {os: ubuntu-latest}`), which GitHub runs as a
+            // one-value axis.
+            scalar => {
+                if name != "include" && name != "exclude" {
+                    if let Some(value) = scalar_to_string(scalar) {
+                        push(name, value, &mut values);
+                    }
+                }
+            }
+        }
+    }
+
+    // `include:` may be a list of entries, or a list of lists of entries (the form the
+    // docs use for a multi-axis addition).
+    if let Some(included) = lookup(matrix, "include") {
+        let entries = match included {
+            Yaml::Array(items) => items.clone(),
+            other => vec![other.clone()],
+        };
+        for entry in entries {
+            let nested = match entry {
+                Yaml::Array(items) => items,
+                other => vec![other],
+            };
+            for entry in nested {
+                let Yaml::Hash(entry_map) = entry else {
+                    continue;
+                };
+                for (key, value) in entry_map.iter() {
+                    let (Some(name), Some(value)) =
+                        (scalar_to_string(key), scalar_to_string(value))
+                    else {
+                        continue;
+                    };
+                    push(name, value, &mut values);
+                }
+            }
+        }
+    }
+    values
+}
+
+/// `container:` in the two spellings GitHub accepts.
+fn container_image(value: Option<&Yaml>) -> Option<String> {
+    match value? {
+        Yaml::Hash(map) => lookup(map, "image").and_then(scalar_to_string),
+        other => scalar_to_string(other),
+    }
 }
 
 /// Look up a top-level key by name.
@@ -656,6 +759,79 @@ jobs:
         assert_eq!(job.steps[0].uses.as_deref(), Some("actions/checkout@v5"));
         assert_eq!(job.steps[1].name.as_deref(), Some("bench"));
         assert_eq!(job.steps[1].uses, None);
+    }
+
+    #[test]
+    fn matrix_axis_values_come_from_the_axis_and_from_include() {
+        let text = "\
+on: push
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-14]
+        target: x86_64-unknown-linux-gnu
+        build: [debug, release]
+        include:
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - runner: ubuntu-24.04
+        exclude:
+          - runner: macos-14
+            build: debug
+    steps:
+      - run: echo hi
+";
+        let job = index(text).job("check").expect("job").clone();
+        // Axis *names* still exclude include/exclude; the values fold them in, because an
+        // `include:` entry is how a workflow adds a runner the plain axis never named.
+        assert_eq!(job.matrix_axes, vec!["runner", "target", "build"]);
+        assert_eq!(
+            job.matrix_axis_values["runner"],
+            vec!["ubuntu-24.04", "macos-14", "windows-2025"],
+            "de-duplicated, in file order, include folded in"
+        );
+        assert_eq!(
+            job.matrix_axis_values["target"],
+            vec!["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"],
+            "a scalar axis is a one-value axis"
+        );
+        assert_eq!(job.matrix_axis_values["build"], vec!["debug", "release"]);
+        assert!(!job.matrix_axis_values.contains_key("exclude"));
+    }
+
+    #[test]
+    fn a_job_container_is_read_in_both_spellings() {
+        let text = "\
+on: push
+jobs:
+  boxed:
+    runs-on: ubuntu-latest
+    container: example/toolchain:1
+  nested:
+    runs-on: ubuntu-latest
+    container:
+      image: example/toolchain:1
+      env:
+        CC: clang
+  open:
+    runs-on: ubuntu-latest
+    container:
+      env:
+        CC: clang
+";
+        let got = index(text);
+        assert_eq!(
+            got.job("boxed").expect("job").container_image.as_deref(),
+            Some("example/toolchain:1")
+        );
+        assert_eq!(
+            got.job("nested").expect("job").container_image.as_deref(),
+            Some("example/toolchain:1")
+        );
+        assert_eq!(got.job("open").expect("job").container_image, None);
     }
 
     #[test]

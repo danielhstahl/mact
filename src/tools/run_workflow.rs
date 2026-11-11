@@ -711,7 +711,7 @@ pub async fn call(
     // ── steps 9–10: capacity, the workspace lock, `run_id`, registration ─────────────
     let ticket = wiring
         .supervisor
-        .start(RunPlan::new(identity, spec))
+        .start(RunPlan::new(identity, spec).carrying(&target.warnings))
         .await
         .map_err(start_error)?;
 

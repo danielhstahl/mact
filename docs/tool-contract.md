@@ -315,7 +315,7 @@ The `isError: false` rows live in `run_view.error` on a `status: "error"` run; t
 Open vocabulary in `warnings[]` (and in `.evidence/runs/<run_id>/meta.json`); a warning never changes
 `status`: `unknown_category`, `deduplicated`, `exit_nonzero`, `process_group_killed`,
 `partial_evidence_dropped`, `already_terminal`, `orphaned_containers`, `isolation_worktree`,
-`dirty_worktree`, `worktree_cleanup_failed`, `parse_error`, `skipped_workflow`, `act_view_unavailable`,
+`dirty_worktree`, `worktree_cleanup_failed`, `act_runs_on_unmapped`, `parse_error`, `skipped_workflow`, `act_view_unavailable`,
 `unresolvable_workflow`, plus the
 ADR-0002 §5.1 set (`no_coverage_found`, `parse_failed`, `unsupported_format`, `payload_too_large`,
 `payload_unreadable`, `payload_transport_unavailable`, `coverage_source_shadowed`, `malformed_metric`,
@@ -324,6 +324,14 @@ ADR-0002 §5.1 set (`no_coverage_found`, `parse_failed`, `unsupported_format`, `
 `act_step_timings_unavailable` — act older than v0.2.76 timed none of its steps, see
 [docs/benchmark-inputs.md §3](benchmark-inputs.md#3-acts-own-timings-need-act-0276-or-newer)).
 Unknown warnings are ignored, never fatal.
+
+`act_runs_on_unmapped` is the one code worth reading *before* act has said anything: no
+`-P`/actrc mapping visible to the server process resolves a `runs-on` label the job asks for,
+so the run's `Set up job` will hand docker an empty image name and fail with
+`invalid reference format` (README troubleshooting names the fix and the three reasons an
+actrc goes unread). It is a warning and never an error because the labels are inferred from the
+workflow file, and `include:`, an expression, or a called reusable workflow can supply one the
+file never spells out.
 
 ## 8. Limits
 

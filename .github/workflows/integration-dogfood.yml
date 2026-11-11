@@ -26,6 +26,8 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/nektos/act/master/install.sh | sudo bash
           cat -A ~/.config/act/actrc
           $(pwd)/bin/act -v --list
+          env | grep -E '^(ACT|XDG|HOME)'
+          echo "This is home: $HOME"
       - name: Start mcp
         run: |
           cargo build --release

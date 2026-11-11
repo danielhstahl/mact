@@ -55,6 +55,7 @@
   "status": "cancelled",
   "task": "coverage",
   "warnings": [
+    "act_runs_on_unmapped",
     "partial_evidence_dropped"
   ],
   "workflow": "coverage"

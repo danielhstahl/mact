@@ -11,13 +11,15 @@ use std::{
 
 use crate::{
     config::Config,
+    workflow_yaml::JobIndex,
     workflows::{self, IndexError, ResolveError, WorkflowFile},
     workspace::{
+        act_platforms::{runs_on_verdict, ActPlatforms, RunsOnVerdict},
         display_path, parse_act_version, ActMissingReason, ArgumentError, Clock, CommandError,
         CommandOutput, CommitUnknownReason, ContainerRuntime, Environment, IsolationMode,
         IsolationPolicy, ProgramError, RunRequest, SemVer, SystemClock, ValidationError,
         COMMIT_MAX_LEN, COMMIT_MIN_LEN, DEFAULT_CONTAINER_PROBE_TIMEOUT, WARNING_DIRTY_WORKTREE,
-        WARNING_ISOLATION_WORKTREE, WORKFLOWS_DIR,
+        WARNING_ISOLATION_WORKTREE, WARNING_RUNS_ON_UNMAPPED, WORKFLOWS_DIR,
     },
 };
 
@@ -339,7 +341,14 @@ impl Validator {
 
         // Step 7 — the isolation gate (§2.9 step 8, ADR-0003 §4). Nothing has been
         // created yet, so every failure here still means "nothing was started".
-        let warnings = self.isolation_gate(&root, mode, head.as_deref(), &commit)?;
+        let mut warnings = self.isolation_gate(&root, mode, head.as_deref(), &commit)?;
+
+        // Step 8 — the runner-label pre-flight. Informational: it refuses nothing, and it
+        // runs last so a run about to be refused for a real reason is not also told about
+        // a possible one.
+        if let Some(job) = workflow.index.job(&job_id) {
+            self.runner_label_warning(job, &mut warnings);
+        }
 
         Ok(ValidatedRunTarget {
             workflow_file: workflow_path(workflow, &root, &plan),
@@ -820,6 +829,54 @@ impl Validator {
         // G7 — submodules, checked in the target tree (ADR-0003 §4.2 G7).
         self.check_no_submodules(root, commit, mode, head_sha)?;
         Ok(warnings)
+    }
+
+    /// Step 8: the runner labels this job would ask act for, checked against the image map
+    /// act will actually see.
+    ///
+    /// This is the whole point of the pre-flight, so the log line is written for the person
+    /// who has just been told `invalid reference format` and has no idea that act chose an
+    /// empty image: it names the labels, the config files that were read, the ones that
+    /// were absent, and the one-line fix. The warning code is the machine-readable half.
+    fn runner_label_warning(&self, job: &JobIndex, warnings: &mut Vec<String>) {
+        let sets = match runs_on_verdict(job) {
+            RunsOnVerdict::Jobs(sets) => sets,
+            RunsOnVerdict::NotCheckable(reason) => {
+                // Logged at debug rather than silence: "why did it not warn?" is a real
+                // question when the run then fails anyway.
+                tracing::debug!(job = %job.id, reason, "runner-label pre-flight skipped");
+                return;
+            }
+        };
+
+        let platforms = ActPlatforms::discover(self.environment.as_ref());
+        let unresolvable = platforms.unresolvable(&sets);
+        if unresolvable.is_empty() {
+            return;
+        }
+
+        let listed = |paths: &[std::path::PathBuf]| {
+            if paths.is_empty() {
+                "none".to_owned()
+            } else {
+                paths
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        };
+        tracing::warn!(
+            job = %job.id,
+            labels = %unresolvable.join(", "),
+            act_config_read = %listed(platforms.read()),
+            act_config_absent = %listed(platforms.missing()),
+            "no act image maps to these `runs-on` labels: act will name an empty image for \
+             the job's container and fail in `Set up job` with `invalid reference format`. \
+             Add a `-P <label>=<image>` line to an act config file readable by the act-mcp \
+             process (act-mcp never passes `-P` itself)."
+        );
+        warnings.push(WARNING_RUNS_ON_UNMAPPED.to_owned());
     }
 
     /// G7 / W2: `.gitmodules` in the *target commit's* tree.
