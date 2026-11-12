@@ -56,14 +56,17 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-cargo-
-
-      - name: target
-        run: rustup target add x86_64-unknown-linux-gnu
+      ## act doesn't have rust installed
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          target: x86_64-unknown-linux-gnu
+      #- name: target
+      #  run: rustup target add x86_64-unknown-linux-gnu
       # No toolchain action: rustup reads rust-toolchain.toml, which is the pin, and
       # installs the components (clippy, rustfmt) listed in it. `rustup show` is what
       # triggers that resolution, and prints what CI actually built with.
-      - name: toolchain
-        run: rustup show
+      #- name: toolchain
+      #  run: rustup show
 
       - name: tools
         run: scripts/install_ci_tools.sh
