@@ -58,14 +58,13 @@ jobs:
           export ACT_CONFIG="$HOME/.config/act/actrc"
           echo $ACT_CONFIG
           set +e
-          # --tool-arg 'wait:=false' \
           tool_call=$(npx @modelcontextprotocol/inspector \
             --cli http://localhost:8080/mcp \
             --transport http \
             --protocol-era modern \
             --method tools/call \
             --tool-name run_workflow \
-            --tool-arg 'wait:=false' \
+            --tool-arg wait=false \
             --tool-arg category=test \
             --tool-arg commit=7f36ad1468e583c682e68e84f82c054949c39c19 \
             --tool-arg task=check \
