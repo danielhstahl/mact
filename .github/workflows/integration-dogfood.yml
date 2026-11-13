@@ -96,8 +96,8 @@ jobs:
             --tool-arg run_id=$run_id \
             2>/dev/null)
             status=$?
-            workflow_status=$(echo "$tool_call" | jq -r '.structuredContent.status')
-            terminal=$(echo "$tool_call" | jq -r '.structuredContent.terminal // false')
+            workflow_status=$(echo "$tool_call" | jq -r '.structuredContent.run.status')
+            terminal=$(echo "$tool_call" | jq -r '.structuredContent.run.terminal // false')
             echo "poll $i: status=${workflow_status:-<none>} terminal=$terminal"
             [ "$terminal" = "true" ] && break
             sleep 10
