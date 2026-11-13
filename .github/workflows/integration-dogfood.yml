@@ -95,12 +95,13 @@ jobs:
             --tool-name run_status \
             --tool-arg run_id=$run_id \
             2>/dev/null)
-            workflow_status=$(echo $tool_call | jq -r '.structuredContent.status')
+            status=$?
+            workflow_status=$(echo "$tool_call" | jq -r '.structuredContent.status')
             #run_id=$(echo $tool_call | jq -r '.structuredContent.run_id')
             [ "$workflow_status" != "running" ] && break
             sleep 10
           done
-          workflow_status=$(echo $tool_call | jq -r '.structuredContent.status')
+          workflow_status=$(echo "$tool_call" | jq -r '.structuredContent.status')
           if [ "$workflow_status" = "running" ]; then
             echo "still running"
             exit 1
