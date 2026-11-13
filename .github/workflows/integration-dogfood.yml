@@ -101,7 +101,10 @@ jobs:
             sleep 10
           done
           workflow_status=$(echo $tool_call | jq -r '.structuredContent.status')
-          if [ "$workflow_status" != "running" ] || { echo "still running"; echo 1 }
+          if [ "$workflow_status" = "running" ]; then
+            echo "still running"
+            exit 1
+          fi
           if [ "$status" -ne 0 ] || [ "$workflow_status" = "failed" ] || ! echo "$tool_call" | jq -e '(.isError // false) == false' >/dev/null; then
             echo "Assertion failed"
             exit 1
