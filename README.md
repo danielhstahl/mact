@@ -1,9 +1,9 @@
 # act-mcp
 
-An HTTP [MCP](https://modelcontextprotocol.io) server — protocol revision **2026-07-28**,
-Streamable HTTP, bound to loopback, **no authentication** — that runs GitHub Actions
-workflows with [nektos/act](https://github.com/nektos/act) and records what they produced as
-`.evidence` JSONL.
+An HTTP [MCP](https://modelcontextprotocol.io) server — protocol revisions **2026-07-28** and
+**2025-11-25**, Streamable HTTP, bound to loopback, **no authentication** — that runs GitHub
+Actions workflows with [nektos/act](https://github.com/nektos/act) and records what they
+produced as `.evidence` JSONL.
 
 Four tools: `list_tasks`, `run_workflow`, `run_status`, `cancel_run`. A run outlives the
 request that started it, one run at a time per workspace, and every terminal run answers
@@ -20,7 +20,7 @@ ADRs; the links are at the bottom.
 
 | thing | the version this runbook was written and tested against |
 |---|---|
-| MCP revision | **`2026-07-28`**, and only that one — there is no `initialize` handshake and no downgrade |
+| MCP revisions | **`2026-07-28`** (stateless, no handshake) and **`2025-11-25`** (`initialize` + session) — nothing else is negotiated |
 | `rmcp` | `3.9.0` (the SDK that implements the negotiation) |
 | `rustc` | floor **1.88** (`Cargo.toml` `rust-version`); the pinned toolchain is **1.99.1** (`rust-toolchain.toml`, honoured by rustup in this directory) |
 | act | **≥ 0.2.62**, which is what `--minimum-act-version` refuses to go below; the checked-in fixtures were captured against **0.2.68** |
@@ -84,13 +84,13 @@ $ cargo run --release -- serve --workspace /tmp/actmcp-runbook/repo \
 2026-11-10T15:09:12.606542Z  INFO act_mcp::server: act-mcp listening url=http://127.0.0.1:8080/mcp
   bind=127.0.0.1:8080 workspace=/tmp/actmcp-runbook/repo
   evidence_dir=/tmp/actmcp-runbook/repo/.evidence
-  act_binary=/workspace/tests/e2e/testdata/bin/act protocol_version=2026-07-28
+  act_binary=/workspace/tests/e2e/testdata/bin/act protocol_versions=2025-11-25,2026-07-28
   allowed_hosts=["localhost", "127.0.0.1", "::1"] allowed_origins=[]
   max_request_body_bytes=1048576 shared_secret_required=false
 ```
 
 The listening line is the whole configuration in one place: what it resolved `act` to, which
-protocol revision it will accept, which `Host` values it takes, and whether a session token is
+protocol revisions it will accept, which `Host` values it takes, and whether a session token is
 required. A boot *after a crash* adds lines saying so, because the leftover per-run scratch of a
 previous process is cleaned up on the way up: `removed a run's leftover scratch directory from a
 previous process scratch=…`, then `cleared the leftover scratch directories of a previous
@@ -143,9 +143,9 @@ Flags are also `-h`/`--help` (per-subcommand) and `-V`/`--version`. `validate-ev
 
 ## Pointing a client at it
 
-The endpoint is **`http://127.0.0.1:8080/mcp`**, Streamable HTTP, `POST` only. There is no
-`initialize` handshake and no session id: at the 2026-07-28 revision each request is
-self-contained and must carry
+The endpoint is **`http://127.0.0.1:8080/mcp`**, Streamable HTTP. On the revision this server
+prefers — **2026-07-28** — it is `POST` only, with no `initialize` handshake and no session id:
+each request is self-contained and must carry
 
 * `MCP-Protocol-Version: 2026-07-28` **and** the matching `params._meta` block,
 * the SEP-2243 routing headers `Mcp-Method` and `Mcp-Name`,
@@ -154,6 +154,13 @@ self-contained and must carry
 
 Anything else is a refusal that names what was missing — never a hang. The full request-shape
 table is [docs/tool-contract.md §1](docs/tool-contract.md#1-endpoint-and-transport).
+
+A client that cannot do that can still connect: the server also speaks **2025-11-25**, the last
+revision with the classic `initialize` handshake. Send `initialize` naming `2025-11-25`, keep
+the `Mcp-Session-Id` the answer gives you, put `MCP-Protocol-Version: 2025-11-25` on every
+request, and the same four tools answer the same way — over an SSE stream instead of a bare
+JSON body, with `GET` for the server-initiated stream and `DELETE` to close the session. Every
+example below is the stateless shape.
 
 So the config for any client is one URL, in that client's own wrapper:
 
@@ -203,13 +210,17 @@ $ pi mcp add act-mcp --url http://127.0.0.1:8080/mcp
 supervisor's overhead, so the default 60 s is too short for a real benchmark.
 
 > **What a client has to speak.** These config shapes are the portable part; the part that
-> decides whether the connection works is whether your client implements **2026-07-28
-> statelessly**. A client that insists on an `initialize` handshake, or that offers only
-> `2025-11-25` and earlier, is refused with JSON-RPC `-32022` *as an answer* naming
-> `["2026-07-28"]` as the supported set ([docs/testing.md §3](docs/testing.md)). That is the
-> pin, not a bug. `timeout`/`headers` keys differ per client; consult the client's own docs
-> for anything beyond the URL, and expect to add `--allow-origin` for anything that runs in a
-> browser ([docs/security.md §2](docs/security.md)).
+> decides how the connection is opened is which revision your client implements. One that
+> implements **2026-07-28** talks to this server statelessly, as above. One that insists on an
+> `initialize` handshake gets **2025-11-25**: a handshake naming a revision this server does not
+> run one at — including a client whose newest revision is `2026-07-28` but that handshakes
+> anyway — is answered with `2025-11-25` and a session, which is the MCP handshake's own rule
+> and not a downgrade into an unadvertised dialect. A *request* that names an unadvertised
+> revision (`2025-06-18`, `2025-03-26`) is refused with JSON-RPC `-32022` *as an answer* naming
+> `["2025-11-25","2026-07-28"]` as the supported set
+> ([docs/testing.md §3](docs/testing.md)). `timeout`/`headers` keys differ per client; consult
+> the client's own docs for anything beyond the URL, and expect to add `--allow-origin` for
+> anything that runs in a browser ([docs/security.md §2](docs/security.md)).
 
 When a client cannot be made to work, use the checked-in hand client — it speaks all four
 signals and takes ten seconds to debug with:
@@ -238,6 +249,26 @@ curl -sS http://127.0.0.1:8080/mcp \
        "_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",
                 "io.modelcontextprotocol/clientInfo":{"name":"curl","version":"0"},
                 "io.modelcontextprotocol/clientCapabilities":{}}}}'
+```
+
+And the same call from a client that only does the classic handshake — `initialize`, keep the
+`Mcp-Session-Id`, say `notifications/initialized`, then call the tool over the session. The
+answer is an SSE stream rather than a bare JSON body, and `DELETE` closes the session:
+
+```sh
+URL=http://127.0.0.1:8080/mcp
+HDR=(-H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream'
+     -H 'MCP-Protocol-Version: 2025-11-25')
+SID=$(curl -sS -D - -o /dev/null "$URL" "${HDR[@]}" -H 'Mcp-Method: initialize' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25",
+        "capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}' \
+  | tr -d '\r' | awk -F': ' '/^mcp-session-id/ {print $2}')
+curl -sS "$URL" "${HDR[@]}" -H "Mcp-Session-Id: $SID" -H 'Mcp-Method: notifications/initialized' \
+  -d '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}'
+curl -sS "$URL" "${HDR[@]}" -H "Mcp-Session-Id: $SID" \
+  -H 'Mcp-Method: tools/call' -H 'Mcp-Name: list_tasks' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_tasks","arguments":{}}}'
+curl -sS -X DELETE "$URL" "${HDR[@]}" -H "Mcp-Session-Id: $SID"   # 202; the session is gone
 ```
 
 ## The five-minute tour
@@ -557,11 +588,14 @@ candidates in `detail`; lengthen it.
 
 ```json
 {"jsonrpc":"2.0","id":1,"error":{"code":-32022,"message":"Unsupported protocol version",
- "data":{"requested":"2025-11-25","supported":["2026-07-28"]}}}
+ "data":{"requested":"2025-06-18","supported":["2025-11-25","2026-07-28"]}}}
 ```
 
-That is your client offering an older revision; it is an **answer**, not a hang, and there is
-no downgrade path. `-32020` ("Missing `MCP-Protocol-Version` header", or "missing required
+That is your client offering a revision this server does not speak — anything older than
+`2025-11-25`. It is an **answer**, not a hang: switch the client to `2026-07-28` (self-contained
+requests) or `2025-11-25` (the `initialize` handshake). A client that *handshakes* with a
+revision it cannot name is not refused; it is served `2025-11-25`, which is the handshake
+era's own fallback. `-32020` ("Missing `MCP-Protocol-Version` header", or "missing required
 `Mcp-Method` header") means the request did not name its revision or its routing method at
 all. Fix the client, or use `scripts/mcp_call.sh` / the `curl` above. See
 [docs/testing.md §4](docs/testing.md#4-reproducing-by-hand-the-mcp-inspector) for reproducing

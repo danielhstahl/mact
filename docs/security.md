@@ -140,16 +140,17 @@ a_named_origin_is_accepted_when_the_operator_allows_it, an_extra_allowed_host_is
 | control | value | why |
 |---|---|---|
 | `max_request_body_bytes` | default **1 MiB** (`--max-request-body-bytes`, bounded `1 KiB..=64 MiB`) | a `run_workflow` call is a workflow name, a job id, and a handful of `--var`/`--input` pairs. Oversized POST → **413**, enforced while the body streams, so a chunked body or a lying `Content-Length` does not size our buffer |
-| `json_response` | `true` | stateless request/response tools answer `application/json`; a plain client works, and SSE is used only when a handler actually notifies mid-call |
-| `legacy_session_mode` | `false` | the pinned revision (`2026-07-28`) has no sessions; a server that could also speak the old handshake is a second behaviour to test for no benefit |
+| `json_response` | `true` | stateless request/response tools answer `application/json`; a plain client works, and SSE is used only when a handler actually notifies mid-call (a `2025-11-25` session answers SSE always — that revision has no JSON-only shape) |
+| `legacy_session_mode` | `true` | required to serve the second advertised revision (`2025-11-25`), whose lifecycle is an `initialize` handshake and a session. It costs two more methods on `/mcp` — `GET` (server-initiated stream) and `DELETE` (close the session) — and both sit behind the same `Host`/`Origin` guards and the same loopback-only bind as every other request: rmcp validates the rebinding headers before it dispatches on method at all. Sessions are rmcp's in-process `LocalSessionManager` with random ids, and the server has no authentication to weaken: on this endpoint a session id is a routing token, not a credential. |
 | `sse_keep_alive` | **15 s**, explicit (`server::SSE_KEEP_ALIVE`) | not inherited by accident. On loopback the point of a keep-alive is not beating a proxy timeout — it is noticing a half-closed client at all, so the stream, its session, and its buffers go away instead of lingering until the run's own deadline |
-| protocol versions | exactly one (`SUPPORTED_PROTOCOL_VERSION`) | negotiation, discovery, and session rules are rmcp's; this server narrows the set and hand-rolls nothing |
+| protocol versions | exactly two (`SUPPORTED_PROTOCOL_VERSIONS`: `2025-11-25`, `2026-07-28`) | negotiation, discovery, and session rules are rmcp's; this server narrows the set and hand-rolls nothing |
 
-`stateless_protocol_metadata_required` is **on**: in the pinned revision the protocol version
+`stateless_protocol_metadata_required` is **on**: on the stateless revision the protocol version
 travels per request, and at `rmcp`'s default a request that names no version at all is read as
 `2025-03-26` — a silent downgrade through the front door by a client that never asked for that
-dialect. Refusing it (`400`, JSON-RPC `-32020`) is what ADR-0001 §7 and `docs/tool-contract.md` §1
-pin, and it is asserted on the wire rather than in source.
+dialect. Refusing it (`400`) is what ADR-0001 §7 and `docs/tool-contract.md` §1
+pin, and it is asserted on the wire rather than in source. A request with no version signal at all
+is read as session-era and refused there for its missing session id; either way nothing is served.
 
 Tests: `tests/hardening.rs::an_oversized_request_body_is_413` (both framed and chunked),
 `tests/protocol.rs` and `tests/protocol_conformance.rs` for the protocol-shape refusals

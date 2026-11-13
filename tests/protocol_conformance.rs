@@ -1,41 +1,49 @@
-//! Protocol conformance for MCP **2026-07-28** over Streamable HTTP (mact-f1w.16).
+//! Protocol conformance for the two MCP revisions this server speaks — **2026-07-28** and
+//! **2025-11-25** — over Streamable HTTP (mact-f1w.16).
 //!
 //! Everything else in `tests/` proves this server is *internally* consistent. This file asks a
 //! different question — the one an auditor asks — and ignores our own code while doing it: *is
-//! `POST /mcp` a correct MCP 2026-07-28 Streamable HTTP endpoint, judged from the wire?*
+//! `POST /mcp` a correct MCP Streamable HTTP endpoint on both revisions, judged from the wire?*
 //!
 //! Two clients do the asking:
 //!
-//! * **a stock `rmcp` client** (`client` + `transport-streamable-http-client-reqwest`), pinned
-//!   to the revision this server claims, dialling an ephemeral-port server the test booted. If
-//!   the advertised surface stops making sense, this is what breaks first — and it is the same
-//!   client an integrator will write, so its failures are the failures a downstream project
-//!   would have hit instead of us.
+//! * **a stock `rmcp` client** (`client` + `transport-streamable-http-client-reqwest`), on
+//!   either lifecycle (`Discover` for the stateless revision, `Initialize` for the session
+//!   one), dialling an ephemeral-port server the test booted. If the advertised surface stops
+//!   making sense, this is what breaks first — and it is the same client an integrator will
+//!   write, so its failures are the failures a downstream project would have hit instead of us.
 //! * **raw HTTP** (a deliberately permissive `reqwest`, and once a raw socket), because the
 //!   interesting cases in a conformance suite are the requests a well-behaved client never
-//!   sends: an omitted version header, an `Accept` that cannot be satisfied, a legacy
-//!   `initialize`, a body that is not JSON, a cancellation for someone else's request.
+//!   sends: an omitted version header, an `Accept` that cannot be satisfied, a handshake for a
+//!   revision that is not advertised, a body that is not JSON, a cancellation for someone
+//!   else's request.
 //!
-//! ## What the pin costs, and where that is asserted
+//! ## What the two revisions cost, and where that is asserted
 //!
-//! The server exposes exactly one revision (`server::SUPPORTED_PROTOCOL_VERSION`), runs with
-//! `legacy_session_mode = false` and `stateless_protocol_metadata_required = true`, and
-//! hand-rolls none of the negotiation (all of it is `rmcp`'s). Each of those choices is
-//! asserted as an *observation*, not as a source read, so that removing the pin — or letting
-//! one of those three config lines drift back to its library default — fails a test here:
+//! The server exposes two revisions (`server::SUPPORTED_PROTOCOL_VERSIONS`), runs with
+//! `legacy_session_mode = true` — which is what makes the `2025-11-25` handshake, its session
+//! id, its `GET` stream and its `DELETE` exist at all — and
+//! `stateless_protocol_metadata_required = true`, and hand-rolls none of the negotiation (all
+//! of it is `rmcp`'s). Each of those choices is asserted as an *observation*, not as a source
+//! read, so that dropping a revision — or letting one of those three config lines drift back to
+//! its library default — fails a test here:
 //!
 //! | decision | asserted by |
 //! |---|---|
-//! | exactly one revision exposed | `server_discover_advertises_only_the_pinned_revision`, `a_client_naming_an_older_revision_is_not_served_it` |
-//! | per-request version signalling required | `a_request_that_omits_the_protocol_version_is_refused_not_assumed` |
-//! | no session, no handshake | `a_legacy_initialize_gets_the_documented_rejection_not_a_hang`, `no_response_ever_carries_a_session_id` |
-//! | JSON answers, not SSE | `a_normal_call_answers_application_json`, `a_post_must_accept_both_json_and_sse` |
+//! | exactly the two advertised revisions exposed | `server_discover_advertises_the_supported_revisions`, `a_client_naming_an_unadvertised_revision_is_not_served_it` |
+//! | per-request version signalling required (stateless revision) | `a_request_that_omits_the_protocol_version_is_refused_not_assumed` |
+//! | the stateless revision has no session | `no_stateless_response_ever_carries_a_session_id` |
+//! | the session revision has one | `a_session_handshake_serves_a_call_and_the_session_closes`, `a_session_request_without_a_session_id_is_refused` |
+//! | a handshake never agrees to an unadvertised revision | `a_handshake_lands_on_the_newest_revision_with_a_handshake` |
+//! | JSON answers for one-message calls, SSE for a session | `a_normal_call_answers_application_json`, `a_session_call_answers_an_sse_stream` |
 //!
 //! Where `rmcp`'s own answer is debatable (a body that is not JSON is refused 415 rather than
 //! 400; a `notifications/cancelled` naming an in-flight request is answered 202 but never
-//! dispatched in stateless mode) the test pins what the endpoint *actually does* and the comment
-//! says which half of that is `rmcp`'s rather than ours. A conformance suite that asserts what
-//! the author wished had happened is worth nothing to the next reviewer.
+//! dispatched in stateless mode; a handshake naming a revision this server does not run is
+//! answered with the newest revision it does run rather than refused) the test pins what the
+//! endpoint *actually does* and the comment says which half of that is `rmcp`'s rather than
+//! ours. A conformance suite that asserts what the author wished had happened is worth nothing
+//! to the next reviewer.
 //!
 //! The four tests that need a real run in flight
 //! ([`a_cancellation_notification_for_an_in_flight_call_is_answered_and_harmless`] and its
@@ -62,8 +70,10 @@ use rmcp::{
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-/// The revision everything here is pinned to, spelled once.
+/// The revision everything here is pinned to, spelled once: the stateless one.
 const PIN: &str = "2026-07-28";
+/// The advertised session-era revision (`server::LEGACY_PROTOCOL_VERSION`), spelled once.
+const SESSION_PIN: &str = "2025-11-25";
 /// `rmcp`'s JSON-RPC code for "the version you named is not one I speak" (`-32022`).
 const UNSUPPORTED_PROTOCOL_VERSION: i64 = -32022;
 /// `rmcp`'s code for a header/`_meta` protocol mismatch or omission (`-32020`).
@@ -262,15 +272,15 @@ async fn an_advertised_output_schema_validates_the_result_it_advertises() {
 
 // ==================================================================== negotiation
 //
-// The pin, from the outside. Every request here names a version somewhere — in the
-// `MCP-Protocol-Version` header, in `_meta.io.modelcontextprotocol/protocolVersion`, in
-// `params.protocolVersion`, or nowhere.
+// The advertised revision set, from the outside. Every request here names a version somewhere
+// — in the `MCP-Protocol-Version` header, in `_meta.io.modelcontextprotocol/protocolVersion`,
+// in `params.protocolVersion`, or nowhere.
 
 /// `server/discover` is the stateless replacement for `initialize`, so it is where the exposed
-/// revision set is visible without any cooperation from us. One revision, the pinned one, and
-/// the server identity that goes with it.
+/// revision set is visible without any cooperation from us. Exactly the two revisions this
+/// server implements, oldest first, and the server identity that goes with them.
 #[tokio::test]
-async fn server_discover_advertises_only_the_pinned_revision() {
+async fn server_discover_advertises_the_supported_revisions() {
     let fixture = Fixture::new();
     let server = TestServer::start(fixture.config()).await;
 
@@ -279,8 +289,8 @@ async fn server_discover_advertises_only_the_pinned_revision() {
     assert_eq!(status, 200, "body: {body}");
     assert_eq!(
         body["result"]["supportedVersions"],
-        json!([PIN]),
-        "exactly one revision is exposed: {body}"
+        json!([SESSION_PIN, PIN]),
+        "exactly the revisions this server implements are exposed: {body}"
     );
     let meta = &body["result"]["_meta"];
     let info = meta
@@ -297,16 +307,23 @@ async fn server_discover_advertises_only_the_pinned_revision() {
     server.shutdown().await;
 }
 
-/// A client that names an older revision — in the header *and* in `_meta`, which is the honest
-/// way to ask — is not served it. `rmcp` refuses with the JSON-RPC code for the purpose
-/// (`-32022`) and says what it does speak, and no tool ran: the assertion is about the answer,
-/// so it keeps working whatever the refusal looks like internally.
+/// A client that names an unadvertised revision on a **stateless** request — in the header
+/// *and* in `_meta`, which is the honest way to ask — is not served it. `rmcp` refuses with the
+/// JSON-RPC code for the purpose (`-32022`) and says what it does speak, and no tool ran: the
+/// assertion is about the answer, so it keeps working whatever the refusal looks like
+/// internally.
+///
+/// Note what is *not* in this list: `2025-11-25`. That revision is advertised, and a request
+/// that signals it per request is served (see
+/// [`a_self_signalled_session_revision_request_is_served`]); what it is *not* allowed to do is
+/// arrive without either a session or the full per-request metadata, which the next two tests
+/// cover.
 #[tokio::test]
-async fn a_client_naming_an_older_revision_is_not_served_it() {
+async fn a_client_naming_an_unadvertised_revision_is_not_served_it() {
     let fixture = Fixture::new();
     let server = TestServer::start(fixture.config()).await;
 
-    for revision in ["2025-11-25", "2025-06-18", "2025-03-26"] {
+    for revision in ["2025-06-18", "2025-03-26"] {
         let (status, body, _) = Request::post("tools/list")
             .version(revision)
             .meta_with_version(revision)
@@ -332,8 +349,8 @@ async fn a_client_naming_an_older_revision_is_not_served_it() {
         );
         assert_eq!(
             body["error"]["data"]["supported"],
-            json!([PIN]),
-            "and says which revision it will speak: {body}"
+            json!([SESSION_PIN, PIN]),
+            "and says which revisions it will speak: {body}"
         );
         assert_eq!(
             body["error"]["code"],
@@ -349,15 +366,58 @@ async fn a_client_naming_an_older_revision_is_not_served_it() {
     server.shutdown().await;
 }
 
-/// A request that names **no** version at all is refused, not silently read as some older
-/// dialect.
+/// The advertised session revision, asked for the way the *stateless* revision asks — full
+/// per-request `_meta`, no handshake, no session id — is served rather than refused.
+///
+/// This is `rmcp`'s routing, observed rather than intended: a request carrying the complete
+/// SEP-2567 per-request metadata has already said everything a session would have carried, so
+/// `is_legacy_request` classifies it as self-contained and answers it without one. Worth a test
+/// of its own because it is the one place where "2025-11-25 means sessions" has an exception,
+/// and because it proves the server never invents a session for a request that never asked.
+#[tokio::test]
+async fn a_self_signalled_session_revision_request_is_served() {
+    let fixture = Fixture::new();
+    let server = TestServer::start(fixture.config()).await;
+
+    let (status, body, headers) = Request::post("tools/list")
+        .version(SESSION_PIN)
+        .meta_with_version(SESSION_PIN)
+        .send(&server.url())
+        .await;
+
+    assert_eq!(
+        status, 200,
+        "an advertised revision is served however it is signalled: {body}"
+    );
+    assert!(
+        body["result"]["tools"].is_array(),
+        "and served with the real listing: {body}"
+    );
+    assert!(
+        headers.get("mcp-session-id").is_none(),
+        "without a handshake there is no session to hand back: {headers:?}"
+    );
+
+    server.shutdown().await;
+}
+
+/// A request that names **no** version at all is refused, never silently answered.
 ///
 /// This is the `stateless_protocol_metadata_required = true` decision (ADR-0001 §7,
 /// `docs/tool-contract.md` §1) made observable. At `rmcp`'s default an unnamed version means
-/// `2025-03-26`, i.e. this server would answer a revision it advertises no knowledge of — a
-/// silent downgrade through the front door. `validate_required_protocol_header` in `rmcp` is what
-/// refuses it, so the assertion is `rmcp`'s status and `rmcp`'s code, exactly as ADR-0001 §7
-/// asks the conformance test to pin them.
+/// `2025-03-26`, and a server that went along with that would be answering a revision it
+/// advertises no knowledge of — a silent downgrade through the front door. It does not go along
+/// with it, and which refusal you get depends on which half of `rmcp` notices first:
+///
+/// * a request that still looks stateless (it carries the pinned header, or complete per-request
+///   `_meta`) is refused by `validate_required_protocol_header` / `validate_required_protocol_meta`
+///   with a JSON-RPC error — `-32020` for the missing header, `-32602` for the missing `_meta`;
+/// * a request with nothing at all is read as the session era's `2025-03-26`, routed to the
+///   session path, and refused there because it has no session id — which is `rmcp`'s plain
+///   `400 Bad Request: Session ID is required` rather than a JSON-RPC envelope.
+///
+/// Either way the invariant this test exists for holds: nothing is served, and the server never
+/// answers a revision it does not advertise.
 #[tokio::test]
 async fn a_request_that_omits_the_protocol_version_is_refused_not_assumed() {
     let fixture = Fixture::new();
@@ -372,12 +432,16 @@ async fn a_request_that_omits_the_protocol_version_is_refused_not_assumed() {
         "an unversioned request is refused: {}",
         brief(&body)
     );
-    assert_eq!(
-        body["error"]["code"],
-        json!(HEADER_MISMATCH),
-        "refused as a protocol-signalling problem, not answered: {body}"
+    assert!(
+        body["result"].is_null(),
+        "and no listing came back: {}",
+        brief(&body)
     );
-    assert!(body["result"].is_null(), "and no listing came back: {body}");
+    assert!(
+        brief(&body).contains("Session ID is required"),
+        "read as session-era, and refused for the session it never had: {}",
+        brief(&body)
+    );
 
     // The header alone is the other half-way case: version known, per-request metadata absent.
     let (status, body, _) = Request::post("tools/list")
@@ -444,7 +508,8 @@ async fn a_header_and_meta_that_disagree_are_refused() {
 //
 // 2026-07-28 has no handshake and no session. That is the whole reason a benchmark run can be a
 // plain request here, so it is worth pinning from both directions: what works without a
-// handshake, and what a pre-2026 client is told when it tries one.
+// handshake, and how the revision's own version signalling is enforced. The other revision's
+// handshake has its own section below.
 
 /// Self-contained requests, one after another, on fresh connections, with no handshake in
 /// sight — the era's central claim, tested as a client would use it.
@@ -488,76 +553,55 @@ async fn per_request_signalled_requests_need_no_handshake() {
     server.shutdown().await;
 }
 
-/// A pre-2026 client that performs the handshake is refused with the code for the purpose, and
-/// the refusal *arrives*.
+/// A handshake naming a revision this server does not run a handshake at is answered with the
+/// newest revision it does, and the client is given the session that revision needs.
 ///
-/// `legacy_session_mode = false` means there is no session to create, so `initialize` cannot
-/// succeed here by construction; what a client needs is not a session but an answer. A hang
-/// would be the failure mode (the request would sit there until the client gave up), so the
-/// `raw_client`'s 10 s timeout makes a hang a test failure rather than a slow test — and the
-/// endpoint is checked again afterwards, because a rejection that costs the endpoint is not a
-/// rejection.
+/// This is `rmcp`'s substitution (`negotiate_protocol_version`), which is also what the MCP
+/// lifecycle prescribes for the handshake era: answer with the latest version you support and
+/// let the client disconnect if it cannot speak it. What this server guarantees — and what this
+/// test pins, because it is the property an operator cares about — is that the answer is always
+/// one of the two advertised revisions and never the revision the caller asked for. `2026-07-28`
+/// is in the list because a client whose newest revision is that one still handshakes with it,
+/// and a server that answers a handshake can never name a revision that has no handshake.
 #[tokio::test]
-async fn a_legacy_initialize_gets_the_documented_rejection_not_a_hang() {
+async fn a_handshake_lands_on_the_newest_revision_with_a_handshake() {
     let fixture = Fixture::new();
     let server = TestServer::start(fixture.config()).await;
     let url = server.url();
 
-    for revision in ["2025-06-18", "2025-11-25"] {
+    for revision in ["2025-06-18", "2025-03-26", PIN] {
         let (status, body, headers) = Request::post("initialize")
             .version(revision)
             .params(json!({
                 "protocolVersion": revision,
                 "capabilities": {},
-                "clientInfo": { "name": "legacy-handshake-client", "version": "0" }
+                "clientInfo": { "name": "handshake-client", "version": "0" }
             }))
             .send(&url)
             .await;
 
+        assert_eq!(
+            status, 200,
+            "a handshake is answered, never dropped: {revision}"
+        );
         assert!(
-            body["error"].is_object(),
-            "an `initialize` this server cannot honour is answered, status={status}: {}",
-            brief(&body)
+            headers.get("mcp-session-id").is_some(),
+            "and the caller is given the session its lifecycle needs: {headers:?}"
+        );
+        let envelope = sse_envelope(&body);
+        assert_eq!(
+            envelope["result"]["protocolVersion"],
+            json!(SESSION_PIN),
+            "never the requested revision, always the advertised one with a handshake: {envelope}"
         );
         assert_eq!(
-            body["error"]["code"],
-            json!(UNSUPPORTED_PROTOCOL_VERSION),
-            "with the version-refusal code, and the supported set attached: {body}"
-        );
-        assert_eq!(
-            body["error"]["data"]["supported"],
-            json!([PIN]),
-            "so the client can retry correctly: {body}"
-        );
-        assert_eq!(
-            body["id"],
+            envelope["id"],
             json!(1),
-            "the refusal belongs to this request: {body}"
-        );
-        assert!(
-            headers.get("mcp-session-id").is_none(),
-            "and no session was created to hang on to: {headers:?}"
-        );
-
-        // The same request naming the pinned revision is refused too: the handshake itself is
-        // what does not exist, whatever version it carries.
-        let (_, body, _) = Request::post("initialize")
-            .version(PIN)
-            .params(json!({
-                "protocolVersion": PIN,
-                "capabilities": {},
-                "clientInfo": { "name": "pinned-handshake-client", "version": "0" }
-            }))
-            .send(&url)
-            .await;
-        assert_eq!(
-            body["error"]["code"],
-            json!(UNSUPPORTED_PROTOCOL_VERSION),
-            "a handshake is not part of this revision either: {body}"
+            "and it belongs to this request: {envelope}"
         );
     }
 
-    // Still alive, still serving.
+    // Still alive, still serving both revisions.
     let (status, body, _) = Request::post("tools/list")
         .version(PIN)
         .meta_with_version(PIN)
@@ -567,6 +611,268 @@ async fn a_legacy_initialize_gets_the_documented_rejection_not_a_hang() {
         status, 200,
         "the endpoint outlived the handshake attempts: {body}"
     );
+
+    server.shutdown().await;
+}
+
+// ==================================================================== the session era
+//
+// 2025-11-25 is the other revision: `initialize`, a session id on every request, SSE answers,
+// a `GET` for the server-initiated stream and a `DELETE` to close. Everything here is what
+// `legacy_session_mode = true` bought, asserted from the wire — including the parts that are
+// `rmcp`'s framing rather than this server's policy.
+
+/// Open a `2025-11-25` session the way a client does and hand back its id.
+///
+/// The handshake is two messages: `initialize` (answered with the session id header and the
+/// result inside an SSE stream) and `notifications/initialized`, which the revision requires
+/// before any request may flow. A helper rather than four copies, because every session-era test
+/// that wants a working session needs the pair, and a half-completed handshake would make each
+/// of their failures look like a session bug.
+async fn open_session(url: &str) -> String {
+    let (_, body, headers) = Request::post("initialize")
+        .version(SESSION_PIN)
+        .params(json!({
+            "protocolVersion": SESSION_PIN,
+            "capabilities": {},
+            "clientInfo": { "name": "conformance-suite", "version": "0" }
+        }))
+        .send(url)
+        .await;
+    let session = headers
+        .get("mcp-session-id")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_else(|| panic!("a {SESSION_PIN} handshake must issue a session id: {headers:?}"))
+        .to_owned();
+    assert_eq!(
+        sse_envelope(&body)["result"]["protocolVersion"],
+        json!(SESSION_PIN),
+        "and name the revision it negotiated: {}",
+        brief(&body)
+    );
+
+    let (status, _, _) = Request::notification("notifications/initialized", json!({}))
+        .version(SESSION_PIN)
+        .session_id(&session)
+        .send(url)
+        .await;
+    assert_eq!(
+        status, 202,
+        "`notifications/initialized` is accepted, which is what completes the handshake"
+    );
+    session
+}
+
+/// One request over a session: same revision header, plus the session id.
+async fn session_request(
+    url: &str,
+    session: &str,
+    method: &str,
+    params: Value,
+) -> (u16, Value, reqwest::header::HeaderMap) {
+    Request::post(method)
+        .version(SESSION_PIN)
+        .session_id(session)
+        .params(params)
+        .send(url)
+        .await
+}
+
+/// The JSON-RPC envelope of an answer, whether it arrived as one JSON body or as the SSE stream
+/// a session uses (where the envelope is one of the `data:` payloads, next to a priming event
+/// that has no payload at all).
+fn sse_envelope(body: &Value) -> Value {
+    match body {
+        Value::String(text) => common::sse_data_lines(text)
+            .into_iter()
+            .find(|data| data.get("result").is_some() || data.get("error").is_some())
+            .unwrap_or_else(|| panic!("no JSON-RPC envelope in the stream: {text}")),
+        other => other.clone(),
+    }
+}
+
+/// The whole session lifecycle on one connection-set: handshake, a real tool call, close.
+///
+/// `list_tasks` rather than a stub method, because the point is that the tools work over a
+/// session exactly as they do statelessly — same structured result, nothing session-shaped in it.
+#[tokio::test]
+async fn a_session_handshake_serves_a_call_and_the_session_closes() {
+    let fixture = Fixture::new();
+    let server = TestServer::start(fixture.config()).await;
+    let url = server.url();
+    let session = open_session(&url).await;
+
+    let (status, body, _) = session_request(
+        &url,
+        &session,
+        "tools/call",
+        json!({ "name": "list_tasks", "arguments": {} }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        200,
+        "a call over a session is served: {}",
+        brief(&body)
+    );
+    let envelope = sse_envelope(&body);
+    assert_eq!(
+        envelope["result"]["isError"],
+        json!(false),
+        "and the tool ran: {envelope}"
+    );
+    assert!(
+        envelope["result"]["structuredContent"]["workflows"].is_array(),
+        "with the same structured result the stateless revision returns: {envelope}"
+    );
+
+    // A `tools/list` on the same session: a session is a session for as long as it is open.
+    let (status, body, _) = session_request(&url, &session, "tools/list", json!({})).await;
+    assert_eq!(status, 200, "and it stays usable: {}", brief(&body));
+    assert_eq!(
+        sse_envelope(&body)["result"]["tools"]
+            .as_array()
+            .map(Vec::len),
+        Some(TOOLS.len()),
+        "the same advertised tools, over the session"
+    );
+
+    // `DELETE` closes it, and a session that is gone is a 404 rather than a silently new one.
+    let status = raw_client()
+        .delete(&url)
+        .header("MCP-Protocol-Version", SESSION_PIN)
+        .header("Mcp-Session-Id", &session)
+        .send()
+        .await
+        .expect("DELETE reaches the endpoint")
+        .status()
+        .as_u16();
+    assert_eq!(status, 202, "the session is closed");
+
+    let (status, body, _) = session_request(&url, &session, "tools/list", json!({})).await;
+    assert_eq!(
+        status, 404,
+        "a closed session is not found, not resurrected: {body}"
+    );
+
+    server.shutdown().await;
+}
+
+/// A session-era request that does not carry a session id is refused before anything runs.
+///
+/// `initialize` is the only request that may arrive without one — that is how a session is born
+/// — and everything else needs the id to be routed to a live session at all.
+#[tokio::test]
+async fn a_session_request_without_a_session_id_is_refused() {
+    let fixture = Fixture::new();
+    let server = TestServer::start(fixture.config()).await;
+
+    let (status, body, _) = Request::post("tools/list")
+        .version(SESSION_PIN)
+        .send(&server.url())
+        .await;
+    assert_eq!(
+        status, 400,
+        "a {SESSION_PIN} request with no session is a bad request: {body}"
+    );
+    assert!(body["result"].is_null(), "and nothing was served: {body}");
+
+    server.shutdown().await;
+}
+
+/// An unknown session id is a 404 — the revision's own rule — and the endpoint does not
+/// quietly mint a session to answer it.
+#[tokio::test]
+async fn an_unknown_session_id_is_not_found() {
+    let fixture = Fixture::new();
+    let server = TestServer::start(fixture.config()).await;
+
+    let (status, body, headers) = Request::post("tools/list")
+        .version(SESSION_PIN)
+        .session_id("a-session-that-was-never-issued")
+        .send(&server.url())
+        .await;
+    assert_eq!(status, 404, "unknown session: {body}");
+    assert_eq!(
+        headers.get("mcp-session-id").and_then(|v| v.to_str().ok()),
+        None,
+        "and the refusal does not hand back a different session: {headers:?}"
+    );
+
+    server.shutdown().await;
+}
+
+/// A session call is answered with `text/event-stream`, not the bare JSON a stateless call
+/// gets: `json_response` is the stateless revision's shape, and a session always frames.
+#[tokio::test]
+async fn a_session_call_answers_an_sse_stream() {
+    let fixture = Fixture::new();
+    let server = TestServer::start(fixture.config()).await;
+    let url = server.url();
+    let session = open_session(&url).await;
+
+    let (status, body, headers) = session_request(&url, &session, "tools/list", json!({})).await;
+    assert_eq!(status, 200, "body: {}", brief(&body));
+    let content_type = headers
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        content_type.starts_with("text/event-stream"),
+        "a session answer is an SSE stream, not a JSON body: {content_type:?}"
+    );
+    assert!(
+        body.is_string(),
+        "which is why the body is not one JSON value: {body}"
+    );
+
+    server.shutdown().await;
+}
+
+/// The `GET` a session-era client opens for server-initiated messages: it is served (unlike on
+/// the stateless revision, where the method does not exist), and it is a stream.
+#[tokio::test]
+async fn a_session_get_opens_the_server_initiated_stream() {
+    let fixture = Fixture::new();
+    let server = TestServer::start(fixture.config()).await;
+    let url = server.url();
+    let session = open_session(&url).await;
+
+    let response = raw_client()
+        .get(&url)
+        .header("Accept", "text/event-stream")
+        .header("MCP-Protocol-Version", SESSION_PIN)
+        .header("Mcp-Session-Id", &session)
+        .send()
+        .await
+        .expect("GET reaches the endpoint");
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "a session's GET is served, not 405'd"
+    );
+    assert!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .starts_with("text/event-stream"),
+        "and what comes back is the stream"
+    );
+    drop(response);
+
+    // Without the session id there is nothing to stream, and the endpoint says so.
+    let status = raw_client()
+        .get(&url)
+        .header("Accept", "text/event-stream")
+        .header("MCP-Protocol-Version", SESSION_PIN)
+        .send()
+        .await
+        .expect("GET reaches the endpoint")
+        .status()
+        .as_u16();
+    assert_eq!(status, 400, "a session-era GET with no session is refused");
 
     server.shutdown().await;
 }
@@ -609,10 +915,15 @@ async fn a_normal_call_answers_application_json() {
     server.shutdown().await;
 }
 
-/// No response carries `MCP-Session-Id`, and a request that supplies one is not treated as
-/// bound to a session: with `legacy_session_mode = false` there is nothing to bind to.
+/// No **stateless** response carries `MCP-Session-Id`, and a stateless request that supplies one
+/// is not treated as bound to a session: the revision has no session to bind to.
+///
+/// The session-era handshake is deliberately out of scope here — it *must* answer with a session
+/// id, and [`a_session_handshake_serves_a_call_and_the_session_closes`] asserts that. What this
+/// test guards is the leak in the other direction: a `2026-07-28` client that saw a session id
+/// would be entitled to start a lifecycle this revision does not have.
 #[tokio::test]
-async fn no_response_ever_carries_a_session_id() {
+async fn no_stateless_response_ever_carries_a_session_id() {
     let fixture = Fixture::new();
     let server = TestServer::start(fixture.config()).await;
     let url = server.url();
@@ -727,9 +1038,12 @@ async fn the_request_content_type_must_be_json() {
     server.shutdown().await;
 }
 
-/// `GET` and `DELETE` on `/mcp` are not served — and they are *answered*. Both are the methods
-/// the session-era protocol used for the server-initiated stream and for closing a session, and
-/// neither exists here, so `rmcp` answers 405 with `Allow: POST`. A panic or a 500 would mean
+/// `GET` and `DELETE` on `/mcp` are not served *for the stateless revision* — and they are
+/// answered. Both are methods the session revision uses (server-initiated stream, closing a
+/// session), and neither exists at `2026-07-28`, so `rmcp` answers 405 with `Allow: POST` even
+/// though the same endpoint does serve both for `2025-11-25` (see
+/// [`a_session_get_opens_the_server_initiated_stream`] and
+/// [`a_session_handshake_serves_a_call_and_the_session_closes`]). A panic or a 500 would mean
 /// the transport was configured inconsistently with its own method table.
 #[tokio::test]
 async fn get_and_delete_on_the_endpoint_are_answered_not_served() {

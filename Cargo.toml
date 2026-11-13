@@ -5,7 +5,7 @@ edition = "2021"
 # rmcp 3.9's floor (its own Cargo.toml declares rust-version = "1.88"); do not
 # lower it, the 2026-07-28 protocol plumbing in rmcp does not build below it.
 rust-version = "1.88"
-description = "HTTP MCP server (protocol 2026-07-28) wrapping nektos/act with .evidence JSONL output"
+description = "HTTP MCP server (protocol 2026-07-28 and 2025-11-25) wrapping nektos/act with .evidence JSONL output"
 publish = false
 
 [lib]
@@ -17,9 +17,10 @@ name = "act-mcp"
 path = "src/main.rs"
 
 [dependencies]
-# Pinned to the 3.9 line on purpose: this server speaks exactly one protocol
-# revision (2026-07-28) and rmcp is what implements the negotiation for it.
-# Bumping rmcp means re-checking docs/adr/0001 and the conformance suite (mact-f1w.16).
+# Pinned to the 3.9 line on purpose: this server speaks two protocol revisions (2026-07-28
+# stateless, 2025-11-25 with the initialize handshake) and rmcp is what implements the
+# negotiation, the session lifecycle and the substitution rule for both. Bumping rmcp means
+# re-checking docs/adr/0001 §7 and the conformance suite (mact-f1w.16).
 rmcp = { version = "3.9", default-features = false, features = [
     "server",
     "macros",

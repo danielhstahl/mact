@@ -7,7 +7,8 @@ code against. When the two disagree, the ADR wins and the checker is wrong — b
 field sets drift apart between the ADR, this file and
 [`schema/tool-contract.schema.json`](../schema/tool-contract.schema.json).
 
-- Protocol: MCP **2026-07-28**, Streamable HTTP, one endpoint, loopback, no auth.
+- Protocol: MCP **2026-07-28** (stateless) and **2025-11-25** (`initialize` + session), Streamable
+  HTTP, one endpoint, loopback, no auth.
 - Schemas: [`schema/tool-contract.schema.json`](../schema/tool-contract.schema.json) — every `*_args`,
   `*_result`, `run_view`, `tool_error` and the `x-error-codes` registry live there.
 - Fixtures (the e2e oracle): [`tests/e2e/testdata/tool-io`](../tests/e2e/testdata/tool-io).
@@ -22,13 +23,14 @@ field sets drift apart between the ADR, this file and
 | item | value |
 |---|---|
 | URL | `http://127.0.0.1:8080/mcp` (`--bind`, default `127.0.0.1:8080`) |
-| methods | `POST` only in v1 (`tools/list`, `tools/call`); every other method on `/mcp` is a `405` with `Allow: POST` |
-| `MCP-Protocol-Version` | required on every request, must be `2026-07-28`; a request without it is rejected (`400`, `-32020`) rather than assumed to be an older dialect |
-| `params._meta` | must carry `io.modelcontextprotocol/protocolVersion` (plus client info and capabilities) on every request; it must agree with the header |
-| other protocol versions | rejected at negotiation by rmcp (`-32022`, with the supported set attached); there is no downgrade path and no `initialize` handshake |
-| `Accept` | must name **both** `application/json` and `text/event-stream` (`406` if either is missing) — whether an answer is one JSON body or a stream is the server's call. Answers are `application/json`: the server runs with `json_response = true` and opens no server-initiated stream |
+| revisions | `2026-07-28` (preferred; self-contained requests, no session) and `2025-11-25` (`initialize` handshake, `Mcp-Session-Id`). Nothing else is advertised. A handshake naming any other revision — `2025-06-18`, `2025-03-26`, or `2026-07-28` from a client that handshakes anyway — is answered with `2025-11-25`, because a server that answers a handshake can only answer it with a revision that has one. |
+| methods | `POST` on both revisions; `GET` (server-initiated stream) and `DELETE` (close the session) additionally on a `2025-11-25` session. On the stateless revision both are a `405` with `Allow: POST`. |
+| `MCP-Protocol-Version` | required on every stateless request, `2026-07-28` or `2025-11-25`; a stateless request without it is rejected (`400`) rather than silently answered as some older dialect. A session-era request may omit it only inside the `initialize` that opens the session. |
+| `params._meta` | on a stateless request, must carry `io.modelcontextprotocol/protocolVersion` (plus client info and capabilities) on every request; it must agree with the header. A `2025-11-25` request routed to a session carries the session id instead. |
+| other protocol versions | a *request* naming one is rejected by rmcp (`-32022`, with the supported set attached) |
+| `Accept` | must name **both** `application/json` and `text/event-stream` (`406` if either is missing) — whether an answer is one JSON body or a stream is the server's call. A stateless answer is `application/json` (`json_response = true`); a session answer is `text/event-stream`. |
 | `Content-Type` | `application/json`, `; charset=` allowed; anything else is `415` |
-| `Mcp-Method` / `Mcp-Name` | SEP-2243 routing headers, required at this revision and must match the body |
+| `Mcp-Method` / `Mcp-Name` | SEP-2243 routing headers, required and must match the body |
 | `Host` / `Origin` | `Host` must be `127.0.0.1:<port>` or `localhost:<port>`; `Origin` denied unless added via `--allow-origin` |
 | body limit | 1 MiB |
 | auth | none; the listener refuses to bind anywhere but loopback |
@@ -49,8 +51,14 @@ $ curl -sS http://127.0.0.1:8080/mcp \
 ```
 
 All of the above is asserted request by request in [`tests/protocol_conformance.rs`](../tests/protocol_conformance.rs),
-and [`docs/testing.md`](testing.md) §4 is the hand-reproduction path (Inspector, or the `curl`
+which has one section per lifecycle (stateless, and the `2025-11-25` session) and
+[`docs/testing.md`](testing.md) §4 is the hand-reproduction path (Inspector, or the `curl`
 above when an Inspector cannot speak `2026-07-28`).
+
+Everything below this line is revision-independent: the four tools, their `inputSchema` /
+`outputSchema`, the error-code vocabulary and the `structuredContent` shapes are the same whether
+the caller arrived statelessly or through a session. The two lifecycles differ in how the
+conversation opens and how an answer is framed, never in what a tool accepts or returns.
 
 Every result carries `structuredContent` (the JSON objects below) *and* a one-line human-readable `content`
 text block. The text block of an error result starts with `<tool>: <code>: ` so the code survives a client

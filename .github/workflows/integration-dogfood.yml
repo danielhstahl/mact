@@ -97,17 +97,20 @@ jobs:
             2>/dev/null)
             status=$?
             workflow_status=$(echo "$tool_call" | jq -r '.structuredContent.status')
-            #run_id=$(echo $tool_call | jq -r '.structuredContent.run_id')
-            [ "$workflow_status" != "running" ] && break
+            terminal=$(echo "$tool_call" | jq -r '.structuredContent.terminal // false')
+            echo "poll $i: status=${workflow_status:-<none>} terminal=$terminal"
+            [ "$terminal" = "true" ] && break
             sleep 10
           done
-          workflow_status=$(echo "$tool_call" | jq -r '.structuredContent.status')
-          if [ "$workflow_status" = "running" ]; then
-            echo "still running"
+          if [ "$terminal" != "true" ]; then
+            echo "Timed out waiting for run to finish"
+            echo "$tool_call"; cat inspector.err
             exit 1
           fi
-          if [ "$status" -ne 0 ] || [ "$workflow_status" = "failed" ] || ! echo "$tool_call" | jq -e '(.isError // false) == false' >/dev/null; then
-            echo "Assertion failed"
+
+          if [ "$workflow_status" != "succeeded" ]; then   # use your server's actual success value
+            echo "Run finished with status: $workflow_status"
+            echo "$tool_call"
             exit 1
           fi
       - name: Read log

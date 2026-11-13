@@ -41,7 +41,9 @@ Ground truth already established (do not re-derive):
 
 - The `rmcp` crate is at 3.9.0 and `ProtocolVersion::V_2026_07_28` is its `LATEST`. The 2026-07-28 era is
   stateless: protocol version is signalled per request rather than by an `initialize` handshake, and
-  `ServerHandler::supported_protocol_versions()` is how the server restricts itself.
+  `ServerHandler::supported_protocol_versions()` is how the server restricts itself. rmcp's
+  `LATEST_WITH_INITIALIZE` is `V_2025_11_25` — the newest revision that still has a handshake — which is the
+  one this server also serves (see §7 as amended).
 - Tool results are `Json<T>` — rmcp derives an `inputSchema` from the argument struct and an `outputSchema`
   from the result struct, and the value arrives in the result's `structuredContent`.
 - The workspace is the server's CWD (or `--workspace`), and it is a GitHub repository: it contains
@@ -524,23 +526,44 @@ records `{method: term | kill | none, took_ms?}` — how the process group went 
 
 ### 7. Protocol and version policy
 
-- The server implements **exactly one** protocol version: `2026-07-28`.
-  `ServerHandler::supported_protocol_versions()` returns `[V_2026_07_28]` and nothing else.
-- No `initialize`-era compatibility, no SSE-era compatibility
-  (`legacy_session_mode = false`), no stdio transport, no protocol downgrade path. A client asking for an
-  older version gets rmcp's negotiation rejection (an HTTP 4xx whose body says the version is unsupported),
-  no tool is executed, and `act-mcp` adds nothing of its own on top. mact-f1w.16 asserts rmcp's actual
-  status and body rather than re-implementing the check, so the conformance test pins our behavior by
-  pinning rmcp's.
-- The era is stateless: protocol version travels per request in rmcp's stateless protocol metadata (the
-  `MCP-Protocol-Version` header). `stateless_protocol_metadata_required = true` — a request that omits it is
-  rejected rather than assumed to be some older dialect.
+> **Amended 2026-11-13: the server implements two revisions, not one.** As first accepted this section
+> pinned `2026-07-28` alone and ran with `legacy_session_mode = false`. That turned out to exclude every
+> client that still opens an `initialize` handshake, so the advertised set is now
+> `[2025-11-25, 2026-07-28]` with `legacy_session_mode = true` — `2025-11-25` being rmcp's
+> `LATEST_WITH_INITIALIZE`, the newest revision with a handshake. What the original decision was *for* has
+> not moved: the advertised set is closed, no revision outside it is ever served, and none of the
+> negotiation is hand-rolled. The bullets are the amended policy.
+
+- The server implements **exactly two** protocol versions: `2026-07-28` (preferred, stateless) and
+  `2025-11-25` (the `initialize` handshake). `ServerHandler::supported_protocol_versions()` returns
+  `[V_2025_11_25, V_2026_07_28]` and nothing else, and that list is the whole protocol surface: it is what
+  `server/discover` advertises, what `initialize` may agree to, and what a per-request `_meta` version is
+  validated against.
+- One handshake era, not four: `2025-11-25` is the *only* pre-2026 revision on the list, because it is the
+  newest one and each added revision is another lifecycle the conformance suite has to cover. No stdio
+  transport.
+- A *request* naming an unadvertised revision gets rmcp's negotiation rejection (HTTP 400 with JSON-RPC
+  `-32022`, the supported set in `error.data.supported`), no tool is executed, and `act-mcp` adds nothing of
+  its own on top. A *handshake* naming one is answered with `2025-11-25` plus a session: a server that
+  answers a handshake can only answer it with a revision that has one, and that substitution is
+  `negotiate_protocol_version`'s — which also means a client whose newest revision is `2026-07-28` but that
+  handshakes anyway is served rather than refused. mact-f1w.16 asserts rmcp's actual status and body rather
+  than re-implementing the check, so the conformance test pins our behavior by pinning rmcp's.
+- The stateless era keeps its per-request signalling requirement: `stateless_protocol_metadata_required =
+  true` — a stateless request that omits the `MCP-Protocol-Version` header (or the matching `_meta` entry)
+  is rejected rather than assumed to be some older dialect. It applies to requests routed statelessly; a
+  `2025-11-25` request already named its revision when it handshook and carries a session id instead.
+- `legacy_session_mode = true` is what makes the `2025-11-25` lifecycle exist: the handshake, the
+  `Mcp-Session-Id` on every request, the `GET` server-initiated stream and the `DELETE` that closes a
+  session all sit behind it. It changes nothing for a `2026-07-28` request — SEP-2567 removed sessions from
+  that revision, so rmcp serves it statelessly whatever the flag says, and routes per request on the
+  version the caller names.
 - Transport surface (the knobs mact-f1w.5 sets, pinned so hardening in mact-f1w.13 has one thing to review):
 
   | knob | value | why |
   |---|---|---|
   | listener | `--bind 127.0.0.1:8080` default, non-loopback bind refused at startup | loopback-only, no auth (epic non-goal) |
-  | endpoint | `POST /mcp` (rmcp `StreamableHttpService`, `nest_service("/mcp", …)`) | one path, one method in v1 |
+  | endpoint | `/mcp` (rmcp `StreamableHttpService`, `nest_service("/mcp", …)`); `POST` on both revisions, `GET`/`DELETE` additionally on a `2025-11-25` session | one path; the methods are per-revision, not per-path |
   | `allowed_hosts` | `{localhost, 127.0.0.1, ::1}` (extended per `--allow-host`) | DNS-rebinding guard |
   | `allowed_origins` | empty by default | no browser client is expected; operators add explicitly |
   | `max_request_body_bytes` | 1048576 | worst-case args are 32×8 KiB secrets ≈ 300 KiB |
@@ -626,7 +649,7 @@ the checker; an implementation that finds a hole fixes all three in one change.
 | the Rust structs agree with the checked-in schema | mact-f1w.5 / .14 | unit test `tool_schema_parity`: serialize the schemars-derived `inputSchema` / `outputSchema` of all four tools and compare (after key-order normalization) against `schema/tool-contract.schema.json`; the fixtures are the golden payloads |
 | args rejected before any subprocess, in the pinned order | mact-f1w.6 | validator unit tests, one per code in the resolution/precondition groups |
 | `structuredContent` of a real call matches a fixture | mact-f1w.15 | e2e harness normalizes `run_id`, timestamps, `pid` and hostname, then diffs against `tests/e2e/testdata/tool-io/valid` |
-| protocol negotiation (only 2026-07-28; missing version metadata rejected) | mact-f1w.16 | conformance suite against the running server |
+| protocol negotiation (only 2026-07-28 and 2025-11-25; missing version metadata rejected; a handshake never agrees to anything else) | mact-f1w.16 | conformance suite against the running server, one section per lifecycle |
 | `isError` discipline: a failed act run is `isError: false`, a missing workflow is `isError: true` | mact-f1w.14 / .15 | stub-act e2e: one fixture repo, one green job, one red job, one typo'd workflow name |
 
 ## Consequences

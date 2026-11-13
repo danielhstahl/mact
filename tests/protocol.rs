@@ -4,10 +4,11 @@
 //! assertions live in `tests/list_tasks.rs`, `tests/run_status_tool.rs` and
 //! `tests/cancel_run_tool.rs`; these stay focused on the protocol.
 //!
-//! This is the small smoke set — the four things that have to work for any client at all. The
-//! full MCP 2026-07-28 conformance matrix (transport headers, error mapping, cancellation,
-//! shutdown) is `tests/protocol_conformance.rs`; when you are about to add a case here, check
-//! whether it belongs there instead.
+//! This is the small smoke set — the things that have to work for any client at all, on either
+//! of the two lifecycles this server speaks: the self-contained `2026-07-28` one and the
+//! `2025-11-25` handshake. The full MCP conformance matrix (transport headers, error mapping,
+//! cancellation, shutdown, the session's own rules) is `tests/protocol_conformance.rs`; when
+//! you are about to add a case here, check whether it belongs there instead.
 //!
 //! Half of these use rmcp's own client (the "stock MCP client" in the ticket's
 //! definition of done); the other half speak raw JSON-RPC over HTTP, because they
@@ -15,10 +16,13 @@
 
 mod common;
 
-use common::{meta_2026_07_28, post_jsonrpc, raw_client, Fixture, TestServer};
+use common::{
+    meta_2026_07_28, post_jsonrpc, post_jsonrpc_raw, raw_client, sse_data_lines, Fixture,
+    TestServer,
+};
 
 use rmcp::{
-    model::ProtocolVersion,
+    model::{ClientCapabilities, ClientConfig, Implementation, ProtocolVersion},
     transport::{
         streamable_http_client::StreamableHttpClientTransportConfig, StreamableHttpClientTransport,
     },
@@ -67,6 +71,53 @@ async fn a_stock_client_can_list_tools() {
     server.shutdown().await;
 }
 
+/// The same definition of done on the other lifecycle: a stock client that handshakes at
+/// `2025-11-25` gets a session, is told that `2025-11-25` is the revision it is talking, and
+/// lists the same four tools over the session. Nothing about the tool surface differs between
+/// the two lifecycles — which is the point of supporting the second one.
+#[tokio::test]
+async fn a_stock_client_on_the_session_lifecycle_can_list_tools() {
+    let fixture = Fixture::new();
+    let server = TestServer::start(fixture.config()).await;
+
+    let client = ClientConfig::new(
+        ClientCapabilities::default(),
+        Implementation::new("act-mcp-test", "0.0.0"),
+    )
+    .with_protocol_version(ProtocolVersion::V_2025_11_25)
+    .serve_with_lifecycle(
+        StreamableHttpClientTransport::from_config(StreamableHttpClientTransportConfig::with_uri(
+            server.url(),
+        )),
+        ClientLifecycleMode::Initialize,
+    )
+    .await
+    .expect("a 2025-11-25 client can complete the initialize handshake");
+
+    assert_eq!(
+        client.peer_info().map(|info| info.protocol_version.clone()),
+        Some(ProtocolVersion::V_2025_11_25),
+        "the handshake must name the revision the client asked for, not this server's newest"
+    );
+
+    let tools = client
+        .list_tools(None)
+        .await
+        .expect("tools/list over a session returns a result envelope");
+    assert_eq!(
+        tools
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["cancel_run", "list_tasks", "run_status", "run_workflow"],
+        "the session-era listing is the same tool set the stateless one advertises"
+    );
+
+    client.cancel().await.expect("client shuts down cleanly");
+    server.shutdown().await;
+}
+
 /// The endpoint answers a raw `tools/list` too — i.e. it is not rmcp-client-only.
 #[tokio::test]
 async fn a_raw_tools_list_request_returns_the_tool_array() {
@@ -101,10 +152,10 @@ async fn a_raw_tools_list_request_returns_the_tool_array() {
     server.shutdown().await;
 }
 
-/// `server/discover` advertises exactly one revision — the pin is visible from
-/// outside, not just asserted in source.
+/// `server/discover` advertises exactly the two revisions this server speaks — the pin is
+/// visible from outside, not just asserted in source — oldest first.
 #[tokio::test]
-async fn discover_advertises_only_protocol_2026_07_28() {
+async fn discover_advertises_the_two_supported_revisions() {
     let fixture = Fixture::new();
     let server = TestServer::start(fixture.config()).await;
 
@@ -120,8 +171,8 @@ async fn discover_advertises_only_protocol_2026_07_28() {
     assert_eq!(status, 200, "body: {body}");
     assert_eq!(
         body["result"]["supportedVersions"],
-        json!(["2026-07-28"]),
-        "server must expose exactly the pinned revision: {body}"
+        json!(["2025-11-25", "2026-07-28"]),
+        "server must expose exactly the revisions it implements: {body}"
     );
 
     server.shutdown().await;
@@ -159,39 +210,57 @@ async fn discover_reports_the_server_name_and_version() {
     server.shutdown().await;
 }
 
-/// A client that tries to `initialize` an older revision does not get it. The
-/// pinned server has no handshake for pre-2026-07-28 revisions, so it refuses
-/// instead of quietly downgrading.
+/// A client that tries to `initialize` a revision this server does not serve does not get it.
+/// What it gets instead is the newest revision in the advertised set that a handshake can run
+/// at — `2025-11-25` — which is the MCP handshake's own rule (answer with the latest version
+/// you support and let the client decide whether it can speak it) and is rmcp's, not a
+/// negotiation this crate re-implements. The invariant this test pins is the one that matters
+/// from outside: the negotiated revision is always one of the advertised two, and never the
+/// unadvertised one the caller asked for.
 #[tokio::test]
-async fn initialize_with_an_older_revision_is_not_negotiated() {
+async fn initialize_never_agrees_to_a_revision_outside_the_advertised_set() {
     let fixture = Fixture::new();
     let server = TestServer::start(fixture.config()).await;
 
-    let (status, body) = post_jsonrpc(
-        &raw_client(),
-        &server.url(),
-        "initialize",
-        json!({
-            "protocolVersion": "2025-06-18",
-            "capabilities": {},
-            "clientInfo": { "name": "legacy-client", "version": "0.0.0" }
-        }),
-        Some("2025-06-18"),
-    )
-    .await;
+    // `2025-06-18` is older than anything this server serves; `2026-07-28` is newer but has no
+    // handshake at all, so a server that answers a handshake can never name it either.
+    for revision in ["2025-06-18", "2025-03-26", "2026-07-28"] {
+        let (status, text, headers) = post_jsonrpc_raw(
+            &raw_client(),
+            &server.url(),
+            "initialize",
+            json!({
+                "protocolVersion": revision,
+                "capabilities": {},
+                "clientInfo": { "name": "legacy-client", "version": "0.0.0" }
+            }),
+            Some(revision),
+            None,
+        )
+        .await;
 
-    let negotiated = body
-        .pointer("/result/protocolVersion")
-        .and_then(|value| value.as_str());
-    assert_ne!(
-        negotiated,
-        Some("2025-06-18"),
-        "an older revision must never be agreed to: {body}"
-    );
-    assert!(
-        body.get("error").is_some() || negotiated == Some("2026-07-28"),
-        "expected a refusal, got: status={status} body={body}"
-    );
+        assert_eq!(status, 200, "a handshake is answered, not dropped: {text}");
+        assert!(
+            headers.contains_key("mcp-session-id"),
+            "and a handshake-era client is given the session its revision needs: {headers:?}"
+        );
+        let negotiated = sse_data_lines(&text)
+            .into_iter()
+            .find_map(|data| {
+                data.pointer("/result/protocolVersion")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default();
+        assert_ne!(
+            negotiated, revision,
+            "a revision outside the set must never be agreed to: {text}"
+        );
+        assert_eq!(
+            negotiated, "2025-11-25",
+            "the handshake lands on the newest advertised revision that has one: {text}"
+        );
+    }
 
     server.shutdown().await;
 }
