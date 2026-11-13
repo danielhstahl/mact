@@ -64,10 +64,10 @@ jobs:
             --protocol-era modern \
             --method tools/call \
             --tool-name run_workflow \
-            --tool-arg wait=false \
             --tool-arg category=test \
-            --tool-arg commit=7f36ad1468e583c682e68e84f82c054949c39c19 \
+            --tool-arg commit=ba8665cf1481b0085c070b9215754b64a087ed8f \
             --tool-arg task=check \
+            --tool-arg wait=false \
             --tool-arg workflow=.github/workflows/dogfood.yml \
             2>inspector.err)
           status=$?
