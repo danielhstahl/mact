@@ -97,7 +97,7 @@ jobs:
             2>/dev/null)
             workflow_status=$(echo $tool_call | jq -r '.structuredContent.status')
             #run_id=$(echo $tool_call | jq -r '.structuredContent.run_id')
-            if [ "$workflow_status" != "running" ] && break
+            [ "$workflow_status" != "running" ] && break
             sleep 10
           done
           workflow_status=$(echo $tool_call | jq -r '.structuredContent.status')
