@@ -353,9 +353,10 @@ fn zombie_is_not_alive() {
     let pid = child.id();
     std::thread::sleep(std::time::Duration::from_millis(100));
     // not yet waited on, so it's a zombie of this test process
-    assert!(!process_alive(pid));
+    assert!(!harness::process_alive(pid));
     child.wait().unwrap();
 }
+
 /// Scenario 4: a run cancelled mid-flight. The payload had already been written — so
 /// this is the case ADR-0004 §6.2 is about: the caller asked for the measurement to
 /// stop, so nothing is published, the run says `cancelled` with
