@@ -344,6 +344,18 @@ async fn scenario_03_a_failing_benchmark_still_writes_evidence() {
 
 // ------------------------------------------------------------- 04 cancellation
 
+//small unit test to test testing harness
+#[cfg(target_os = "linux")]
+#[test]
+fn zombie_is_not_alive() {
+    // spawn a child and let it exit without reaping it
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let pid = child.id();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    // not yet waited on, so it's a zombie of this test process
+    assert!(!process_alive(pid));
+    child.wait().unwrap();
+}
 /// Scenario 4: a run cancelled mid-flight. The payload had already been written — so
 /// this is the case ADR-0004 §6.2 is about: the caller asked for the measurement to
 /// stop, so nothing is published, the run says `cancelled` with
