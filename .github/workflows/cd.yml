@@ -34,6 +34,17 @@ jobs:
             ${{ runner.os }}-${{ runner.arch }}-cargo-
       - name: target
         run: rustup target add "${{ matrix.target }}"
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-edit
+
+      - name: update cargo.toml
+        run: |
+          version=${{ github.event.release.tag_name }}
+          version="${version#v}"
+          cargo set-version "$version"
+
       - name: release build and smoke test
         run: scripts/ci.sh release
 
