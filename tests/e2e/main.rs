@@ -443,9 +443,11 @@ async fn scenario_04_a_cancelled_run_publishes_nothing_and_leaves_no_process() {
         wait_for_process_gone(act_pid, Duration::from_secs(5)).await,
         "act ({act_pid}) is still alive after the cancel"
     );
+    let state = std::fs::read_to_string(format!("/proc/{child_pid}/stat")).unwrap_or_default();
+    // include `state` in the assert message
     assert!(
         wait_for_process_gone(child_pid, Duration::from_secs(5)).await,
-        "act's child ({child_pid}) outlived its process group"
+        "act's child ({child_pid}) outlived its process group, state is {state}"
     );
 
     // The audit trail survives the cancel, and says `cancelled` with the kill receipt.
