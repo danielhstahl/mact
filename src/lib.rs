@@ -36,10 +36,10 @@
 //! 1. **stdout is sacred.** Logs go to stderr only. The stdout stream must stay
 //!    empty so a supervisor can pipe this process without parsing its chatter;
 //!    there is a test asserting exactly that (`tests/boot.rs`).
-//! 2. **one protocol revision.** Negotiation, discovery and session handling are
-//!    rmcp's job; this crate only narrows the supported set to
-//!    [`server::SUPPORTED_PROTOCOL_VERSION`] and does not hand-roll any part of
-//!    it.
+//! 2. **the protocol surface is a list, not a hand-rolled state machine.**
+//!    Negotiation, discovery and session handling are rmcp's job; this crate only
+//!    narrows the supported set to [`server::SUPPORTED_PROTOCOL_VERSIONS`] and does
+//!    not hand-roll any part of it.
 //!
 //! [`nektos/act`]: https://github.com/nektos/act
 

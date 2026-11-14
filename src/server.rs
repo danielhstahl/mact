@@ -5,9 +5,9 @@
 //! `run_workflow` (mact-f1w.14) drives the whole pipeline through it — validate, isolate, run,
 //! extract, publish, report. That sharing is the whole point — a run started by one request is
 //! pollable and cancellable from any other, and a session going away changes nothing about it.
-//! What else has to be right here is the shell everything else hangs on: the pinned protocol
-//! revision, the loopback-only bind, the shared immutable [`Config`], and a cancellation token
-//! that actually drains.
+//! What else has to be right here is the shell everything else hangs on: the set of
+//! protocol revisions, the loopback-only bind, the shared immutable [`Config`], and a
+//! cancellation token that actually drains.
 
 use std::{borrow::Cow, net::SocketAddr, path::Path, sync::Arc, time::Duration};
 
@@ -56,15 +56,42 @@ pub const MCP_ROUTE: &str = "/mcp";
 /// number, written down here rather than inherited.
 pub const SSE_KEEP_ALIVE: Duration = Duration::from_secs(15);
 
-/// The one protocol revision this server speaks.
+/// The newest protocol revision this server speaks, and the one its design assumes.
 ///
 /// `2026-07-28` is the revision whose lifecycle is "no `initialize`, no
 /// session": every request is self-contained (see rmcp's
 /// `ProtocolVersion::NO_INITIALIZE`). That is what makes an act run a plain
-/// request instead of a session that has to outlive a browser tab, and it is why
-/// [`StreamableHttpServerConfig::legacy_session_mode`] stays off. Everything is
-/// delegated to rmcp — nothing here hand-rolls negotiation.
+/// request instead of a session that has to outlive a browser tab, and every
+/// non-protocol decision in this crate (per-request `_meta`, `json_response`, a
+/// run outliving its request) is written against it. A client that speaks it is
+/// served it; the session-era revision below is for clients that do not.
 pub const SUPPORTED_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V_2026_07_28;
+
+/// The `initialize`-era revision this server also serves.
+///
+/// `2025-11-25` is rmcp's `LATEST_WITH_INITIALIZE`: the newest revision that still
+/// negotiates its lifecycle over `initialize` + `notifications/initialized` and
+/// keeps a session while it runs (`Mcp-Session-Id` on every request, a `GET` for
+/// the server-initiated stream, `DELETE` to close). Serving it is what
+/// [`StreamableHttpServerConfig::legacy_session_mode`] being `true` buys, and the
+/// cost is a second lifecycle on the conformance surface — which is exactly why it
+/// is the *only* pre-2026 revision on the list: one handshake era, the newest one,
+/// rather than four more dialects to test for a client that could have asked for
+/// this one. Nothing about a run changes: the tools, the supervisor and the
+/// evidence are the same on both sides of the handshake; only the way the caller
+/// opens the conversation differs.
+pub const LEGACY_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V_2025_11_25;
+
+/// Every revision this server will serve, oldest first — the full advertised set.
+///
+/// rmcp uses this list for three things at once: what `server/discover`
+/// advertises, what `initialize` may agree to, and what a per-request `_meta`
+/// protocol version is validated against, so this array *is* the server's protocol
+/// surface. Ordering matches rmcp's own `ProtocolVersion::KNOWN_VERSIONS` (oldest
+/// first) rather than preference: preference is `SUPPORTED_PROTOCOL_VERSION`, which
+/// is what [`ActMcp::get_info`] names and what a sessionless caller gets.
+pub const SUPPORTED_PROTOCOL_VERSIONS: [ProtocolVersion; 2] =
+    [LEGACY_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSION];
 
 /// Per-session MCP service.
 ///
@@ -282,6 +309,10 @@ pub fn server_instructions(version: &str, workspace: &Path, evidence_dir: &Path)
 impl ServerHandler for ActMcp {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            // The server's *own* revision: newest first, and rmcp never answers a handshake
+            // with it (`initialize` substitutes the newest advertised revision that still has
+            // a handshake, i.e. [`LEGACY_PROTOCOL_VERSION`]). It is the version reported in
+            // `server/discover`'s server info and the answer to a request that names nothing.
             .with_protocol_version(SUPPORTED_PROTOCOL_VERSION)
             .with_server_info(Implementation::new(SERVER_NAME, env!("CARGO_PKG_VERSION")))
             .with_instructions(server_instructions(
@@ -329,15 +360,18 @@ impl ServerHandler for ActMcp {
         }
     }
 
-    /// Expose exactly one revision.
+    /// Expose the two revisions this server implements, and nothing else.
     ///
     /// rmcp uses this list for three things at once: what `server/discover`
     /// advertises, what `initialize` may agree to, and what a per-request
-    /// `_meta` protocol version is validated against — so narrowing it is the
-    /// whole of "only negotiates 2026-07-28". A client that asks for an older
-    /// revision is refused rather than downgraded.
+    /// `_meta` protocol version is validated against — so this list is the whole
+    /// of "only negotiates [`SUPPORTED_PROTOCOL_VERSIONS`]". A client that names
+    /// an older revision in a request (`2025-06-18`, `2025-03-26`) is refused with
+    /// rmcp's `-32022`; a client that performs the `initialize` handshake naming a
+    /// revision is served the newest advertised revision rmcp can run that handshake
+    /// at, which is why a server that advertises a handshake era has to answer one.
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
-        Cow::Borrowed(std::slice::from_ref(&SUPPORTED_PROTOCOL_VERSION))
+        Cow::Borrowed(&SUPPORTED_PROTOCOL_VERSIONS)
     }
 }
 
@@ -460,13 +494,17 @@ fn secrets_equal(presented: &str, expected: &str) -> bool {
 /// local, unauthenticated endpoint, so every field that encodes a trust decision is set
 /// here from the boot config rather than inherited:
 ///
-/// * `legacy_session_mode = false`. The pinned revision has no sessions, and a server that
-///   could also speak the old session handshake is a second behaviour to test for no
-///   benefit (`--allow-legacy-sessions` was dropped for the same reason).
-/// * `json_response = true`. Stateless request/response tools answer with `application/json`
-///   instead of an SSE stream, which keeps a plain client working; rmcp still falls back to
-///   SSE if a handler streams notifications mid-call, which is what `run_workflow` will
-///   want later.
+/// * `legacy_session_mode = true`. This is what makes [`LEGACY_PROTOCOL_VERSION`]
+///   reachable at all: the `initialize` handshake, the `Mcp-Session-Id` it returns, the
+///   `GET` stream and the `DELETE` that closes a session all live behind this flag. It
+///   does **not** affect a `2026-07-28` request — SEP-2567 removed sessions from that
+///   revision, so rmcp serves it statelessly whatever this flag says, and the two
+///   lifecycles are routed per request by the version the caller names.
+/// * `json_response = true`. Stateful or not, a request that produces one message is
+///   answered with `application/json` instead of an SSE stream, which keeps a plain
+///   client working; rmcp still falls back to SSE if a handler streams notifications
+///   mid-call, which is what `run_workflow` will want later. A session-era request is
+///   answered with SSE regardless — that revision has no JSON-only shape.
 /// * `allowed_hosts` comes from [`Config::allowed_hosts`] and is **never empty** — an empty
 ///   allowlist is rmcp's "accept any Host" mode, which is the DNS-rebinding hole.
 /// * `allowed_origins` + `enforce_origin_validation`: enforcement is always on, so an empty
@@ -480,14 +518,16 @@ fn secrets_equal(presented: &str, expected: &str) -> bool {
 ///   rmcp's default a request that names *no* version is silently read as `2025-03-26`, i.e.
 ///   this server would answer a dialect it says it does not speak. ADR-0001 §7 and
 ///   `docs/tool-contract.md` §1 both pin the strict answer — refuse, and say why — and
-///   `tests/protocol_conformance.rs` asserts it on the wire rather than in source.
+///   `tests/protocol_conformance.rs` asserts it on the wire rather than in source. It bites
+///   the stateless path only: a session-era request already proved which revision it is on
+///   when it handshook, and it carries the session id instead of per-request metadata.
 /// * `sse_keep_alive` is [`SSE_KEEP_ALIVE`], explained there.
 fn http_config(
     config: Arc<Config>,
     cancellation_token: CancellationToken,
 ) -> StreamableHttpServerConfig {
     StreamableHttpServerConfig::default()
-        .with_legacy_session_mode(false)
+        .with_legacy_session_mode(true)
         .with_json_response(true)
         .with_cancellation_token(cancellation_token)
         .with_allowed_hosts(config.allowed_hosts.iter().map(String::as_str))
@@ -550,7 +590,11 @@ pub async fn serve(wiring: Arc<Wiring>, shutdown: CancellationToken) -> anyhow::
         workspace = %config.workspace.display(),
         evidence_dir = %config.evidence_dir.display(),
         act_binary = %config.act_binary.display(),
-        protocol_version = %SUPPORTED_PROTOCOL_VERSION,
+        protocol_versions = %SUPPORTED_PROTOCOL_VERSIONS
+            .iter()
+            .map(ProtocolVersion::as_str)
+            .collect::<Vec<_>>()
+            .join(","),
         allowed_hosts = ?config.allowed_hosts,
         allowed_origins = ?config.allowed_origins,
         max_request_body_bytes = config.max_request_body_bytes,

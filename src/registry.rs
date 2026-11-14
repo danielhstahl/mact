@@ -75,6 +75,7 @@ pub use lock::{
 pub use state::{
     CancelReceipt, Phase, RunError, RunIdentity, RunRecord, RunState, RunSummary, RunView,
     WireStatus, WARNING_ALREADY_TERMINAL, WARNING_PARTIAL_EVIDENCE_DROPPED,
+    WARNING_PAYLOAD_CAP_EXCEEDED,
 };
 /// The boxed-future alias the [`Pipeline`] trait returns, exported so an out-of-module pipeline
 /// (mact-f1w.14's) can name the return type without depending on the private `task` module.
@@ -150,6 +151,18 @@ pub struct RunPolicy {
     /// [`StartError::TooManyRunDirs`] — a typed, explained refusal instead of a machine with
     /// a full filesystem and a run that died halfway.
     pub max_run_dirs: usize,
+    /// `--max-payload-keep-bytes`: bytes of job-produced payload kept per run under
+    /// `.evidence/runs/<run_id>/payload/` after it has been read.
+    ///
+    /// The payload a job writes through the bind mount is what a coverage or benchmark
+    /// record was computed from, and `source_path` names a scratch file that is otherwise
+    /// gone by the time the record is read. Keeping it beside the run makes the record
+    /// checkable after the fact; the budget is what stops a 200 MB lcov from being kept for
+    /// every run of a long-lived server. `0` keeps none, and the run deletes what it read.
+    ///
+    /// Retention moves the files *into* `runs/`, which is the directory `max_run_dirs`
+    /// pruning already reclaims — so this budget is bounded per run *and* per server.
+    pub max_payload_keep_bytes: u64,
     /// `--default-timeout-secs`: per-category overrides; `'*'` is the fallback (§4.3).
     pub default_timeouts: HashMap<String, Duration>,
 }
@@ -182,6 +195,7 @@ impl Default for RunPolicy {
             max_run_log_bytes: crate::runner::DEFAULT_MAX_RUN_LOG_BYTES,
             max_timeout: Duration::from_secs(DEFAULT_MAX_TIMEOUT_SECS),
             max_run_dirs: crate::config::DEFAULT_MAX_RUN_DIRS,
+            max_payload_keep_bytes: crate::config::DEFAULT_MAX_PAYLOAD_KEEP_BYTES,
             default_timeouts,
         }
     }
@@ -343,13 +357,33 @@ pub struct RunPlan {
     pub identity: RunIdentity,
     /// What to spawn, with the paths already derived from `spec.run_id`.
     pub spec: RunSpec,
+    /// Warning codes the *gate* decided before the run existed, stamped onto the record as
+    /// soon as it is registered.
+    ///
+    /// These are codes the validator knew at resolution time — `isolation_worktree`,
+    /// `dirty_worktree`, a runner label with no image — which nothing downstream can
+    /// re-derive: by the time the pipeline runs, the tree is just a directory and the act
+    /// child has its own reasons. ADR-0003 §5.4 says the run *carries* `isolation_worktree`,
+    /// and this field is the carrying.
+    pub warnings: Vec<String>,
 }
 
 impl RunPlan {
     /// Pair an identity with a spec.
     #[must_use]
     pub fn new(identity: RunIdentity, spec: RunSpec) -> Self {
-        Self { identity, spec }
+        Self {
+            identity,
+            spec,
+            warnings: Vec::new(),
+        }
+    }
+
+    /// Attach the gate's warning codes to the plan (see [`RunPlan::warnings`]).
+    #[must_use]
+    pub fn carrying(mut self, warnings: &[String]) -> Self {
+        self.warnings = warnings.to_vec();
+        self
     }
 
     /// The run's id.
@@ -1140,7 +1174,12 @@ impl RunSupervisor {
             });
         }
 
-        let record = RunRecord::new(run_id.clone(), plan.identity.clone());
+        let mut record = RunRecord::new(run_id.clone(), plan.identity.clone());
+        // The gate's codes are on the record from the first publish, so a run that never
+        // gets to spawn act still says what the gate noticed about it.
+        for warning in &plan.warnings {
+            record.add_warning(warning);
+        }
         let (sender, receiver) = watch::channel(Arc::new(record));
         let cancel = CancellationToken::new();
         let slot = Arc::new(Slot {
@@ -1174,6 +1213,7 @@ impl RunSupervisor {
         let plan = RunPlan {
             identity: plan.identity.clone(),
             spec,
+            warnings: plan.warnings.clone(),
         };
         tracing::info!(
             run_id = %run_id,

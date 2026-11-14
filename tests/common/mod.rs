@@ -272,6 +272,59 @@ pub async fn post_jsonrpc(
     (status, parsed)
 }
 
+/// POST one JSON-RPC message and hand back the *undecoded* body and the response headers.
+///
+/// [`post_jsonrpc`] is the right tool for a `2026-07-28` request, whose answer is always a JSON
+/// body. It is the wrong tool for the two things this helper exists for: a session-era
+/// (`2025-11-25`) answer, which is an SSE stream and therefore not parseable as one JSON value,
+/// and the `Mcp-Session-Id` header, which is the whole point of a handshake test and is only
+/// reachable through the headers.
+pub async fn post_jsonrpc_raw(
+    client: &reqwest::Client,
+    url: &str,
+    method: &str,
+    params: Value,
+    protocol_version: Option<&str>,
+    session_id: Option<&str>,
+) -> (u16, String, reqwest::header::HeaderMap) {
+    let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
+    let mut request = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("Mcp-Method", method)
+        .json(&body);
+    if let Some(version) = protocol_version {
+        request = request.header("MCP-Protocol-Version", version);
+    }
+    if let Some(session) = session_id {
+        request = request.header("Mcp-Session-Id", session);
+    }
+    if let Some(name) = params.get("name").and_then(Value::as_str) {
+        request = request.header("Mcp-Name", name);
+    }
+    let response = request.send().await.expect("request reaches the server");
+    let status = response.status().as_u16();
+    let headers = response.headers().clone();
+    let text = response.text().await.expect("response body is readable");
+    (status, text, headers)
+}
+
+/// The `data:` payloads of an SSE body, decoded, in stream order.
+///
+/// A session-era response frames every message as an SSE event (plus a priming event with no
+/// payload), so a test that wants the JSON-RPC envelope inside it has to take the stream apart.
+/// Non-JSON payloads are skipped rather than fatal: the priming event is one, and a test that
+/// wants to assert on the framing itself should look at the raw text.
+pub fn sse_data_lines(text: &str) -> Vec<Value> {
+    text.lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(str::trim)
+        .filter(|payload| !payload.is_empty())
+        .filter_map(|payload| serde_json::from_str(payload).ok())
+        .collect()
+}
+
 /// Per-request `_meta` for the pinned 2026-07-28 revision: self-contained
 /// requests must name the version, the client, and its capabilities.
 pub fn meta_2026_07_28() -> Value {

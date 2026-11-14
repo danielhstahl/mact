@@ -225,7 +225,31 @@ pub trait Environment: Send + Sync {
     fn program_version(&self, _program: &Path) -> Option<String> {
         None
     }
+
+    /// One variable of *this process's* environment, as the act child would inherit it.
+    ///
+    /// Not for `git` — that runs with a scrubbed environment (ADR-0003 §7.8) and does not
+    /// need asking. This exists for act's config discovery, which is about the environment
+    /// act-mcp hands down, so the default reads the real process environment and a test
+    /// overrides it the way it overrides everything else here.
+    fn env_var(&self, key: &str) -> Option<String> {
+        std::env::var(key).ok()
+    }
+
+    /// A small text file, if it is there and readable.
+    ///
+    /// `None` covers "absent", "a directory", "EACCES" and "not UTF-8" together, because
+    /// that is how act sees them too: act reads its config files with an error it discards,
+    /// so an actrc the server cannot read is exactly an actrc that does not exist. The
+    /// default is `None` on purpose, as with [`Environment::program_version`]: a stub that
+    /// wants act to find a config file has to say so.
+    fn read_text_file(&self, _path: &Path) -> Option<String> {
+        None
+    }
 }
+
+/// How much of a config file is read before it is assumed not to be a config file.
+pub(super) const MAX_CONFIG_FILE_BYTES: u64 = 64 * 1024;
 
 /// How long the output-collecting thread gets after the child is reaped.
 pub(super) const READER_GRACE: Duration = Duration::from_millis(250);
@@ -258,6 +282,19 @@ impl Environment for SystemEnvironment {
             scrub_environment(command);
             command.env("GIT_TERMINAL_PROMPT", "0");
         })
+    }
+
+    /// act's config files, read the way act reads them: exist-or-not, no error kept.
+    ///
+    /// Bounded by `MAX_CONFIG_FILE_BYTES` because a config file is small or it is not a
+    /// config file, and `read_to_string` on a FIFO someone pointed at this path would
+    /// otherwise be the validator's problem.
+    fn read_text_file(&self, path: &Path) -> Option<String> {
+        let metadata = std::fs::metadata(path).ok()?;
+        if !metadata.is_file() || metadata.len() > MAX_CONFIG_FILE_BYTES {
+            return None;
+        }
+        std::fs::read_to_string(path).ok()
     }
 
     fn resolve_program(&self, requested: &Path) -> Result<PathBuf, ProgramError> {

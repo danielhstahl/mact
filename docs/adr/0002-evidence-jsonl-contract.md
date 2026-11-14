@@ -54,7 +54,8 @@ Numbered as in the ticket's "must pin" list. `MUST` / `MUST NOT` / `SHOULD` are 
 ├── runs/
 │   └── <run_id>/
 │       ├── meta.json                      # terminal-state manifest (see 1.3)
-│       └── act.jsonl                      # act's own --json stream, verbatim (redacted), not versioned
+│       ├── act.jsonl                      # act's own --json stream, verbatim (redacted), not versioned
+│       └── payload/                       # the payload this run read, kept within a budget (see 3.4)
 └── incoming/
     └── <run_id>/                          # transient job payload scratch (see 3)
 ```
@@ -69,7 +70,8 @@ instead — see 3.1 — while everything durable stays here.)
   `<workspace>/.evidence`. Durable evidence *always* lands in the evidence root — never inside a
   temporary worktree created by ADR-0003, or it would be deleted with the worktree.
 - The only files the writer ever creates under the root are `<run_id>.jsonl`, `meta.json`,
-  `act.jsonl`, temp files matching `.<run_id>.jsonl.*.tmp`, and the `README.md` stub. Readers
+  `act.jsonl`, the kept payload files under `runs/<run_id>/payload/`, temp files matching
+  `.<run_id>.jsonl.*.tmp`, and the `README.md` stub. Readers
   `MUST` skip dot-files and anything not ending in `.jsonl` / `meta.json`.
 - `.evidence/runs/` and `.evidence/incoming/` are **not** commit-keyed and are **not** part of the
   cross-commit contract: a scanner walks `benchmark/` and `coverage/` only.
@@ -108,7 +110,8 @@ Fields (see [`schema/run-meta.schema.json`](../../schema/run-meta.schema.json)):
 (`schema_version`, `run_id`, `status`, `workflow`, `task`, `category`, `commit`, `host`), timing
 (`started_at`, `finished_at`, `duration_ms`, `exit_code`), invocation (`act.argv` with secrets already
 redacted, `act.version`, `act.pid`, `act.log`, `act.log_bytes`, `act.log_truncated`), payload
-(`incoming.dir`, `incoming.files`, `incoming.removed`), output (`evidence[]` of
+(`incoming.dir`, `incoming.files`, `incoming.removed`, `payload.dir`, `payload.bytes`,
+`payload.cap_bytes`, `payload.files`, `payload.dropped` — see 3.4), output (`evidence[]` of
 `{kind, path, records, truncated, malformed}`) and `warnings[]`.
 
 `meta.json` is debug/audit context, **not** the load-bearing contract: it is how you answer "why is
@@ -256,13 +259,33 @@ the warning `coverage_source_shadowed`, so a human can tell the tools apart with
   (`payload_too_large` beyond that). A payload may never re-attribute a run: `commit`, `run_id`,
   `workflow`, `task` always come from the tool call, never from file contents.
 
-#### 3.4 Cleanup
+#### 3.4 Cleanup and retention
 
-After extraction, act-mcp deletes the payload files it successfully parsed (their numbers now live in
-the JSONL) and keeps any it found-but-did-not-use or could-not-parse, all listed in `meta.json`. The
-incoming directory is removed if it ends up empty. Because cleanup deletes *foreign-owned* files,
-`meta.json` records `bytes` and `sha256` of what was consumed before deleting it.
+After extraction, act-mcp has two kinds of leftover and treats them differently:
+
+* **what the extractor read** is the file the published numbers were computed from. It is *moved*
+  to `.evidence/runs/<run_id>/payload/<name>`, where `runs/` retention already reclaims it, while
+  the run's `--max-payload-keep-bytes` budget (default 4 MiB) holds. Over the budget — or if the move
+  fails — it is deleted, and `payload.dropped` counts how many, with the `payload_cap_exceeded`
+  warning. `--max-payload-keep-bytes 0` keeps none, which is deletion rather than a drop: no
+  warning, and no `payload` member.
+* **what it found but did not use, or could not parse** stays in `.evidence/incoming/<run_id>/`
+  and is listed with its `bytes` in `meta.json`: that file is evidence about the *job*, and
+  deleting it would throw away the only clue to a wrong file name. The incoming directory is
+  removed when it ends up empty.
+
+Because cleanup removes *foreign-owned* files, `meta.json` records `bytes` (and, where computed,
+`sha256`) of what was consumed.
+
+A record's `source_path` names the scratch path the extractor read — `.evidence/incoming/<run_id>/lcov.info`
+— so a reader that wants the raw file maps it to `runs/<run_id>/payload/<name>` using `payload.dir`
+and `payload.files`. `source_path` is deliberately *not* rewritten after publication: a published
+record is immutable (6.2), and what it says is where the number came from, not where the bytes
+live now.
+
 Readers/scanners `MUST NOT` read `.evidence/incoming/`: it is scratch and may vanish at any time.
+`runs/<run_id>/payload/` is the durable half of that answer, and like the rest of `runs/` it is not
+part of the cross-commit contract — a scanner that wants raw payload is debugging, not scanning.
 
 ### 4. Metric record shapes
 

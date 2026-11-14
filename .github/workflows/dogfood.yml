@@ -1,0 +1,77 @@
+# Testing for integration
+name: dogfood
+
+on:
+  push:
+    branches: [intentionallynonexistant]
+    # A docs-only commit cannot break the crate, and a build that runs anyway teaches
+    # people to ignore the badge. The full set of paths that can break it:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "schema/**"
+      - "scripts/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "deny.toml"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    branches: [intentionallynonexistant]
+    # No path filter here on purpose: a required status check that does not run for some
+    # PRs blocks that PR from merging, so PRs always get a run.
+  workflow_dispatch:
+
+# One run per branch at a time; a superseded PR push has nothing to say.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Nothing here writes to the repository, and a build that could is a build nobody audited.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      # One cache for the whole job: the registry (what cargo downloads) and ./target
+      # (what it compiles). Keyed on Cargo.lock plus the toolchain pin, so a lockfile or
+      # toolchain change starts cold, and restore-keys let a lockfile bump reuse the rest.
+      - name: cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-
+      ## act doesn't have rust installed
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          target: x86_64-unknown-linux-gnu
+      #- name: target
+      #  run: rustup target add x86_64-unknown-linux-gnu
+      # No toolchain action: rustup reads rust-toolchain.toml, which is the pin, and
+      # installs the components (clippy, rustfmt) listed in it. `rustup show` is what
+      # triggers that resolution, and prints what CI actually built with.
+      #- name: toolchain
+      #  run: rustup show
+
+      - name: tools
+        run: scripts/install_ci_tools.sh
+
+      # The check itself. Everything except the release build, and `--keep-going` so one
+      # red step reports the others instead of hiding them.
+      - name: ci
+        run: cargo test #scripts/ci.sh --keep-going fmt clippy doc test schema supply-chain

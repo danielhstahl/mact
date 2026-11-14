@@ -1126,3 +1126,45 @@ async fn every_terminal_manifest_validates_against_the_pinned_schema() {
     stalled.shutdown().await;
     supervisor.shutdown().await;
 }
+
+// A warning the gate knew *before the run existed* has to survive registration: ADR-0003 §5.4
+// promises a worktree run "carries the warning `isolation_worktree`", and nothing downstream
+// can re-derive it — by harvest time the tree is just a directory again, and the label check
+// belongs to a validation pass that has already finished.
+#[tokio::test]
+async fn a_run_carries_the_warning_codes_the_gate_handed_it() {
+    let harness = Harness::new();
+    let supervisor = supervisor();
+    let run_id = new_id();
+    supervisor
+        .start(harness.plan(&run_id, &[]).carrying(&[
+            "isolation_worktree".to_owned(),
+            "act_runs_on_unmapped".to_owned(),
+        ]))
+        .await
+        .expect("accepted");
+    let view = wait_for_view(&supervisor, &run_id, "terminal", |view| {
+        view.status != WireStatus::Running
+    })
+    .await;
+    for code in ["isolation_worktree", "act_runs_on_unmapped"] {
+        assert!(
+            view.warnings.iter().any(|held| held == code),
+            "{code} should be on the run: {:?}",
+            view.warnings
+        );
+    }
+    supervisor.shutdown().await;
+
+    // And on disk, where a run that predates a restart is read from (ADR-0002 §7).
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(harness.run_dir(&run_id).join("meta.json")).unwrap())
+            .expect("meta.json parses");
+    let warnings = manifest["warnings"].as_array().expect("meta.json warnings");
+    for code in ["isolation_worktree", "act_runs_on_unmapped"] {
+        assert!(
+            warnings.iter().any(|held| held == code),
+            "{code} should be in the manifest: {manifest}"
+        );
+    }
+}

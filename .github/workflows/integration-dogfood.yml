@@ -1,0 +1,119 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [master]
+
+  pull_request:
+    branches: [master]
+
+jobs:
+  integration-test-with-workflow:
+    name: Run integration tests against MCP
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Act config
+        run: |
+          mkdir -p ~/.config/act
+          cat > ~/.config/act/actrc <<'EOF'
+          -P ubuntu-latest=catthehacker/ubuntu:act-latest
+          -P ubuntu-24.04=catthehacker/ubuntu:act-latest
+          EOF
+          curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/nektos/act/master/install.sh | sudo bash
+
+      - name: Start mcp
+        run: |
+          cargo build --release
+          ./target/release/act-mcp serve --act-binary $(pwd)/bin/act > /tmp/act-mcp.log 2>&1 & # nohup
+
+      - name: Wait for port 8080
+        run: |
+          # Loop until localhost:8080 returns a 200 OK
+          timeout 60s bash -c 'until curl -s localhost:8080; do sleep 1; done'
+
+      - name: Test list tasks
+        run: |
+          list_tasks=$(npx @modelcontextprotocol/inspector \
+            --cli \
+            --transport http \
+            --protocol-era modern \
+            --method tools/call \
+            --tool-name list_tasks \
+            http://localhost:8080/mcp  2>/dev/null)
+          result=$(echo $list_tasks | jq '.structuredContent.workflow_count')
+          if [ $result != "6" ]; then
+            echo "Assertion failed: $result"
+            exit 1
+          fi
+
+      - name: Test workflow execution
+        run: |
+          export ACT_CONFIG="$HOME/.config/act/actrc"
+          echo $ACT_CONFIG
+          set +e
+          tool_call=$(npx @modelcontextprotocol/inspector \
+            --cli http://localhost:8080/mcp \
+            --transport http \
+            --protocol-era modern \
+            --method tools/call \
+            --tool-name run_workflow \
+            --tool-arg category=test \
+            --tool-arg commit=dccac9683fd690753d345b73638b78502eaedc57 \
+            --tool-arg task=check \
+            --tool-arg wait=false \
+            --tool-arg workflow=.github/workflows/dogfood.yml \
+            2>inspector.err)
+          status=$?
+          echo "inspector exit code: $status"
+          echo "stdout: $tool_call"
+          echo "stderr:"; cat inspector.err
+          workflow_status=$(echo $tool_call | jq -r '.structuredContent.status')
+          run_id=$(echo $tool_call | jq -r '.structuredContent.run_id')
+          echo "act.jsonl: "
+          cat $(pwd)/.evidence/runs/$run_id/act.jsonl
+          echo "workflow_status: $workflow_status"
+          echo "run_id=$run_id" >> "$GITHUB_ENV"
+          if [ "$status" -ne 0 ] || [ "$workflow_status" = "failed" ] || ! echo "$tool_call" | jq -e '(.isError // false) == false' >/dev/null; then
+            echo "Assertion failed"
+            exit 1
+          fi
+      - name: Wait for execution
+        run: |
+          for i in $(seq 1 90); do
+            tool_call=$(npx @modelcontextprotocol/inspector \
+            --cli http://localhost:8080/mcp \
+            --transport http \
+            --protocol-era modern \
+            --method tools/call \
+            --tool-name run_status \
+            --tool-arg run_id=$run_id \
+            2>/dev/null)
+            status=$?
+            workflow_status=$(echo "$tool_call" | jq -r '.structuredContent.run.status')
+            terminal=$(echo "$tool_call" | jq -r '.structuredContent.run.terminal // false')
+            echo "poll $i: status=${workflow_status:-<none>} terminal=$terminal"
+            [ "$terminal" = "true" ] && break
+            sleep 10
+          done
+          if [ "$terminal" != "true" ]; then
+            echo "Timed out waiting for run to finish"
+            echo "$tool_call"; cat inspector.err
+            exit 1
+          fi
+
+          if [ "$workflow_status" != "success" ]; then   # use your server's actual success value
+            echo "Run finished with status: $workflow_status"
+            echo "$tool_call"
+            exit 1
+          fi
+      - name: Read logs
+        if: always()
+        run: |
+          echo "Server logs"
+          cat /tmp/act-mcp.log
+          echo "Run logs"
+          cat .evidence/runs/$run_id/act.jsonl

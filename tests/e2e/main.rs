@@ -344,6 +344,19 @@ async fn scenario_03_a_failing_benchmark_still_writes_evidence() {
 
 // ------------------------------------------------------------- 04 cancellation
 
+//small unit test to test testing harness
+#[cfg(target_os = "linux")]
+#[test]
+fn zombie_is_not_alive() {
+    // spawn a child and let it exit without reaping it
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let pid = child.id();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    // not yet waited on, so it's a zombie of this test process
+    assert!(!harness::process_alive(pid));
+    child.wait().unwrap();
+}
+
 /// Scenario 4: a run cancelled mid-flight. The payload had already been written — so
 /// this is the case ADR-0004 §6.2 is about: the caller asked for the measurement to
 /// stop, so nothing is published, the run says `cancelled` with
@@ -443,9 +456,11 @@ async fn scenario_04_a_cancelled_run_publishes_nothing_and_leaves_no_process() {
         wait_for_process_gone(act_pid, Duration::from_secs(5)).await,
         "act ({act_pid}) is still alive after the cancel"
     );
+    let state = std::fs::read_to_string(format!("/proc/{child_pid}/stat")).unwrap_or_default();
+    // include `state` in the assert message
     assert!(
         wait_for_process_gone(child_pid, Duration::from_secs(5)).await,
-        "act's child ({child_pid}) outlived its process group"
+        "act's child ({child_pid}) outlived its process group, state is {state}"
     );
 
     // The audit trail survives the cancel, and says `cancelled` with the kill receipt.

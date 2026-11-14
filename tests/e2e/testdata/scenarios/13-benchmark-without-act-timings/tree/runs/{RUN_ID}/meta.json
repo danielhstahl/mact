@@ -49,7 +49,18 @@
   "host": "{HOST}",
   "incoming": {
     "dir": "incoming/{RUN_ID}",
-    "removed": false
+    "removed": true
+  },
+  "payload": {
+    "bytes": 439,
+    "cap_bytes": 4194304,
+    "dir": "runs/{RUN_ID}/payload",
+    "files": [
+      {
+        "bytes": 439,
+        "path": "benchmark.json"
+      }
+    ]
   },
   "run_id": "{RUN_ID}",
   "schema_version": 1,
@@ -57,6 +68,7 @@
   "status": "success",
   "task": "hyperfine-bench",
   "warnings": [
+    "act_runs_on_unmapped",
     "act_step_timings_unavailable"
   ],
   "workflow": "benchmark"

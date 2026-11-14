@@ -63,7 +63,7 @@ guards.
 | `tests/boot.rs` | CLI flags, the boot gates, refusing a routable bind, what gets logged |
 | `tests/hardening.rs` | `Host`/`Origin` allowlists, body cap, redaction, run-dir cap |
 | `tests/protocol.rs` | the smallest useful protocol surface: a stock client can list tools, `/mcp` is the only route |
-| **`tests/protocol_conformance.rs`** | **the full MCP 2026-07-28 Streamable HTTP conformance matrix — see §3** |
+| **`tests/protocol_conformance.rs`** | **the full MCP Streamable HTTP conformance matrix for both revisions — see §3** |
 | `tests/tool_schema_parity.rs` | advertised `inputSchema`/`outputSchema` == `schema/tool-contract.schema.json` |
 | `tests/list_tasks.rs`, `tests/run_status_tool.rs`, `tests/cancel_run_tool.rs`, `tests/run_workflow.rs` | one tool each, end to end through a real `tools/call` |
 | `tests/run_supervisor.rs`, `tests/runner_execution.rs`, `tests/runner_pdeathsig.rs` | run lifecycle, the act process group, process teardown |
@@ -95,10 +95,12 @@ Three conventions make the suite stay honest:
 
 ## 3. Protocol conformance (`tests/protocol_conformance.rs`)
 
-The question this suite answers is the auditor's: *is `POST /mcp` a correct MCP **2026-07-28**
-Streamable HTTP endpoint, judged from outside the process?* Two clients ask it — a stock `rmcp`
-client (`client` + `transport-streamable-http-client-reqwest`, pinned to `2026-07-28`) and raw
-HTTP for the requests a well-behaved client never sends. The run-based cases boot the **shipped
+The question this suite answers is the auditor's: *is `POST /mcp` a correct MCP Streamable HTTP
+endpoint on both revisions this server advertises — **2026-07-28** and **2025-11-25** — judged
+from outside the process?* Two clients ask it — a stock `rmcp` client
+(`client` + `transport-streamable-http-client-reqwest`, on the `Discover` lifecycle for the
+stateless revision and the `Initialize` one for the session revision) and raw HTTP for the
+requests a well-behaved client never sends. The run-based cases boot the **shipped
 binary** on an ephemeral port against the e2e stub `act`, so cancellation and shutdown include
 the runner and its process group.
 
@@ -108,17 +110,26 @@ Covered, in the order the file is written:
   non-empty title and description, an `inputSchema`, and an `outputSchema` — and an actual
   `structuredContent` validates against the `outputSchema` it came with (compiled as JSON Schema,
   not eyeballed).
-* **Negotiation.** `server/discover` exposes exactly `["2026-07-28"]`; a client naming
-  `2025-11-25`, `2025-06-18` or `2025-03-26` is refused with `-32022` and the supported set;
-  a request that names **no** version is refused with `-32020` rather than silently read as the
-  pre-2026 dialect (that is the `stateless_protocol_metadata_required = true` decision, and this
-  is where it is asserted); a header and a `_meta` that disagree are refused.
+* **Negotiation.** `server/discover` exposes exactly `["2025-11-25","2026-07-28"]`; a stateless
+  request naming `2025-06-18` or `2025-03-26` is refused with `-32022` and the supported set;
+  a request that names **no** version is refused outright rather than silently answered (the
+  `stateless_protocol_metadata_required = true` decision, and this is where it is asserted: a
+  stateless-looking request gets `-32020`/`-32602`, a bare one is read as session-era and refused
+  for its missing session id); a header and a `_meta` that disagree are refused.
 * **Statelessness.** Three self-contained requests on three fresh connections with no handshake;
-  a legacy `initialize` (any version) gets `-32022` **as an answer** — not a hang, not a session.
-* **Transport headers.** `application/json` answers, no `Mcp-Session-Id` ever (in either
-  direction), `Accept` must cover both `application/json` and `text/event-stream` (406
+  no stateless response ever carries an `Mcp-Session-Id`, and one that is supplied is not echoed.
+* **The session era (`2025-11-25`).** `initialize` issues a session id and names that revision;
+  `notifications/initialized` completes the handshake; a `tools/call` over the session answers
+  the same structured result as the same call made statelessly, over an SSE stream; a request
+  with no session id is `400`, an unknown or closed session is `404`, `GET` opens the stream and
+  `DELETE` closes it. A handshake naming a revision the server does not run one at — `2025-06-18`, `2025-03-26`,
+  or `2026-07-28` from a client that handshakes — is answered with `2025-11-25`, never with the
+  revision asked for.
+* **Transport headers.** `application/json` answers on the stateless revision, `Accept` must
+  cover both `application/json` and `text/event-stream` (406
   otherwise), `Content-Type` must be JSON with an optional charset (415 otherwise), `GET`/`PUT`/
-  `HEAD`/`OPTIONS`/`DELETE` on `/mcp` are 4xx refusals with `Allow: POST` and never a 500, and
+  `HEAD`/`OPTIONS`/`DELETE` on `/mcp` outside a session are 4xx refusals with `Allow: POST` and
+  never a 500, and
   nothing outside the `/mcp` prefix is mounted. The SEP-2243 routing headers
   (`Mcp-Method`/`Mcp-Name`) are required and must agree with the body.
 * **Error mapping.** Unknown tool → JSON-RPC `-32602`; malformed or unknown *arguments* →
@@ -167,12 +178,13 @@ npx @modelcontextprotocol/inspector --transport http http://127.0.0.1:8080/mcp
 ```
 
 If your Inspector offers a protocol-version or "negotiation" override, pin it to **`2026-07-28`**
-(older Inspectors only speak the `initialize`-era revisions, and this server has no handshake for
-them). Then:
+to exercise the stateless path (an Inspector that only speaks the `initialize`-era revisions still
+works — it will connect at **`2025-11-25`** and get a session, and everything below looks the same
+from the UI side). Then:
 
 | # | where to click | what you must see |
 |---|---|---|
-| 1 | **Connect** | connected over Streamable HTTP, no `initialize` round trip in the log. If it fails with an unsupported-version refusal, that is the pin: the Inspector offered only pre-2026 revisions. |
+| 1 | **Connect** | connected over Streamable HTTP. On `2026-07-28` there is no `initialize` round trip in the log; on `2025-11-25` there is exactly one, and it names that revision. If it fails with an unsupported-version refusal, the Inspector offered only revisions older than `2025-11-25`. |
 | 2 | **List Tools** | four tools — `cancel_run`, `list_tasks`, `run_status`, `run_workflow` — each with a real description and both schemas shown |
 | 3 | **Run Tool** `list_tasks` `{}` | `isError: false`, a structured result with `workflows[]`; `workflows_dir` is `.github/workflows` |
 | 4 | **Run Tool** `run_status` `{}` | `active_count: 0`, `runs: []` on a quiet server |
@@ -187,9 +199,10 @@ Notes for the human in the loop:
 * the Inspector runs in a browser, so its requests carry an `Origin`. By default **every** `Origin`
   is refused (403) — that is `docs/security.md` §2. To let the Inspector talk to the server, name
   it: `act-mcp serve --allow-origin 'http://localhost:*'`.
-* to see a refusal that only a legacy client can produce, point any pre-2026 client at the
-  endpoint and expect a JSON-RPC `-32022` *answer* naming `["2026-07-28"]` as the supported set.
-  It must answer, not hang.
+* to see a refusal that only a very old client can produce, point a pre-`2025-11-25` client at the
+  endpoint and expect a JSON-RPC `-32022` *answer* naming `["2025-11-25","2026-07-28"]` as the
+  supported set. It must answer, not hang. A client that *handshakes* with such a revision is not
+  refused at all: the handshake is answered with `2025-11-25`.
 
 ### When the Inspector cannot speak 2026-07-28
 

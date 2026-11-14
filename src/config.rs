@@ -87,6 +87,10 @@ fn default_run_scratch_dir() -> PathBuf {
 /// so without a cap one long-lived server fills the disk a run at a time.
 pub const DEFAULT_MAX_RUN_DIRS: usize = 1_000;
 
+/// Default `--max-payload-keep-bytes`: the per-run byte budget for keeping the payload a job
+/// produced (`lcov.info`, `coverage-summary.json`, `benchmark.json`) next to the run.
+pub const DEFAULT_MAX_PAYLOAD_KEEP_BYTES: u64 = 4 * 1024 * 1024;
+
 /// Resolved, validated, immutable boot configuration.
 ///
 /// Shared with the service factory as an `Arc<Config>`; per-session state stays
@@ -149,6 +153,9 @@ pub struct Config {
     /// Cap on `.evidence/runs/` directories (`--max-run-dirs`); see
     /// [`crate::registry::RunPolicy::max_run_dirs`].
     pub max_run_dirs: usize,
+    /// Per-run byte budget for keeping the payload a job produced next to the run
+    /// (`--max-payload-keep-bytes`); see [`crate::registry::RunPolicy::max_payload_keep_bytes`].
+    pub max_payload_keep_bytes: u64,
     /// `--run-scratch`: the per-run scratch root outside the workspace (act's cwd, the
     /// `0600` secrets file, and an ADR-0003 worktree). See
     /// `Config::resolve_run_scratch` (private, same module) for the one rule boot enforces.
@@ -474,6 +481,16 @@ pub struct ServeArgs {
     )]
     pub max_run_dirs: usize,
 
+    /// `--max-payload-keep-bytes`.
+    #[arg(
+        long,
+        value_name = "BYTES",
+        default_value_t = DEFAULT_MAX_PAYLOAD_KEEP_BYTES,
+        env = "ACT_MCP_MAX_PAYLOAD_KEEP_BYTES",
+        help = "Bytes of job-produced payload (lcov.info, coverage-summary.json, benchmark.json) kept per run under .evidence/runs/<run_id>/payload/ once it has been read, so the file a coverage record came from outlives the run. 0 keeps none."
+    )]
+    pub max_payload_keep_bytes: u64,
+
     /// `--run-scratch <dir>` (ADR-0003 §11).
     #[arg(
         long,
@@ -505,6 +522,7 @@ impl Default for ServeArgs {
             require_session_token: false,
             session_token: None,
             max_run_dirs: DEFAULT_MAX_RUN_DIRS,
+            max_payload_keep_bytes: DEFAULT_MAX_PAYLOAD_KEEP_BYTES,
             run_scratch: None,
         }
     }
@@ -575,6 +593,7 @@ impl Config {
             max_request_body_bytes: Self::resolve_max_request_body(args.max_request_body_bytes)?,
             session_token,
             max_run_dirs: args.max_run_dirs,
+            max_payload_keep_bytes: args.max_payload_keep_bytes,
             run_scratch,
         })
     }
@@ -615,6 +634,7 @@ impl Config {
             max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
             session_token: None,
             max_run_dirs: DEFAULT_MAX_RUN_DIRS,
+            max_payload_keep_bytes: DEFAULT_MAX_PAYLOAD_KEEP_BYTES,
             // Same default the CLI resolves to, so an embedder that never went through
             // [`Config::build`] still gets the ADR-0003 §11 scratch root.
             run_scratch: default_run_scratch_dir(),
@@ -716,6 +736,7 @@ impl Config {
     pub fn run_policy(&self) -> crate::registry::RunPolicy {
         crate::registry::RunPolicy {
             max_run_dirs: self.max_run_dirs,
+            max_payload_keep_bytes: self.max_payload_keep_bytes,
             ..crate::registry::RunPolicy::default()
         }
     }

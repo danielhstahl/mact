@@ -475,6 +475,23 @@ fn read_lines(path: &Path) -> Vec<String> {
 /// Whether `pid` is still a live process (`kill(pid, 0)`).
 #[must_use]
 pub fn process_alive(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        // A zombie has exited but still has a process-table entry until its parent
+        // (or PID 1, if orphaned) reaps it. In containers PID 1 often never does, so
+        // `kill(pid, 0)` would report it alive forever. Treat state `Z`/`X` as gone.
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            // Fields: pid (comm) state ...; comm may contain spaces/parens, so split
+            // on the LAST ')'.
+            let state = stat
+                .rsplit(')')
+                .next()
+                .and_then(|rest| rest.split_whitespace().next());
+            if matches!(state, Some("Z" | "X")) {
+                return false;
+            }
+        }
+    }
     #[cfg(unix)]
     {
         // 0 probes existence and permission without signalling anything. A process the

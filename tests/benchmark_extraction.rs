@@ -945,6 +945,13 @@ fn an_unreadable_payload_is_reported_not_fatal() {
     let path = harness.incoming.join("benchmark.json");
     std::fs::write(&path, r#"{"metrics":[{"name":"x","value":1}]}"#).expect("write");
     std::fs::set_permissions(&path, Permissions::from_mode(0o000)).expect("chmod 000");
+    // Root (e.g. act's container) ignores file modes, so this scenario can't be
+    // reproduced there. Skip instead of failing.
+    if std::fs::read(&path).is_ok() {
+        eprintln!("skipping: file permissions are not enforced (running as root?)");
+        return;
+    }
+
     let summary = harness.extract();
     assert!(summary
         .warnings

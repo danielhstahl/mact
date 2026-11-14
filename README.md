@@ -1,9 +1,9 @@
 # act-mcp
 
-An HTTP [MCP](https://modelcontextprotocol.io) server — protocol revision **2026-07-28**,
-Streamable HTTP, bound to loopback, **no authentication** — that runs GitHub Actions
-workflows with [nektos/act](https://github.com/nektos/act) and records what they produced as
-`.evidence` JSONL.
+An HTTP [MCP](https://modelcontextprotocol.io) server — protocol revisions **2026-07-28** and
+**2025-11-25**, Streamable HTTP, bound to loopback, **no authentication** — that runs GitHub
+Actions workflows with [nektos/act](https://github.com/nektos/act) and records what they
+produced as `.evidence` JSONL.
 
 Four tools: `list_tasks`, `run_workflow`, `run_status`, `cancel_run`. A run outlives the
 request that started it, one run at a time per workspace, and every terminal run answers
@@ -20,7 +20,7 @@ ADRs; the links are at the bottom.
 
 | thing | the version this runbook was written and tested against |
 |---|---|
-| MCP revision | **`2026-07-28`**, and only that one — there is no `initialize` handshake and no downgrade |
+| MCP revisions | **`2026-07-28`** (stateless, no handshake) and **`2025-11-25`** (`initialize` + session) — nothing else is negotiated |
 | `rmcp` | `3.9.0` (the SDK that implements the negotiation) |
 | `rustc` | floor **1.88** (`Cargo.toml` `rust-version`); the pinned toolchain is **1.99.1** (`rust-toolchain.toml`, honoured by rustup in this directory) |
 | act | **≥ 0.2.62**, which is what `--minimum-act-version` refuses to go below; the checked-in fixtures were captured against **0.2.68** |
@@ -84,13 +84,13 @@ $ cargo run --release -- serve --workspace /tmp/actmcp-runbook/repo \
 2026-11-10T15:09:12.606542Z  INFO act_mcp::server: act-mcp listening url=http://127.0.0.1:8080/mcp
   bind=127.0.0.1:8080 workspace=/tmp/actmcp-runbook/repo
   evidence_dir=/tmp/actmcp-runbook/repo/.evidence
-  act_binary=/workspace/tests/e2e/testdata/bin/act protocol_version=2026-07-28
+  act_binary=/workspace/tests/e2e/testdata/bin/act protocol_versions=2025-11-25,2026-07-28
   allowed_hosts=["localhost", "127.0.0.1", "::1"] allowed_origins=[]
   max_request_body_bytes=1048576 shared_secret_required=false
 ```
 
 The listening line is the whole configuration in one place: what it resolved `act` to, which
-protocol revision it will accept, which `Host` values it takes, and whether a session token is
+protocol revisions it will accept, which `Host` values it takes, and whether a session token is
 required. A boot *after a crash* adds lines saying so, because the leftover per-run scratch of a
 previous process is cleaned up on the way up: `removed a run's leftover scratch directory from a
 previous process scratch=…`, then `cleared the leftover scratch directories of a previous
@@ -136,6 +136,7 @@ every value is validated at boot rather than at call time. Nothing here is requi
 | `--require-session-token` | `ACT_MCP_REQUIRE_SESSION_TOKEN` | `false` | require the `x-act-mcp-token` header on every request, generating a token and logging it once at boot |
 | `--session-token <TOKEN>` | `ACT_MCP_SESSION_TOKEN` | *(unset)* | require exactly this token value (implies `--require-session-token`) |
 | `--max-run-dirs <COUNT>` | `ACT_MCP_MAX_RUN_DIRS` | `1000` | refuse a new run once this many `.evidence/runs/<run_id>/` directories exist. Run retention prunes memory, never disk, so this is the disk guard |
+| `--max-payload-keep-bytes <BYTES>` | `ACT_MCP_MAX_PAYLOAD_KEEP_BYTES` | `4194304` | how much of the payload a job produced (`lcov.info`, `coverage-summary.json`, `benchmark.json`) is kept per run in `.evidence/runs/<run_id>/payload/` after it has been read, so a coverage record can be checked against its source. Past the budget the overflow is deleted and the run warns `payload_cap_exceeded`; `0` keeps none |
 | *(no flag)* | `RUST_LOG` | `info,rmcp=warn` | the `tracing` env filter |
 
 Flags are also `-h`/`--help` (per-subcommand) and `-V`/`--version`. `validate-evidence` takes
@@ -143,9 +144,9 @@ Flags are also `-h`/`--help` (per-subcommand) and `-V`/`--version`. `validate-ev
 
 ## Pointing a client at it
 
-The endpoint is **`http://127.0.0.1:8080/mcp`**, Streamable HTTP, `POST` only. There is no
-`initialize` handshake and no session id: at the 2026-07-28 revision each request is
-self-contained and must carry
+The endpoint is **`http://127.0.0.1:8080/mcp`**, Streamable HTTP. On the revision this server
+prefers — **2026-07-28** — it is `POST` only, with no `initialize` handshake and no session id:
+each request is self-contained and must carry
 
 * `MCP-Protocol-Version: 2026-07-28` **and** the matching `params._meta` block,
 * the SEP-2243 routing headers `Mcp-Method` and `Mcp-Name`,
@@ -154,6 +155,13 @@ self-contained and must carry
 
 Anything else is a refusal that names what was missing — never a hang. The full request-shape
 table is [docs/tool-contract.md §1](docs/tool-contract.md#1-endpoint-and-transport).
+
+A client that cannot do that can still connect: the server also speaks **2025-11-25**, the last
+revision with the classic `initialize` handshake. Send `initialize` naming `2025-11-25`, keep
+the `Mcp-Session-Id` the answer gives you, put `MCP-Protocol-Version: 2025-11-25` on every
+request, and the same four tools answer the same way — over an SSE stream instead of a bare
+JSON body, with `GET` for the server-initiated stream and `DELETE` to close the session. Every
+example below is the stateless shape.
 
 So the config for any client is one URL, in that client's own wrapper:
 
@@ -203,13 +211,17 @@ $ pi mcp add act-mcp --url http://127.0.0.1:8080/mcp
 supervisor's overhead, so the default 60 s is too short for a real benchmark.
 
 > **What a client has to speak.** These config shapes are the portable part; the part that
-> decides whether the connection works is whether your client implements **2026-07-28
-> statelessly**. A client that insists on an `initialize` handshake, or that offers only
-> `2025-11-25` and earlier, is refused with JSON-RPC `-32022` *as an answer* naming
-> `["2026-07-28"]` as the supported set ([docs/testing.md §3](docs/testing.md)). That is the
-> pin, not a bug. `timeout`/`headers` keys differ per client; consult the client's own docs
-> for anything beyond the URL, and expect to add `--allow-origin` for anything that runs in a
-> browser ([docs/security.md §2](docs/security.md)).
+> decides how the connection is opened is which revision your client implements. One that
+> implements **2026-07-28** talks to this server statelessly, as above. One that insists on an
+> `initialize` handshake gets **2025-11-25**: a handshake naming a revision this server does not
+> run one at — including a client whose newest revision is `2026-07-28` but that handshakes
+> anyway — is answered with `2025-11-25` and a session, which is the MCP handshake's own rule
+> and not a downgrade into an unadvertised dialect. A *request* that names an unadvertised
+> revision (`2025-06-18`, `2025-03-26`) is refused with JSON-RPC `-32022` *as an answer* naming
+> `["2025-11-25","2026-07-28"]` as the supported set
+> ([docs/testing.md §3](docs/testing.md)). `timeout`/`headers` keys differ per client; consult
+> the client's own docs for anything beyond the URL, and expect to add `--allow-origin` for
+> anything that runs in a browser ([docs/security.md §2](docs/security.md)).
 
 When a client cannot be made to work, use the checked-in hand client — it speaks all four
 signals and takes ten seconds to debug with:
@@ -238,6 +250,26 @@ curl -sS http://127.0.0.1:8080/mcp \
        "_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",
                 "io.modelcontextprotocol/clientInfo":{"name":"curl","version":"0"},
                 "io.modelcontextprotocol/clientCapabilities":{}}}}'
+```
+
+And the same call from a client that only does the classic handshake — `initialize`, keep the
+`Mcp-Session-Id`, say `notifications/initialized`, then call the tool over the session. The
+answer is an SSE stream rather than a bare JSON body, and `DELETE` closes the session:
+
+```sh
+URL=http://127.0.0.1:8080/mcp
+HDR=(-H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream'
+     -H 'MCP-Protocol-Version: 2025-11-25')
+SID=$(curl -sS -D - -o /dev/null "$URL" "${HDR[@]}" -H 'Mcp-Method: initialize' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25",
+        "capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}' \
+  | tr -d '\r' | awk -F': ' '/^mcp-session-id/ {print $2}')
+curl -sS "$URL" "${HDR[@]}" -H "Mcp-Session-Id: $SID" -H 'Mcp-Method: notifications/initialized' \
+  -d '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}'
+curl -sS "$URL" "${HDR[@]}" -H "Mcp-Session-Id: $SID" \
+  -H 'Mcp-Method: tools/call' -H 'Mcp-Name: list_tasks' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_tasks","arguments":{}}}'
+curl -sS -X DELETE "$URL" "${HDR[@]}" -H "Mcp-Session-Id: $SID"   # 202; the session is gone
 ```
 
 ## The five-minute tour
@@ -351,16 +383,16 @@ cargo run --release -- validate-evidence /tmp/actmcp-runbook/repo/.evidence --st
 .evidence/README.md
 .evidence/benchmark/cf0ecd0eee6a9c1b014b61867fb8646a624af95b/20261110T150920Z-5f0ad2.jsonl
 .evidence/coverage/cf0ecd0eee6a9c1b014b61867fb8646a624af95b/20261110T150920Z-d323b9.jsonl
-.evidence/incoming/20261110T150920Z-5f0ad2/benchmark.json
 .evidence/incoming/20261110T150920Z-5f0ad2/coverage-summary.json
 .evidence/incoming/20261110T150920Z-5f0ad2/lcov.info
 .evidence/incoming/20261110T150920Z-d323b9/benchmark.json
 .evidence/incoming/20261110T150920Z-d323b9/coverage-summary.json
-.evidence/incoming/20261110T150920Z-d323b9/lcov.info
 .evidence/runs/20261110T150920Z-5f0ad2/act.jsonl
 .evidence/runs/20261110T150920Z-5f0ad2/meta.json
+.evidence/runs/20261110T150920Z-5f0ad2/payload/benchmark.json
 .evidence/runs/20261110T150920Z-d323b9/act.jsonl
 .evidence/runs/20261110T150920Z-d323b9/meta.json
+.evidence/runs/20261110T150920Z-d323b9/payload/lcov.info
 # act-mcp evidence (local only)
 .evidence/
 .act-mcp.lock
@@ -368,6 +400,11 @@ benchmark	cf0ecd0eee6a9c1b014b61867fb8646a624af95b	3
 coverage	cf0ecd0eee6a9c1b014b61867fb8646a624af95b	4
 OK 4 file(s), 7 record(s) valid
 ```
+
+Note where each payload file ended up: the file a run actually **read** is kept under
+`runs/<run_id>/payload/` (`--max-payload-keep-bytes`, default 4 MiB per run), so a record can be
+checked against its source; a file the extractor never used stays in `incoming/` as evidence about
+the job, and `meta.json` lists it with its size.
 
 To stop the server: Ctrl-C. Anything still running gets the SIGTERM window, then its process
 group is taken down; `run_status` after a restart answers `run_not_found`, but the durable
@@ -386,6 +423,7 @@ One tree per workspace, one file per run per kind, published atomically and neve
 ├── coverage/   <full-sha>/<run_id>.jsonl ┘ one kind, immutable once published
 ├── runs/<run_id>/act.jsonl               # act's own log, redacted (audit, not contract)
 ├── runs/<run_id>/meta.json               # terminal manifest, written LAST
+├── runs/<run_id>/payload/                # the payload this run read, kept to check it against
 └── incoming/<run_id>/                    # transient payload scratch
 ```
 
@@ -429,7 +467,7 @@ scripts/evidence_recipes.sh                      # every jq recipe, run against 
 
 ## Troubleshooting
 
-The four failures people actually hit, with the message you will see. Tool errors arrive as an
+The five failures people actually hit, with the message you will see. Tool errors arrive as an
 `isError: true` result whose `structuredContent.error` is `{code, message, retryable, detail}`
 — [docs/tool-contract.md §5](docs/tool-contract.md) is the whole vocabulary.
 
@@ -469,8 +507,65 @@ A too-old act is the same code with `detail.reason: "too_old"` and both versions
 e2e stub in this repo cannot reproduce it. Raise the floor with `--minimum-act-version` only
 after installing a newer act.
 
-### `workspace_busy` — "there is no queue"
+### act has no image for the runner label — `invalid reference format`
 
+The run reaches `status: "error"` (or fails) inside act's own `Set up job` step, and act's log
+says something that has nothing to do with runners:
+
+```json
+{"msg":"🚀  Start image=","step":"Set up job","level":"info"}
+{"msg":"invalid reference format","step":"Set up job","level":"error"}
+```
+
+`Start image=` with nothing after it is the whole diagnosis: act resolves a job's container
+image from the job's `container:` or from act's runner-label → image map, and a `runs-on`
+label that is in neither leaves the image empty, so act asks docker to pull `""`. act's built
+map is four entries — `ubuntu-latest`, `ubuntu-22.04`, `ubuntu-20.04`, `ubuntu-18.04` — and has
+never contained `ubuntu-24.04`, so a current workflow needs a mapping from somewhere.
+
+When there is no actrc and no `-P` at all, act may stop even earlier and say nothing about
+images: it asks its first-run "Please choose the default image you want to use with act"
+survey, and act-mcp gives act no terminal to answer on (its stdin is `/dev/null`), so the
+question comes back as a fatal error. Same fix.
+
+act-mcp never passes `-P` itself ([ADR-0003 §7.5](docs/adr/0003-commit-isolation-and-serialization.md)
+keeps image choice with the operator, not the caller), so the mapping has to be in act's own
+config files, read with **act-mcp's** environment, because act inherits it: `$XDG_CONFIG_HOME/act/actrc`,
+`$HOME/.config/act/actrc`, `$HOME/.actrc`, `/etc/xdg/act/actrc`. That operator actrc is the
+sanctioned extension point ([docs/security.md §5](docs/security.md)), and its `-P` lines *add* to
+act's map rather than replacing it — act's `--platform` is an accumulating array flag. One line,
+`-P` prefix included:
+
+```text
+# ~/.config/act/actrc
+-P ubuntu-24.04=catthehacker/ubuntu:act-24.04
+```
+
+A benchmark that must be comparable across machines pins a digest there, not a moving tag
+([ADR-0003 §8](docs/adr/0003-commit-isolation-and-serialization.md)).
+
+Three ways that file fails to be read, all silent: it is another user's home (the service
+account's `$HOME` is not yours), it is not readable by the user running act-mcp, or the line is
+malformed — act's config is an *argument list*, so `-P␣ubuntu-24.04=image` must have exactly one
+space and a stray second space kills the line. A `.actrc` committed to the repository is never
+read either: act's third location is its working directory, and act-mcp runs act in the per-run
+scratch directory, which is deliberate (ADR-0003 §7.6) — the repository does not configure the run.
+
+The server now says this before act finds out the hard way. A run whose `runs-on` resolves to no
+image carries `warnings: ["act_runs_on_unmapped"]`, and the log names the labels and every path
+that was and was not read:
+
+```console
+WARN ... no act image maps to these `runs-on` labels: act will name an empty image ...
+  job="check" labels="ubuntu-24.04" act_config_read="none" act_config_absent="/home/build/.config/act/actrc, /etc/xdg/act/actrc, /home/build/.actrc"
+```
+
+The warning is a warning, never a refusal: labels are inferred from the workflow file, and an
+expression, an `include:`, or a reusable workflow can produce a label the file never spells out.
+`act --bug-report`, run as the user running act-mcp, is act's own answer to the same question:
+it prints each config file it found under `Config files:`, line by line.
+
+### `workspace_busy` — "there is no queue"
 ```json
 {"error":{"code":"workspace_busy","retryable":true,
  "message":"this workspace already has a run in flight (20261110T151121Z-b60b21), and there is no queue: poll it with run_status or cancel it with cancel_run",
@@ -500,11 +595,14 @@ candidates in `detail`; lengthen it.
 
 ```json
 {"jsonrpc":"2.0","id":1,"error":{"code":-32022,"message":"Unsupported protocol version",
- "data":{"requested":"2025-11-25","supported":["2026-07-28"]}}}
+ "data":{"requested":"2025-06-18","supported":["2025-11-25","2026-07-28"]}}}
 ```
 
-That is your client offering an older revision; it is an **answer**, not a hang, and there is
-no downgrade path. `-32020` ("Missing `MCP-Protocol-Version` header", or "missing required
+That is your client offering a revision this server does not speak — anything older than
+`2025-11-25`. It is an **answer**, not a hang: switch the client to `2026-07-28` (self-contained
+requests) or `2025-11-25` (the `initialize` handshake). A client that *handshakes* with a
+revision it cannot name is not refused; it is served `2025-11-25`, which is the handshake
+era's own fallback. `-32020` ("Missing `MCP-Protocol-Version` header", or "missing required
 `Mcp-Method` header") means the request did not name its revision or its routing method at
 all. Fix the client, or use `scripts/mcp_call.sh` / the `curl` above. See
 [docs/testing.md §4](docs/testing.md#4-reproducing-by-hand-the-mcp-inspector) for reproducing
@@ -521,6 +619,7 @@ any of it by hand, including the MCP Inspector.
 | `run_status` says `run_not_found` for a run you remember | run state is in-memory and does not survive a restart | the durable trace is `.evidence/runs/<run_id>/meta.json` |
 | a run succeeded and `evidence_files` is `[]` | the `category` was neither `benchmark` nor `coverage` (open vocabulary, but only those two extract evidence), or extraction found nothing | read `warnings` (`unknown_category`, `no_coverage_found`, `parse_failed`…) and `meta.json`'s `warnings[]` |
 | a benchmark run has no `step_duration_s` records, and `job_duration_s` looks like whole seconds | act only emits step timings (`executionTime`) from **v0.2.76**, and this server accepts act from 0.2.62; the run carries the `act_step_timings_unavailable` warning rather than a silent gap | upgrade act to ≥ 0.2.76, or have the job time its own steps; [docs/benchmark-inputs.md §3](docs/benchmark-inputs.md#3-acts-own-timings-need-act-0276-or-newer) |
+| a run fails in `Set up job` with `invalid reference format`, and act's log has `🚀  Start image=` with nothing after it | act has no container image for the job's `runs-on` label — act's own table stops at `ubuntu-22.04` | put `-P <label>=<image>` in an actrc the **server** can read; the run carries the `act_runs_on_unmapped` warning — [act has no image for the runner label](#act-has-no-image-for-the-runner-label--invalid-reference-format) |
 | `linker … Bad address (os error 14)` while building | bind-mounted `./target` | `export CARGO_TARGET_DIR=/tmp/tt` |
 | `pip` and `python3` disagree and `scripts/validate_evidence.py` cannot import `jsonschema` | dev-box packaging, not this repo | use the built-in checker: `cargo run -- validate-evidence <path>` |
 

@@ -40,6 +40,11 @@ and how long did it take") even when its job reports nothing
 ([ADR-0002 §5.3](adr/0002-evidence-jsonl-contract.md)). `job_duration_s` and `step_duration_s`
 come from the third producer, and from nowhere else.
 
+Once a run has read the payload file it is moved out of `incoming/` and kept at
+`runs/<run_id>/payload/<name>` (budget: `--max-payload-keep-bytes`, `0` keeps none), so the file a
+`job_file` record was parsed from survives the scratch directory that `source_path` names
+([ADR-0002 §3.4](adr/0002-evidence-jsonl-contract.md)).
+
 The parsing lives in [`act_mcp::evidence::benchmark`](../src/evidence/benchmark.rs); the
 field names it reads are pinned by
 [`tests/fixtures/benchmark/act.jsonl`](../tests/fixtures/benchmark/act.jsonl) rather than by
