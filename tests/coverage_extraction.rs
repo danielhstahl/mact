@@ -765,6 +765,13 @@ fn an_unreadable_payload_is_reported_not_raised() {
     let payload = harness.incoming.join("lcov.info");
     std::fs::set_permissions(&payload, Permissions::from_mode(0o000))
         .expect("chmod the payload unreadable");
+
+    // Root (e.g. act's container) ignores file modes, so this scenario can't be
+    // reproduced there. Skip instead of failing.
+    if std::fs::read(&payload).is_ok() {
+        eprintln!("skipping: file permissions are not enforced (running as root?)");
+        return;
+    }
     let summary = harness.extract().expect("extract");
     assert_eq!(summary.outcome, ExtractionOutcome::ParseFailed);
     assert!(
