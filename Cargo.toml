@@ -1,6 +1,6 @@
 [package]
 name = "act-mcp"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 # rmcp 3.9's floor (its own Cargo.toml declares rust-version = "1.88"); do not
 # lower it, the 2026-07-28 protocol plumbing in rmcp does not build below it.
@@ -123,4 +123,3 @@ tokio = { version = "1", features = ["full", "macros"] }
 
 # libc is a regular (unix) dependency since mact-f1w.8; integration tests keep using it for
 # `libc::kill`, which is why the crate attribute is `deny(unsafe_code)` and not `forbid`.
-
