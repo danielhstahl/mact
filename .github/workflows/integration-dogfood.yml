@@ -62,7 +62,7 @@ jobs:
             --method tools/call \
             --tool-name run_workflow \
             --tool-arg category=test \
-            --tool-arg commit=ba8665cf1481b0085c070b9215754b64a087ed8f \
+            --tool-arg commit=dccac9683fd690753d345b73638b78502eaedc57 \
             --tool-arg task=check \
             --tool-arg wait=false \
             --tool-arg workflow=.github/workflows/dogfood.yml \
