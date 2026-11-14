@@ -1,5 +1,5 @@
 12	README.md
 3	coverage/{COMMIT}/{RUN_ID}.jsonl
-20	incoming/{RUN_ID}/coverage-summary.json
 8	runs/{RUN_ID}/act.jsonl
-63	runs/{RUN_ID}/meta.json
+74	runs/{RUN_ID}/meta.json
+20	runs/{RUN_ID}/payload/coverage-summary.json

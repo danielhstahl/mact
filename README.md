@@ -136,6 +136,7 @@ every value is validated at boot rather than at call time. Nothing here is requi
 | `--require-session-token` | `ACT_MCP_REQUIRE_SESSION_TOKEN` | `false` | require the `x-act-mcp-token` header on every request, generating a token and logging it once at boot |
 | `--session-token <TOKEN>` | `ACT_MCP_SESSION_TOKEN` | *(unset)* | require exactly this token value (implies `--require-session-token`) |
 | `--max-run-dirs <COUNT>` | `ACT_MCP_MAX_RUN_DIRS` | `1000` | refuse a new run once this many `.evidence/runs/<run_id>/` directories exist. Run retention prunes memory, never disk, so this is the disk guard |
+| `--max-payload-keep-bytes <BYTES>` | `ACT_MCP_MAX_PAYLOAD_KEEP_BYTES` | `4194304` | how much of the payload a job produced (`lcov.info`, `coverage-summary.json`, `benchmark.json`) is kept per run in `.evidence/runs/<run_id>/payload/` after it has been read, so a coverage record can be checked against its source. Past the budget the overflow is deleted and the run warns `payload_cap_exceeded`; `0` keeps none |
 | *(no flag)* | `RUST_LOG` | `info,rmcp=warn` | the `tracing` env filter |
 
 Flags are also `-h`/`--help` (per-subcommand) and `-V`/`--version`. `validate-evidence` takes
@@ -382,16 +383,16 @@ cargo run --release -- validate-evidence /tmp/actmcp-runbook/repo/.evidence --st
 .evidence/README.md
 .evidence/benchmark/cf0ecd0eee6a9c1b014b61867fb8646a624af95b/20261110T150920Z-5f0ad2.jsonl
 .evidence/coverage/cf0ecd0eee6a9c1b014b61867fb8646a624af95b/20261110T150920Z-d323b9.jsonl
-.evidence/incoming/20261110T150920Z-5f0ad2/benchmark.json
 .evidence/incoming/20261110T150920Z-5f0ad2/coverage-summary.json
 .evidence/incoming/20261110T150920Z-5f0ad2/lcov.info
 .evidence/incoming/20261110T150920Z-d323b9/benchmark.json
 .evidence/incoming/20261110T150920Z-d323b9/coverage-summary.json
-.evidence/incoming/20261110T150920Z-d323b9/lcov.info
 .evidence/runs/20261110T150920Z-5f0ad2/act.jsonl
 .evidence/runs/20261110T150920Z-5f0ad2/meta.json
+.evidence/runs/20261110T150920Z-5f0ad2/payload/benchmark.json
 .evidence/runs/20261110T150920Z-d323b9/act.jsonl
 .evidence/runs/20261110T150920Z-d323b9/meta.json
+.evidence/runs/20261110T150920Z-d323b9/payload/lcov.info
 # act-mcp evidence (local only)
 .evidence/
 .act-mcp.lock
@@ -399,6 +400,11 @@ benchmark	cf0ecd0eee6a9c1b014b61867fb8646a624af95b	3
 coverage	cf0ecd0eee6a9c1b014b61867fb8646a624af95b	4
 OK 4 file(s), 7 record(s) valid
 ```
+
+Note where each payload file ended up: the file a run actually **read** is kept under
+`runs/<run_id>/payload/` (`--max-payload-keep-bytes`, default 4 MiB per run), so a record can be
+checked against its source; a file the extractor never used stays in `incoming/` as evidence about
+the job, and `meta.json` lists it with its size.
 
 To stop the server: Ctrl-C. Anything still running gets the SIGTERM window, then its process
 group is taken down; `run_status` after a restart answers `run_not_found`, but the durable
@@ -417,6 +423,7 @@ One tree per workspace, one file per run per kind, published atomically and neve
 ├── coverage/   <full-sha>/<run_id>.jsonl ┘ one kind, immutable once published
 ├── runs/<run_id>/act.jsonl               # act's own log, redacted (audit, not contract)
 ├── runs/<run_id>/meta.json               # terminal manifest, written LAST
+├── runs/<run_id>/payload/                # the payload this run read, kept to check it against
 └── incoming/<run_id>/                    # transient payload scratch
 ```
 

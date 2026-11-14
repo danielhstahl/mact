@@ -150,6 +150,59 @@
         }
       }
     },
+    "payload": {
+      "description": "The payload this run actually read, kept under runs/<run_id>/payload/ so the file a coverage or benchmark record was computed from outlives the scratch directory it arrived in. The records' own source_path names the scratch path the extractor read from; this member names where that file now lives. Absent when nothing was read, or when retention is off (--max-payload-keep-bytes 0). 'dropped' counts consumed payload the per-run byte budget would not fit, deleted instead of kept. See docs/adr/0002-evidence-jsonl-contract.md section 3.4.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dir", "bytes", "cap_bytes"],
+      "properties": {
+        "dir": {
+          "$ref": "#/$defs/relpath"
+        },
+        "bytes": {
+          "description": "Total size of the files kept, which never exceeds 'cap_bytes'.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "cap_bytes": {
+          "description": "The --max-payload-keep-bytes budget in force for this run.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "files": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "required": ["path", "bytes"],
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "description": "File name inside 'dir', not a path: the payload directory is flat.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._+-]*$"
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            }
+          }
+        },
+        "dropped": {
+          "description": "Consumed payload deleted rather than kept, because the budget would not fit it or it could not be moved. Non-zero pairs with the payload_cap_exceeded warning.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        }
+      }
+    },
     "evidence": {
       "description": "What this run published. Empty array is legitimate (category with no evidence, or extraction found nothing) and is how 'ran but produced nothing' is distinguishable from 'never ran'.",
       "type": "array",
@@ -183,7 +236,7 @@
       }
     },
     "warnings": {
-      "description": "Machine-readable warning codes for this run (no_coverage_found, parse_failed, payload_too_large, payload_unreadable, malformed_metric, truncated, ...). Open vocabulary.",
+      "description": "Machine-readable warning codes for this run (no_coverage_found, parse_failed, payload_too_large, payload_unreadable, malformed_metric, truncated, payload_cap_exceeded, ...). Open vocabulary.",
       "type": "array",
       "maxItems": 64,
       "uniqueItems": true,

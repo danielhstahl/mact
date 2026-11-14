@@ -35,7 +35,16 @@ use crate::{
 use chrono::{SecondsFormat, Utc};
 use serde_json::{Map, Value};
 
-use super::{Inner, RunPlan, RunRecord, Slot, WARNING_PARTIAL_EVIDENCE_DROPPED};
+use super::{
+    Inner, RunPlan, RunRecord, Slot, WARNING_PARTIAL_EVIDENCE_DROPPED, WARNING_PAYLOAD_CAP_EXCEEDED,
+};
+
+/// Where a consumed payload file is kept: `runs/<run_id>/payload/`.
+const PAYLOAD_DIRNAME: &str = "payload";
+
+/// The budget for a terminal path where nothing was ever read (a cancel, a failed harvest):
+/// there is nothing to keep, so nothing is moved.
+const NO_RETENTION: u64 = 0;
 
 /// A boxed future, so [`Pipeline`] can be a plain `dyn` trait without a `futures` dependency.
 pub type BoxFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
@@ -387,7 +396,7 @@ async fn finish_act(
 
     // ── A caller cancel skips extraction, deliberately (§6.2) ─────────────────────────
     if label == WireStatus::Cancelled {
-        let incoming = clean_payload(&context.payload_dir, &[]).await;
+        let incoming = clean_payload(context, &[], NO_RETENTION).await;
         let temp_left = staged_publish_temp(context);
         if incoming.had_files || temp_left {
             record.add_warning(WARNING_PARTIAL_EVIDENCE_DROPPED);
@@ -427,7 +436,7 @@ async fn finish_act(
                 "evidence extraction did not finish inside the harvest budget",
                 true,
             );
-            let incoming = clean_payload(&context.payload_dir, &[]).await;
+            let incoming = clean_payload(context, &[], NO_RETENTION).await;
             write_manifest(
                 context,
                 record,
@@ -451,7 +460,7 @@ async fn finish_act(
                 Value::String("extracting_evidence".to_owned()),
             );
             record.error = Some(error);
-            let incoming = clean_payload(&context.payload_dir, &[]).await;
+            let incoming = clean_payload(context, &[], NO_RETENTION).await;
             write_manifest(
                 context,
                 record,
@@ -482,7 +491,11 @@ async fn finish_act(
             // reported, and the run is `error` because the manifest cannot promise what it
             // cannot vouch for.
             record.error = Some(failure);
-            let incoming = clean_payload(&context.payload_dir, &harvest.consumed).await;
+            let incoming =
+                clean_payload(context, &harvest.consumed, policy.max_payload_keep_bytes).await;
+            if incoming.dropped > 0 {
+                record.add_warning(WARNING_PAYLOAD_CAP_EXCEEDED);
+            }
             write_manifest(
                 context,
                 record,
@@ -505,7 +518,10 @@ async fn finish_act(
     record.evidence_record_count = published.iter().map(|entry| entry.records).sum();
     record.evidence_files = relative;
 
-    let incoming = clean_payload(&context.payload_dir, &harvest.consumed).await;
+    let incoming = clean_payload(context, &harvest.consumed, policy.max_payload_keep_bytes).await;
+    if incoming.dropped > 0 {
+        record.add_warning(WARNING_PAYLOAD_CAP_EXCEEDED);
+    }
     let manifest_result = write_manifest(
         context,
         record,
@@ -557,7 +573,7 @@ async fn commit_without_act(
     }
     record.error = error;
     // Payload scratch is cleaned on every terminal path (§6.3), even a pre-spawn cancel.
-    let incoming = clean_payload(&context.payload_dir, &[]).await;
+    let incoming = clean_payload(context, &[], NO_RETENTION).await;
     if incoming.had_files && terminal == RunState::Cancelled {
         record.add_warning(WARNING_PARTIAL_EVIDENCE_DROPPED);
     }
@@ -762,20 +778,42 @@ fn evidence_failure(error: &crate::evidence::EvidenceError) -> RunError {
     )
 }
 
-/// What became of the per-run payload scratch (§6.3), as `meta.json`'s `incoming` member.
+/// What became of the per-run payload scratch (§6.3), as `meta.json`'s `incoming` and
+/// `payload` members.
 #[derive(Debug, Default)]
 struct IncomingMeta {
     had_files: bool,
     kept: Vec<(String, u64)>,
     removed_dir: bool,
+    /// The budget that was in force, echoed into `meta.json` so a reader can tell a kept
+    /// payload from a run configured to keep nothing.
+    cap_bytes: u64,
+    /// Consumed payload kept under `runs/<run_id>/payload/`, as `(file name, bytes)`.
+    retained: Vec<(String, u64)>,
+    /// Total size of [`Self::retained`], so the budget check is one addition.
+    retained_bytes: u64,
+    /// Consumed files the budget would not fit (or that could not be moved), so they were
+    /// deleted after all — the count behind `payload.dropped` and
+    /// [`WARNING_PAYLOAD_CAP_EXCEEDED`].
+    dropped: usize,
 }
 
-/// Clean `.evidence/incoming/<run_id>/` on **every** terminal path (§6.3): consumed payload
-/// files are deleted, anything else is kept and listed with its size, and the directory goes
-/// when it is empty. A cancelled run leaving scratch behind is how a long-lived box fills up.
-async fn clean_payload(payload_dir: &Path, consumed: &[PathBuf]) -> IncomingMeta {
-    let mut meta = IncomingMeta::default();
-    let mut entries = match tokio::fs::read_dir(payload_dir).await {
+/// Clean `.evidence/incoming/<run_id>/` on **every** terminal path (§6.3).
+///
+/// A file the extractor *read* is moved to `runs/<run_id>/payload/` while it fits
+/// `cap_bytes`, and deleted once it does not: it is the file the published record was
+/// computed from, so keeping it is what makes a coverage record checkable after the run,
+/// and `runs/` is the one place retention already reclaims. Anything the extractor did not
+/// read is **kept where it is** and listed with its size — an unparsed payload is the only
+/// clue to a job that wrote the wrong file name. The directory goes when it is empty.
+///
+/// `cap_bytes == 0` keeps nothing, which is what a disk-tight deployment asks for.
+async fn clean_payload(context: &RunContext, consumed: &[PathBuf], cap_bytes: u64) -> IncomingMeta {
+    let mut meta = IncomingMeta {
+        cap_bytes,
+        ..IncomingMeta::default()
+    };
+    let mut entries = match tokio::fs::read_dir(&context.payload_dir).await {
         Ok(entries) => entries,
         Err(_) => return meta,
     };
@@ -783,6 +821,7 @@ async fn clean_payload(payload_dir: &Path, consumed: &[PathBuf]) -> IncomingMeta
         .iter()
         .map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
         .collect();
+    let keep_dir = context.run_dir.join(PAYLOAD_DIRNAME);
     let mut survivors = Vec::new();
     while let Ok(Some(entry)) = entries.next_entry().await {
         let path = entry.path();
@@ -799,7 +838,37 @@ async fn clean_payload(payload_dir: &Path, consumed: &[PathBuf]) -> IncomingMeta
             .map(|metadata| metadata.is_file())
             .unwrap_or(false);
         if is_file && consumed.contains(&canonical) {
-            continue; // the extractor already accounted for it (and typically removed it)
+            let fits = cap_bytes > 0 && meta.retained_bytes.saturating_add(size) <= cap_bytes;
+            if fits {
+                match retain_file(&path, &keep_dir).await {
+                    Ok(()) => {
+                        let name = path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string());
+                        meta.retained.push((name, size));
+                        meta.retained_bytes += size;
+                        continue;
+                    }
+                    Err(reason) => {
+                        // Failing to keep a payload is never a reason to lose a manifest:
+                        // say so, and let the file go the way it went before.
+                        tracing::warn!(
+                            run_id = %context.run_id,
+                            path = %path.display(),
+                            "could not keep the run's payload: {reason}"
+                        );
+                        meta.dropped += 1;
+                    }
+                }
+            } else if cap_bytes > 0 {
+                meta.dropped += 1;
+            }
+            // Read and finished with (ADR-0002 §3.4).
+            if tokio::fs::remove_file(&path).await.is_err() {
+                survivors.push((path, size));
+            }
+            continue;
         }
         survivors.push((path, size));
     }
@@ -809,10 +878,34 @@ async fn clean_payload(payload_dir: &Path, consumed: &[PathBuf]) -> IncomingMeta
     // Only remove the directory if it is empty; kept-for-debugging files stay put (§6.3).
     // `remove_dir` only succeeds on an empty directory, and short-circuiting here is the
     // point: a payload we deliberately kept must stay on disk.
-    if meta.kept.is_empty() && tokio::fs::remove_dir(payload_dir).await.is_ok() {
+    if meta.kept.is_empty() && tokio::fs::remove_dir(&context.payload_dir).await.is_ok() {
         meta.removed_dir = true;
     }
     meta
+}
+
+/// Move one consumed payload file into `keep_dir`, which is `runs/<run_id>/payload/`.
+///
+/// `rename` is the whole operation on the common path — the evidence root is one filesystem
+/// — and the copy-then-remove fallback covers a payload directory mounted from elsewhere. A
+/// file that ends up in neither place is an `Err`, never a silent disappearance.
+async fn retain_file(path: &Path, keep_dir: &Path) -> Result<(), String> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| "payload file has no file name".to_owned())?;
+    tokio::fs::create_dir_all(keep_dir)
+        .await
+        .map_err(|reason| format!("cannot create {}: {reason}", keep_dir.display()))?;
+    let target = keep_dir.join(name);
+    if tokio::fs::rename(path, &target).await.is_ok() {
+        return Ok(());
+    }
+    tokio::fs::copy(path, &target)
+        .await
+        .map_err(|reason| format!("cannot copy to {}: {reason}", target.display()))?;
+    tokio::fs::remove_file(path)
+        .await
+        .map_err(|reason| format!("copied but could not remove {}: {reason}", path.display()))
 }
 
 /// Whether a publish temp file for this run still exists — the second half of the
@@ -973,6 +1066,39 @@ fn write_manifest(
         incoming_member.insert("removed".to_owned(), Value::Bool(incoming.removed_dir));
         manifest.insert("incoming".to_owned(), Value::Object(incoming_member));
     }
+    // The payload this run *read*, kept where it can be read again. `source_path` in the
+    // published records names the scratch file it came from; this is where that file now is.
+    if !incoming.retained.is_empty() || incoming.dropped > 0 {
+        let mut payload_member = Map::new();
+        payload_member.insert(
+            "dir".to_owned(),
+            Value::String(format!("runs/{}/{}", record.run_id, PAYLOAD_DIRNAME)),
+        );
+        payload_member.insert("bytes".to_owned(), Value::from(incoming.retained_bytes));
+        payload_member.insert("cap_bytes".to_owned(), Value::from(incoming.cap_bytes));
+        if !incoming.retained.is_empty() {
+            payload_member.insert(
+                "files".to_owned(),
+                Value::Array(
+                    incoming
+                        .retained
+                        .iter()
+                        .take(64)
+                        .map(|(name, bytes)| {
+                            Value::Object(Map::from_iter([
+                                ("path".to_owned(), Value::String(name.clone())),
+                                ("bytes".to_owned(), Value::from(*bytes)),
+                            ]))
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        if incoming.dropped > 0 {
+            payload_member.insert("dropped".to_owned(), Value::from(incoming.dropped));
+        }
+        manifest.insert("payload".to_owned(), Value::Object(payload_member));
+    }
     manifest.insert(
         "evidence".to_owned(),
         Value::Array(
@@ -1038,4 +1164,163 @@ fn random_suffix() -> String {
         let _ = file.read_exact(&mut buffer);
     }
     buffer.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clean_payload, retain_file, RunContext, PAYLOAD_DIRNAME};
+    use crate::registry::RunIdentity;
+    use std::{fs, path::PathBuf};
+    use tempfile::TempDir;
+
+    /// A context whose evidence root is `root/.evidence`, with the run's two directories
+    /// (`runs/<run_id>/` and `incoming/<run_id>/`) already present, as production leaves them.
+    struct Harness {
+        /// Held for the test's lifetime only: dropping it deletes the tree under test.
+        _root: TempDir,
+        context: RunContext,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let root = tempfile::tempdir().expect("tempdir");
+            let workspace = root.path().join("workspace");
+            let evidence_dir = workspace.join(".evidence");
+            let run_dir = evidence_dir.join("runs").join("20261110T011507Z-d4e5f6");
+            let payload_dir = evidence_dir
+                .join("incoming")
+                .join("20261110T011507Z-d4e5f6");
+            fs::create_dir_all(&run_dir).expect("run dir");
+            fs::create_dir_all(&payload_dir).expect("payload dir");
+            let context = RunContext {
+                run_id: "20261110T011507Z-d4e5f6".to_owned(),
+                identity: RunIdentity::new(
+                    "coverage",
+                    ".github/workflows/coverage.yml",
+                    "coverage",
+                    "coverage",
+                    "2f7c1a4b9e0d3c6a5b8f1e2d4c6a8b0f3e5d7c91",
+                ),
+                tree: workspace.clone(),
+                workspace: workspace.clone(),
+                evidence_dir,
+                run_dir,
+                payload_dir,
+                scratch_dir: root.path().join("scratch"),
+                timeout: std::time::Duration::from_secs(60),
+            };
+            Self {
+                _root: root,
+                context,
+            }
+        }
+
+        /// Drop a payload file into the scratch directory, returning the path an extractor
+        /// would have handed back as "consumed".
+        fn payload(&self, name: &str, body: &str) -> PathBuf {
+            let path = self.context.payload_dir.join(name);
+            fs::write(&path, body).expect("write payload");
+            path
+        }
+
+        fn kept(&self, name: &str) -> Option<String> {
+            std::fs::read_to_string(self.context.run_dir.join(PAYLOAD_DIRNAME).join(name)).ok()
+        }
+    }
+
+    /// A file the extractor read is moved under `runs/<run_id>/payload/`, and the file it did
+    /// not read stays where it is: that one is evidence about the job, this one is evidence
+    /// about the record.
+    #[tokio::test]
+    async fn a_consumed_payload_moves_next_to_the_run() {
+        let harness = Harness::new();
+        let consumed = harness.payload("lcov.info", "TN:\nSF:src/a.rs\nend_of_record\n");
+        harness.payload("mystery.bin", "not a payload name the extractor knows");
+
+        let meta = clean_payload(&harness.context, &[consumed], 4096).await;
+
+        assert_eq!(
+            harness.kept("lcov.info").as_deref(),
+            Some("TN:\nSF:src/a.rs\nend_of_record\n")
+        );
+        assert!(!harness.context.payload_dir.join("lcov.info").exists());
+        assert_eq!(meta.retained.len(), 1, "one file kept, named");
+        assert_eq!(meta.retained[0].0, "lcov.info");
+        assert_eq!(meta.retained_bytes, 30);
+        assert_eq!(meta.cap_bytes, 4096);
+        assert_eq!(meta.dropped, 0, "the budget fitted it");
+        assert_eq!(meta.kept.len(), 1, "the unparsed file is still listed");
+        assert!(harness.context.payload_dir.join("mystery.bin").exists());
+        assert!(
+            !meta.removed_dir,
+            "a kept-for-debugging file holds the directory open"
+        );
+    }
+
+    /// The budget is the whole point of the flag: over it, the run behaves the way it always
+    /// did — the payload is deleted, and the manifest says so.
+    #[tokio::test]
+    async fn a_payload_over_the_budget_is_dropped_and_counted() {
+        let harness = Harness::new();
+        let consumed = harness.payload("lcov.info", &"SF:src/a.rs\n".repeat(64));
+
+        let meta = clean_payload(&harness.context, &[consumed], 32).await;
+
+        assert!(meta.retained.is_empty(), "nothing over the budget is kept");
+        assert_eq!(meta.dropped, 1, "and the manifest admits what went");
+        assert!(!harness.context.run_dir.join(PAYLOAD_DIRNAME).exists());
+        assert!(
+            !harness.context.payload_dir.exists(),
+            "and the scratch goes with it"
+        );
+        assert!(meta.removed_dir);
+    }
+
+    /// `--max-payload-keep-bytes 0` is the documented "keep nothing" setting, which is *not*
+    /// the same event as a payload being too big: no drop, so no warning.
+    #[tokio::test]
+    async fn a_zero_budget_keeps_nothing_without_complaining() {
+        let harness = Harness::new();
+        let consumed = harness.payload("lcov.info", "TN:\nend_of_record\n");
+
+        let meta = clean_payload(&harness.context, &[consumed], 0).await;
+
+        assert!(meta.retained.is_empty());
+        assert_eq!(meta.dropped, 0);
+        assert_eq!(meta.cap_bytes, 0);
+        assert!(!harness.context.payload_dir.join("lcov.info").exists());
+    }
+
+    /// A run whose job wrote no payload has no scratch directory at all, and cleanup is not
+    /// the place that gets to decide that is an error.
+    #[tokio::test]
+    async fn a_run_with_no_payload_directory_is_quiet() {
+        let harness = Harness::new();
+        fs::remove_dir(&harness.context.payload_dir).expect("remove the scratch dir");
+
+        let meta = clean_payload(&harness.context, &[], 4096).await;
+
+        assert!(!meta.had_files);
+        assert!(!meta.removed_dir);
+        assert!(meta.retained.is_empty() && meta.kept.is_empty());
+    }
+
+    /// The copy fallback has to leave exactly one copy: a payload that lands in both places,
+    /// or in neither, is a record nothing can be checked against.
+    #[tokio::test]
+    async fn retain_file_leaves_one_copy_whether_or_not_rename_works() {
+        let harness = Harness::new();
+        let source = harness.payload("benchmark.json", "{\"metrics\":[]}");
+        let keep = harness.context.run_dir.join(PAYLOAD_DIRNAME);
+
+        retain_file(&source, &keep)
+            .await
+            .expect("retain benchmark.json");
+
+        assert_eq!(
+            fs::read_to_string(keep.join("benchmark.json")).expect("kept copy"),
+            "{\"metrics\":[]}"
+        );
+        assert!(!source.exists(), "the scratch copy is gone");
+    }
 }

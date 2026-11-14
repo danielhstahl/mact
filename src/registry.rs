@@ -75,6 +75,7 @@ pub use lock::{
 pub use state::{
     CancelReceipt, Phase, RunError, RunIdentity, RunRecord, RunState, RunSummary, RunView,
     WireStatus, WARNING_ALREADY_TERMINAL, WARNING_PARTIAL_EVIDENCE_DROPPED,
+    WARNING_PAYLOAD_CAP_EXCEEDED,
 };
 /// The boxed-future alias the [`Pipeline`] trait returns, exported so an out-of-module pipeline
 /// (mact-f1w.14's) can name the return type without depending on the private `task` module.
@@ -150,6 +151,18 @@ pub struct RunPolicy {
     /// [`StartError::TooManyRunDirs`] — a typed, explained refusal instead of a machine with
     /// a full filesystem and a run that died halfway.
     pub max_run_dirs: usize,
+    /// `--max-payload-keep-bytes`: bytes of job-produced payload kept per run under
+    /// `.evidence/runs/<run_id>/payload/` after it has been read.
+    ///
+    /// The payload a job writes through the bind mount is what a coverage or benchmark
+    /// record was computed from, and `source_path` names a scratch file that is otherwise
+    /// gone by the time the record is read. Keeping it beside the run makes the record
+    /// checkable after the fact; the budget is what stops a 200 MB lcov from being kept for
+    /// every run of a long-lived server. `0` keeps none, and the run deletes what it read.
+    ///
+    /// Retention moves the files *into* `runs/`, which is the directory `max_run_dirs`
+    /// pruning already reclaims — so this budget is bounded per run *and* per server.
+    pub max_payload_keep_bytes: u64,
     /// `--default-timeout-secs`: per-category overrides; `'*'` is the fallback (§4.3).
     pub default_timeouts: HashMap<String, Duration>,
 }
@@ -182,6 +195,7 @@ impl Default for RunPolicy {
             max_run_log_bytes: crate::runner::DEFAULT_MAX_RUN_LOG_BYTES,
             max_timeout: Duration::from_secs(DEFAULT_MAX_TIMEOUT_SECS),
             max_run_dirs: crate::config::DEFAULT_MAX_RUN_DIRS,
+            max_payload_keep_bytes: crate::config::DEFAULT_MAX_PAYLOAD_KEEP_BYTES,
             default_timeouts,
         }
     }

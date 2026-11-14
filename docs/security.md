@@ -288,6 +288,7 @@ lie about the result.
 | benchmark metrics per run | 5 000 | — | records truncated, every record of the run flagged | `evidence::benchmark` |
 | coverage sources per run | 5 000 | — | idem | `evidence::coverage` |
 | one coverage / benchmark payload | 8 MiB each | — | `payload_too_large` warning, file skipped | `evidence::{coverage,benchmark}` |
+| kept payload per run | 4 MiB (`--max-payload-keep-bytes`) | ≥0 (`0` keeps none) | the overflow is **deleted** with a `payload_cap_exceeded` warning; what is kept lives under `runs/`, so `--max-run-dirs` pruning reclaims it | `registry::task::clean_payload` |
 | metrics scanned out of the log | 32 MiB | — | stop, warn | `MAX_*_LOG_BYTES`, `MAX_SCRAPE_BYTES` |
 | evidence files in one `run_view` | 8 | — | capped list | `state::MAX_EVIDENCE_FILES` |
 | warnings per run | 64 | — | dropped with a note in the log | `state::MAX_WARNINGS` |

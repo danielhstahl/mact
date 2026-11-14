@@ -74,7 +74,8 @@ mapfile -t RECORDS < <(find "$EV"/benchmark "$EV"/coverage -name '*.jsonl' 2>/de
 ├── runs/                        # NOT commit-keyed, NOT part of the contract
 │   └── <run_id>/
 │       ├── act.jsonl            # act's own log, redacted, not schema-versioned
-│       └── meta.json            # terminal manifest; written last (§8)
+│       ├── meta.json            # terminal manifest; written last (§8)
+│       └── payload/             # the lcov / coverage-summary / benchmark.json this run read
 └── incoming/                    # transient payload scratch; may be empty or gone
     └── <run_id>/
 ```
@@ -84,7 +85,8 @@ Rules a reader can rely on, all of them ADR-0002 §1.1:
 * **Walk `benchmark/` and `coverage/` and nothing else.** `runs/` and `incoming/` are
   per-run audit material: `runs/` tells you *why* a run produced what it did, `incoming/`
   is transient and may be cleaned at any time.
-* Every file the writer creates is `<run_id>.jsonl`, `meta.json`, `act.jsonl`, a temp file
+* Every file the writer creates is `<run_id>.jsonl`, `meta.json`, `act.jsonl`, a kept payload
+  file under `runs/<run_id>/payload/`, a temp file
   named `.<run_id>.jsonl.<random>.tmp`, or that `README.md`. Everything else is yours.
   **Skip dot-files** — a `.…tmp` file is a crashed publish, never a record.
 * A directory name is always a **full lowercase** commit SHA. Short SHAs never appear in a
@@ -183,7 +185,7 @@ One metric per line. Three sources, one file:
 | `labels` | object | ⚪ | flat string→string, ≤ 16 entries, keys `^[a-z][a-z0-9_]*$`, values ≤ 128 chars. Values are **always strings**, so a `group by` never has to type-switch. Known keys: `job`, `step`, `os`, `runner`, `matrix`, `attempt`, `workflow`, `task`. Keys are open. |
 | `sample` | int ≥ 1 | ⚪ | present only when the job really emitted more than one sample for the same `(name, labels)`; numbered `1..n` (§9). |
 | `source` | enum | ✅ | `job_file` \| `in_band_stdout` \| `act_log` — §7's trust table. |
-| `source_path` | relpath | when `job_file` | the payload file it was parsed from; absent for the two log-derived sources. |
+| `source_path` | relpath | when `job_file` | the payload file it was parsed from — scratch; the kept copy is `runs/<run_id>/payload/<name>` (§10). Absent for the two log-derived sources. |
 | `flags` | string[] | ⚪ | machine-readable caveats; unique, ≤ 8. |
 | `extra` | object | ⚪ | advisory passthrough. **Nothing may depend on a key here.** |
 
@@ -225,7 +227,7 @@ One source file — or the run total — per line:
 | `reported_percent` | number 0..=100 | ⚪ | only ever for `source: "log_scrape"`, only with `reported_measure`, always under `flags: ["percent_only"]`. Never with raw counts. |
 | `reported_measure` | enum | ⚪ | `lines` \| `statements` \| `branches` \| `functions` \| `unknown`. A percentage nobody labelled is `unknown`, not a guess. |
 | `source` | enum | ✅ | `lcov` \| `coverage_summary` \| `log_scrape`. |
-| `source_path` | relpath | for `lcov` / `coverage_summary` | absent for `log_scrape`, whose input is act's log. |
+| `source_path` | relpath | for `lcov` / `coverage_summary` | the payload file it was parsed from — scratch; the kept copy is `runs/<run_id>/payload/<name>` (§10). Absent for `log_scrape`, whose input is act's log. |
 | `flags`, `extra` | | ⚪ | as in §5. |
 
 Format notes a scanner needs (ADR-0002 §4.2):
@@ -332,6 +334,22 @@ arbitrate.
 * a percentage with no raw counts exists only as `reported_percent` (§6). Inventing a
   denominator (`874/1000`) to make a scraped percentage look raw is forbidden; a scanner
   must be able to filter them out via `flags: ["percent_only"]`.
+
+### Where the raw file went
+
+A record's `source_path` is where the extractor *read* — always
+`.evidence/incoming/<run_id>/<name>`, scratch that may be gone by the time you ask. The file
+itself is kept at `runs/<run_id>/payload/<name>` (budget: `--max-payload-keep-bytes`, default
+4 MiB per run; `0` keeps nothing), and `meta.json`'s `payload` member spells the mapping:
+
+```sh
+# the lcov a commit's coverage total was computed from, if it is still on disk
+RUN=$(jq -r 'select(.scope=="total") | .run_id' "$EV"/coverage/"$COMMIT"/*.jsonl | head -1)
+jq -r '.payload.dir, (.payload.files[]?.path)' "$EV"/runs/"$RUN"/meta.json
+```
+
+`runs/` is audit material, not the contract: a scanner that needs the raw payload is debugging,
+and `payload.dropped` plus the `payload_cap_exceeded` warning tell you when the budget deleted it.
 
 ## 11. `schema_version` bump policy
 

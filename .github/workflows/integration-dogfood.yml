@@ -25,10 +25,6 @@ jobs:
           EOF
           curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/nektos/act/master/install.sh | sudo bash
 
-      - name: test arc alone for debugging
-        run: |
-          $(pwd)/bin/act --workflows .github/workflows/dogfood.yml --job check
-
       - name: Start mcp
         run: |
           cargo build --release
@@ -114,7 +110,10 @@ jobs:
             echo "$tool_call"
             exit 1
           fi
-      - name: Read log
+      - name: Read logs
         if: always()
         run: |
+          echo "Server logs"
           cat /tmp/act-mcp.log
+          echo "Run logs"
+          cat .evidence/runs/$run_id/act.jsonl

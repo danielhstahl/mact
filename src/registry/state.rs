@@ -791,6 +791,9 @@ impl CancelReceipt {
 pub const WARNING_ALREADY_TERMINAL: &str = "already_terminal";
 /// Warning stamped when a caller cancel discarded a staged payload (ADR-0004 §6.2).
 pub const WARNING_PARTIAL_EVIDENCE_DROPPED: &str = "partial_evidence_dropped";
+/// Warning stamped when a run read more payload than `--max-payload-keep-bytes` would fit,
+/// so part of it was deleted instead of kept under `runs/<run_id>/payload/ (ADR-0002 §3.4).
+pub const WARNING_PAYLOAD_CAP_EXCEEDED: &str = "payload_cap_exceeded";
 
 /// `canonical_timestamp` is `$defs/timestamp`: millisecond precision, `Z`, no offset.
 fn insert_timestamp(map: &mut Map<String, Value>, key: &str, instant: Option<DateTime<Utc>>) {
