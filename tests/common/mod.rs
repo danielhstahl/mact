@@ -668,6 +668,56 @@ impl Drop for ServeProcess {
     }
 }
 
+/// The serialized prefix of a record's `tool` stamp, up to the version's opening quote.
+///
+/// ADR-0002 §6.1 makes field order part of the contract, so spelling the prefix out is
+/// both cheaper and stricter than parsing: it matches a real record's stamp and nothing
+/// else in a file — a record's own `name` field names a metric or a source file, and
+/// `meta.json`'s `act.version` is not preceded by `"tool":{"name":"act-mcp",`.
+pub const TOOL_VERSION_PREFIX: &str = "\"tool\":{\"name\":\"act-mcp\",\"version\":\"";
+
+/// Replace every stamped `tool.version` value in `text` with `replacement`.
+///
+/// `tool.version` is the one field of a published record that a release changes on its
+/// own: the writer stamps `env!("CARGO_PKG_VERSION")` (ADR-0002 §2.2), so a golden that
+/// pins it fails the day someone edits `Cargo.toml` — and it fails with a diff that says
+/// nothing about the behaviour the golden exists to check. Both golden styles route that
+/// one field through here instead:
+///
+/// * the byte-for-byte suites ([`repin_tool_version`]) rewrite the *fixture's* value to
+///   this build's and then compare bytes, so every other byte — key order, `act_version`,
+///   every count — stays pinned;
+/// * the e2e goldens normalise the value to `{TOOL_VERSION}` (`tests/e2e/normalize.rs`),
+///   so re-recording a tree is about behaviour, never about a version bump.
+///
+/// Nothing is dropped: the surrounding `"tool":{"name":…, "version":…}` shape is still
+/// compared, so a writer that stops stamping a version — or stamps one under a different
+/// key — still fails. That the stamp *is* this build's version is asserted positively, in
+/// `tests/e2e` scenario 01 and in `tests/protocol.rs`, rather than frozen into a file.
+pub fn replace_tool_version(text: &str, replacement: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(TOOL_VERSION_PREFIX) {
+        out.push_str(&rest[..at + TOOL_VERSION_PREFIX.len()]);
+        let value = &rest[at + TOOL_VERSION_PREFIX.len()..];
+        // The version is a JSON string with no quotes to escape (§2.2 caps it at 64
+        // bytes of a semver-ish token), so the next `"` closes it.
+        let end = value.find('"').unwrap_or(value.len());
+        out.push_str(replacement);
+        rest = &value[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A pinned fixture, with its recorded `tool.version` rewritten to this build's.
+///
+/// Use it on the *expected* side of a byte-for-byte comparison so the comparison stays
+/// byte-for-byte on everything a release does not decide. See [`replace_tool_version`].
+pub fn repin_tool_version(fixture: &str) -> String {
+    replace_tool_version(fixture, env!("CARGO_PKG_VERSION"))
+}
+
 /// Pull the `bind=` field out of the startup log line.
 ///
 /// `tracing_subscriber::fmt` renders a display-formatted field as

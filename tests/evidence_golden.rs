@@ -10,6 +10,14 @@
 //! `Envelope` + payload structs, then compared byte for byte with the fixture. ADR-0002
 //! §6.1 makes field order part of the contract ("stable enough that a golden-file test is
 //! meaningful"), so the comparison is on bytes, not on parsed JSON equality.
+//!
+//! The one byte a release does decide is `tool.version` — this build's
+//! `CARGO_PKG_VERSION` — so a fixture's recorded stamp is re-pinned to the current version
+//! before the comparison ([`common::repin_tool_version`]), and
+//! `the_only_repin_is_the_stamped_version` keeps that re-pin honest so it cannot quietly stop
+//! matching anything.
+
+mod common;
 
 use std::path::{Path, PathBuf};
 
@@ -22,14 +30,20 @@ use act_mcp::evidence::{
 const SHA: &str = "2f7c1a4b9e0d3c6a5b8f1e2d4c6a8b0f3e5d7c91";
 
 fn golden(name: &str) -> String {
+    let body = golden_file(name);
+    let first = body
+        .lines()
+        .next()
+        .expect("a golden holds at least one record");
+    common::repin_tool_version(first)
+}
+
+/// A fixture exactly as committed, with nothing re-pinned.
+fn golden_file(name: &str) -> String {
     let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/e2e/testdata/expected")
         .join(format!("{name}.jsonl"));
-    let body = std::fs::read_to_string(&path).expect("golden fixture");
-    body.lines()
-        .next()
-        .expect("a golden holds at least one record")
-        .to_owned()
+    std::fs::read_to_string(&path).expect("golden fixture")
 }
 
 /// The envelope the fixtures share, apart from the fields each call names.
@@ -321,4 +335,49 @@ fn nested_object_keys_are_written_in_ascending_order() {
             && position("\"alpha\"") < position("\"zebra\""),
         "extra keys are ordered by code point, which is ASCII-order: {record}"
     );
+}
+
+/// The re-pin in [`golden`] has to be matching something, or it is a silent hole in every
+/// byte-for-byte assertion in this file: if a fixture ever stops carrying the stamp in the
+/// shape ADR-0002 §2.2 pins, the helper matches nothing and the fixtures go back to being
+/// pinned to whatever version they were recorded at.
+#[test]
+fn the_only_repin_is_the_stamped_version() {
+    for name in [
+        "benchmark",
+        "benchmark-failed",
+        "coverage",
+        "coverage-istanbul",
+        "coverage-log-scrape",
+    ] {
+        let committed = golden_file(name);
+        let line = committed
+            .lines()
+            .next()
+            .unwrap_or_else(|| panic!("{name} holds at least one record"));
+        let stamped = line
+            .split(common::TOOL_VERSION_PREFIX)
+            .nth(1)
+            .unwrap_or_else(|| panic!("{name}: no tool.version stamp to re-pin: {line}"))
+            .split('"')
+            .next()
+            .expect("the stamp is a JSON string");
+        let repinned = golden(name);
+        let here = format!(
+            "{}{}",
+            common::TOOL_VERSION_PREFIX,
+            env!("CARGO_PKG_VERSION")
+        );
+        let recorded = format!("{}{stamped}", common::TOOL_VERSION_PREFIX);
+        assert!(
+            repinned.contains(&here),
+            "{name}: the re-pinned line must carry this build's stamp: {repinned}"
+        );
+        // …and nothing else moved: whatever follows the stamp is byte-identical.
+        assert_eq!(
+            repinned.split_once(&here).map(|(_, rest)| rest),
+            line.split_once(&recorded).map(|(_, rest)| rest),
+            "{name}: re-pinning changes the stamped version and nothing else"
+        );
+    }
 }

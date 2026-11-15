@@ -24,7 +24,12 @@
 //!
 //! The envelope's `host` and `tool.act_version` are pinned through [`ExtractContext`] to the
 //! values the fixtures use (`build-box-07`, `0.2.68`), exactly as `coverage_extraction.rs`
-//! does: the testdata README's "volatile fields are normalised explicitly" rule.
+//! does: the testdata README's "volatile fields are normalised explicitly" rule. So is
+//! `tool.version`, which is this build's `CARGO_PKG_VERSION`: the fixtures' recorded stamp is
+//! re-pinned to the current version before the bytes are compared
+//! ([`common::repin_tool_version`]), so a release commit changes no golden.
+
+mod common;
 
 use std::{
     fs::Permissions,
@@ -218,10 +223,12 @@ fn assert_golden(summary: &BenchmarkSummary, golden: &str) {
         .unwrap_or_else(|| panic!("expected records to match {golden}"));
     run.check().expect("one run's records, each one checked");
     let written = run.to_jsonl().expect("serialize");
-    let wanted = read(&expected(golden));
+    // Only `tool.version` is re-pinned: it is this build's `CARGO_PKG_VERSION`, and every
+    // other byte of the golden — key order, `act_version`, every count — is still compared.
+    let wanted = common::repin_tool_version(&String::from_utf8_lossy(&read(&expected(golden))));
     assert_eq!(
         String::from_utf8_lossy(&written),
-        String::from_utf8_lossy(&wanted),
+        wanted,
         "{golden} must be reproduced byte for byte"
     );
     // Every line also validates against the pinned schema, not just against the golden.
