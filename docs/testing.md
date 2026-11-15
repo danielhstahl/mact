@@ -74,7 +74,8 @@ guards.
 ## 2. Before trusting a green run
 
 `cargo test` here is the whole contract, so a red test is a contract break and gets read as one.
-Three conventions make the suite stay honest:
+Four conventions make the suite stay honest — the fourth only matters because a release
+changes a byte:
 
 * **Assertions are observations.** Nothing reads a private constant to prove a behaviour; the
   protocol tests ask the endpoint over HTTP and check what came back. Removing a pin in
@@ -92,6 +93,17 @@ Three conventions make the suite stay honest:
   Use `crate::fixtures::canonical` (integration tests already take canonical paths from
   `TestServer`), and expect the same of the product: a relpath that comes back absolute is a
   bug, not a platform quirk — ADR-0001 §2.2 keeps absolute host paths out of the payloads.
+
+* **A release bump changes no golden.** Every record carries `tool.version`, stamped from
+  `env!("CARGO_PKG_VERSION")` (ADR-0002 §2.2), so a golden that pinned those bytes would go
+  red on a `Cargo.toml` edit and say nothing about behaviour. Both golden styles route that
+  one field through `tests/common/mod.rs::replace_tool_version`: the byte-exact suites
+  (`evidence_golden`, `*_extraction`) re-pin the *fixture's* stamp to the current version and
+  then compare bytes (`repin_tool_version`), and `tests/e2e/normalize.rs` normalises the live
+  one to `{TOOL_VERSION}`. Nothing else is forgiven — key order, `tool.act_version` and every
+  count stay compared — and the stamp is asserted positively where it can be read live
+  (`tests/e2e` scenario 01, `tests/protocol.rs`), so a placeholder cannot hide a writer that
+  stopped stamping its version.
 
 ## 3. Protocol conformance (`tests/protocol_conformance.rs`)
 
@@ -383,8 +395,8 @@ before you "fix" either directory. Both are empty of captured data on purpose:
   nightly captures one and uploads it; a human reviews and commits it.
 * **`expected/*.jsonl`** is the byte-for-byte form of the records a real run publishes, with
   volatile fields replaced by named placeholders (`{RUN_ID}`, `{COMMIT}`, `{TS}`, `{HOST}`,
-  `{NUMBER}` — the same rule as `tests/e2e/normalize.rs`). `--write-expected` writes them, in
-  real mode only, and the script shouts that committing them is a human act.
+  `{NUMBER}`, `{TOOL_VERSION}` — the same rule as `tests/e2e/normalize.rs`). `--write-expected`
+  writes them, in real mode only, and the script shouts that committing them is a human act.
 
 Until then the smoke makes **value** assertions instead (the coverage arithmetic in the fixture,
 the four benchmark metric names and their producers), which need no golden and still catch a

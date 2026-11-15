@@ -18,7 +18,7 @@ a registry pull.
 | `main.rs` | the scenarios, one `#[tokio::test]` each, numbered in pipeline order |
 | `harness.rs` | boot the server on a random port against a fixture workspace; drive it; talk to the stub |
 | `golden.rs` | snapshot the evidence tree to `testdata/scenarios/<name>/`, compare or regenerate |
-| `normalize.rs` | replaces run id / commit / timestamps / pids / paths with `{PLACEHOLDERS}` so a golden can be diffed at all |
+| `normalize.rs` | replaces run id / commit / timestamps / pids / paths / the release-stamped `tool.version` with `{PLACEHOLDERS}` so a golden can be diffed at all |
 | `testdata/` | the stub, the fixtures (see `testdata/README.md`) and the goldens |
 
 ## What a scenario looks like
@@ -48,6 +48,17 @@ Three rules keep this suite trustworthy, and each is a scenario of its own:
    mode "the run looked fine and the file is wrong": an array-wrapped JSONL, a record
    under the wrong commit, a payload that leaked into the published file, an
    `incoming/` that was never cleaned.
+
+## A release bump re-records nothing
+
+`tool.version` is volatile for a reason no other field is: it is `CARGO_PKG_VERSION`, so it
+changes on the commit that bumps `Cargo.toml` and on no behaviour. `normalize.rs` therefore
+writes it into the goldens as `{TOOL_VERSION}`, and scenario 01 asserts the live stamp —
+`tool.name == "act-mcp"`, `tool.version == env!("CARGO_PKG_VERSION")` — so the placeholder
+cannot hide a writer that stopped stamping. The byte-exact fixtures under
+`testdata/expected/` keep a literal version (they are readable contract examples, and the
+Python checker validates them); the Rust suites that compare them re-pin just that value to
+this build's first — see `common::repin_tool_version` and [docs/testing.md §2](../../docs/testing.md#2-before-trusting-a-green-run).
 
 ## Adding a scenario, or changing one
 

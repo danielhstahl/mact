@@ -147,6 +147,16 @@ async fn scenario_01_coverage_run_publishes_coverage_evidence() {
         assert_eq!(record["task"], json!("coverage"));
         assert_eq!(record["source"], json!("lcov"));
         assert_eq!(record["schema_version"], json!(1));
+        // The producer stamp, asserted live rather than frozen into a golden: the golden
+        // normalises `tool.version` to `{TOOL_VERSION}` (see `normalize.rs`) precisely
+        // because it is this build's version, so the value has to be checked here instead
+        // or the placeholder could hide a writer that stopped stamping.
+        assert_eq!(record["tool"]["name"], json!("act-mcp"));
+        assert_eq!(
+            record["tool"]["version"],
+            json!(env!("CARGO_PKG_VERSION")),
+            "the envelope stamps the version this binary was built with"
+        );
     }
     let total = &records[0];
     assert_eq!(total["scope"], json!("total"));

@@ -23,11 +23,21 @@
 //! | `{COMMIT}` | this run's commit, and any other full 40-lowercase-hex string | the fixture repo's hashes |
 //! | `{TS}` | any UTC RFC-3339 instant (`…Z`, optional fraction) | `started_at`, `finished_at`, act's `time` |
 //! | `{HOST}` | this machine's hostname (`envelope.host`) | the machine running the test |
+//! | `{TOOL_VERSION}` | the `tool.version` stamp of this build | `Cargo.toml`'s version changes on every release |
 //! | `{NUMBER}` | the numeric value of any key in [`NUMERIC_KEYS`] | pid, duration, log size |
 //!
 //! Path substitution runs first, longest prefix first: `<workspace>/.evidence` is a
 //! prefix-extension of `<workspace>`, so replacing the shorter one first would
 //! leave a tail hanging off a placeholder.
+//!
+//! `{TOOL_VERSION}` is the one placeholder that is volatile for a reason outside this
+//! machine: the server stamps `env!("CARGO_PKG_VERSION")` into every record (ADR-0002
+//! §2.2), so pinning the bytes of that value would make `cargo test` fail on a release
+//! commit and on nothing else. The substitution is made through
+//! [`crate::common::replace_tool_version`], which matches only a real
+//! `"tool":{"name":"act-mcp","version":…}` stamp — `act`'s own `version` in `meta.json`
+//! is a third-party build and stays compared. That the stamp is *this* build's version is
+//! asserted live in scenario 01, so the placeholder cannot hide a wrong one.
 //!
 //! Normalisation is deliberately *not* the identity check on the identity fields:
 //! the scenarios also assert that `run_id` and `commit` in the result are the ones
@@ -87,6 +97,7 @@ impl Volatile {
         text = replace(&text, &self.run_id, "{RUN_ID}");
         text = replace(&text, &self.commit, "{COMMIT}");
         text = replace(&text, &self.host, "{HOST}");
+        text = crate::common::replace_tool_version(&text, "{TOOL_VERSION}");
         numbers(&shapes(&text))
     }
 
@@ -305,6 +316,28 @@ mod tests {
             volatile().text("\"run_id\":\"20261110T004203Z-a1b2c3\",\"note\":\"deadbee\""),
             "\"run_id\":\"{RUN_ID}\",\"note\":\"deadbee\""
         );
+    }
+
+    #[test]
+    fn a_release_bump_does_not_move_the_tool_version() {
+        // Whatever Cargo.toml says today, the stamp normalises away — the point is that a
+        // version bump re-records nothing.
+        let line = format!(
+            r#"{{"tool":{{"name":"act-mcp","version":"{}","act_version":"0.2.68"}},"name":"total"}}"#,
+            env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(
+            volatile().text(&line),
+            r#"{"tool":{"name":"act-mcp","version":"{TOOL_VERSION}","act_version":"0.2.68"},"name":"total"}"#
+        );
+    }
+
+    #[test]
+    fn an_unstamped_or_foreign_tool_version_is_left_for_the_golden_to_catch() {
+        // `act`'s own version in meta.json is a third-party fact and stays compared; a
+        // record that stamps under another key is not this stamp and is not hidden.
+        let line = r#"{"act":{"version":"0.2.68"},"tool":{"name":"act-mcp","v":"0.1.0"}}"#;
+        assert_eq!(volatile().text(line), line);
     }
 
     #[test]

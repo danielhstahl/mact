@@ -16,7 +16,13 @@
 //! The envelope's `host` and `tool.act_version` are pinned through
 //! [`ExtractContext`] to the values the fixtures use (`build-box-07`, `0.2.68`) — the
 //! "volatile fields are normalised as an explicit, documented step" rule of the testdata
-//! README, applied to extraction instead of to the harness.
+//! README, applied to extraction instead of to the harness. `tool.version` is the other
+//! half of that step: it is this build's `CARGO_PKG_VERSION`, so the fixture's recorded
+//! stamp is re-pinned to the current one before the bytes are compared
+//! ([`common::repin_tool_version`]) rather than being frozen at whatever release this
+//! checkout happens to be.
+
+mod common;
 
 use std::{
     fs::Permissions,
@@ -206,10 +212,12 @@ fn assert_golden(summary: &act_mcp::evidence::CoverageSummary, golden: &str) {
         .unwrap_or_else(|| panic!("expected records to match {golden}"));
     run.check().expect("one run's records, each one checked");
     let written = run.to_jsonl().expect("serialize");
-    let wanted = read(&expected(golden));
+    // Only `tool.version` is re-pinned: it is this build's `CARGO_PKG_VERSION`, and every
+    // other byte of the golden — key order, `act_version`, every count — is still compared.
+    let wanted = common::repin_tool_version(&String::from_utf8_lossy(&read(&expected(golden))));
     assert_eq!(
         String::from_utf8_lossy(&written),
-        String::from_utf8_lossy(&wanted),
+        wanted,
         "{golden} must be reproduced byte for byte"
     );
     // Every line also validates against the pinned schema, not just against the golden.

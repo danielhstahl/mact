@@ -9,6 +9,8 @@ checked in so a failure is reproducible without docker, network, or a registry p
 | `workflows/` | fixture `.github/workflows` files for the e2e scenarios, including one deliberately broken |
 | `payload/` | what a job writes through the bind mount: `lcov.info`, `coverage-summary.json`, `benchmark.json` |
 | `logs/` | captured `act --json` output (success + failure) used for timing and redaction checks, plus `benchmark-success-pre-0.2.76.jsonl` — see the note below |
+| `expected/` | the pinned `.evidence` record fixtures — one file per contract shape, byte-compared by `tests/evidence_contract.rs`, `tests/evidence_golden.rs` and the extraction suites, and validated by both checkers (Rust and `scripts/validate_evidence.py`) |
+| `invalid/` | one deliberately-broken file per refusal the contract names, fed to both checkers so neither can drift from the other |
 | `tool-io/` | the ADR-0001 contract fixtures — hand-written tool arguments and `structuredContent` payloads, all of them indexed in [§ `tool-io/`](#tool-io--the-adr-0001-contract-fixtures) below |
 | `scenarios/` | the golden evidence trees, one directory per e2e scenario — written by `E2E_UPDATE_GOLDEN=1 cargo test --test e2e`, never by hand |
 
