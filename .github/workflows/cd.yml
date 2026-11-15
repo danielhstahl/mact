@@ -54,10 +54,9 @@ jobs:
 
       - name: Release
         run: |
-          cd target/${{ matrix.target }}/release
-          # target/${{ matrix.target }}/release/act-mcp
+          cd target/release
           mv act-mcp mact
-          tar czvf ../../../mact-${{ matrix.target }}.tar.gz mact
+          tar czvf ../../mact-${{ matrix.target }}.tar.gz mact
 
       - name: upload artifact
         env:
