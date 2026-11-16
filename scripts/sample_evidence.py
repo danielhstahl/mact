@@ -6,7 +6,7 @@
 docs/evidence-format.md documents the on-disk contract for whoever writes a
 downstream cross-commit scanner, and every `jq` recipe in it is written against a
 real tree. Nobody should have to install docker and act to read those recipes, so
-this script lays the golden files in `tests/e2e/testdata/expected/` out under the
+this script lays the golden files in `crates/act-mcp/tests/e2e/testdata/expected/` out under the
 layout ADR-0002 §1.1 pins — the same shape a real server writes (see
 `scripts/mcp_call.sh run_workflow …` in the README runbook).
 
@@ -47,10 +47,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-GOLDEN_DIR = REPO / "tests" / "e2e" / "testdata" / "expected"
+GOLDEN_DIR = REPO / "crates" / "act-mcp" / "tests" / "e2e" / "testdata" / "expected"
 README_STUB = (
     "act-mcp evidence (sample tree, built by scripts/sample_evidence.py from\n"
-    "tests/e2e/testdata/expected). Local build output, safe to delete, format\n"
+    "crates/act-mcp/tests/e2e/testdata/expected). Local build output, safe to delete, format\n"
     "defined by docs/adr/0002-evidence-jsonl-contract.md. Do not hand-edit.\n"
 )
 

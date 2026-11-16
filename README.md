@@ -54,15 +54,20 @@ ADRs; the links are at the bottom.
   `.github` directory exists; workflow resolution happens per call.
 
 **Not** needed to build it or to run the whole test suite: docker, act, or a registry pull. The
-`act` the tests run is a shell script (`tests/e2e/testdata/bin/act`) and the container daemon is
+`act` the tests run is a shell script (`crates/act-mcp/tests/e2e/testdata/bin/act`) and the container daemon is
 probed through an injectable seam — see [docs/testing.md](docs/testing.md).
 
 ## Build
 
 ```sh
-cargo build                # debug binary: target/debug/act-mcp
-cargo build --release      # release binary: target/release/act-mcp
+cargo build                # everything: target/debug/act-mcp and target/debug/fathom
+cargo build --release      # the same, released: target/release/act-mcp, target/release/fathom
+cargo build -p act-mcp     # just the server crate — what CI's release artefact is built from
+cargo build -p fathom      # just the TUI crate (no tokio, no rmcp, no axum in its graph)
 ```
+
+A bare `cargo run -- …` no longer knows which binary you mean, because there are two of them now:
+spell the package (`cargo run -p act-mcp -- serve …`, `cargo run -p fathom -- --help`).
 
 > On a bind-mounted checkout (the case on this repo's dev box) the linker can take SIGBUS or
 > fail with `Bad address (os error 14)` while writing into `./target`. The workaround is one
@@ -71,20 +76,20 @@ cargo build --release      # release binary: target/release/act-mcp
 ## Run
 
 ```sh
-cargo run --release -- serve --workspace /path/to/a/git/repo/with/github/workflows
+cargo run --release -p act-mcp -- serve --workspace /path/to/a/git/repo/with/github/workflows
 ```
 
 That is the whole command. A real startup, from the tour below, looks like this:
 
 ```console
-$ cargo run --release -- serve --workspace /tmp/actmcp-runbook/repo \
-      --act-binary ./tests/e2e/testdata/bin/act
+$ cargo run --release -p act-mcp -- serve --workspace /tmp/actmcp-runbook/repo \
+      --act-binary ./crates/act-mcp/tests/e2e/testdata/bin/act
 2026-11-10T15:09:12.606305Z  INFO act_mcp::server: bind is loopback-only: only this machine
   can reach the endpoint (there is no authentication) bind=127.0.0.1:8080
 2026-11-10T15:09:12.606542Z  INFO act_mcp::server: act-mcp listening url=http://127.0.0.1:8080/mcp
   bind=127.0.0.1:8080 workspace=/tmp/actmcp-runbook/repo
   evidence_dir=/tmp/actmcp-runbook/repo/.evidence
-  act_binary=/workspace/tests/e2e/testdata/bin/act protocol_versions=2025-11-25,2026-07-28
+  act_binary=/workspace/crates/act-mcp/tests/e2e/testdata/bin/act protocol_versions=2025-11-25,2026-07-28
   allowed_hosts=["localhost", "127.0.0.1", "::1"] allowed_origins=[]
   max_request_body_bytes=1048576 shared_secret_required=false
 ```
@@ -105,7 +110,7 @@ finish, gets act's SIGTERM grace window, and is then taken down with its process
 The binary has one other subcommand, and it is a CLI tool as much as a debug aid:
 
 ```sh
-cargo run --release -- validate-evidence <path-or-workspace> [--stats]
+cargo run --release -p act-mcp -- validate-evidence <path-or-workspace> [--stats]
 # exit 0 clean · 1 findings (file:line: reason) · 2 could not run
 ```
 
@@ -275,7 +280,7 @@ curl -sS -X DELETE "$URL" "${HDR[@]}" -H "Mcp-Session-Id: $SID"   # 202; the ses
 ## The five-minute tour
 
 Run this once to see the whole contract with no docker and no act installed — the server is
-started against the e2e stub `act` (`tests/e2e/testdata/bin/act`) and its stub `docker`. If
+started against the e2e stub `act` (`crates/act-mcp/tests/e2e/testdata/bin/act`) and its stub `docker`. If
 you have the real thing, drop the `--act-binary` flag and the two `PATH=`/`STUB_PAYLOAD_DIR=`
 assignments; **every other command in this section is identical either way.**
 
@@ -284,7 +289,7 @@ Set up a throwaway workspace (one terminal):
 ```sh
 DEMO=/tmp/actmcp-runbook
 rm -rf "$DEMO" && mkdir -p "$DEMO/repo/.github/workflows"
-cp tests/e2e/testdata/workflows/coverage.yml tests/e2e/testdata/workflows/benchmark.yml \
+cp crates/act-mcp/tests/e2e/testdata/workflows/coverage.yml crates/act-mcp/tests/e2e/testdata/workflows/benchmark.yml \
    "$DEMO/repo/.github/workflows/"
 git -C "$DEMO/repo" init -q -b main
 git -C "$DEMO/repo" config user.name act-mcp && git -C "$DEMO/repo" config user.email act-mcp@example.invalid
@@ -294,9 +299,9 @@ git -C "$DEMO/repo" add -A && git -C "$DEMO/repo" commit -qm "two workflows to r
 Start the server (terminal 1):
 
 ```sh
-PATH="$PWD/tests/e2e/testdata/bin:$PATH" STUB_PAYLOAD_DIR="$PWD/tests/e2e/testdata/payload" \
-  cargo run --release -- serve --workspace "$DEMO/repo" \
-    --act-binary "$PWD/tests/e2e/testdata/bin/act"
+PATH="$PWD/crates/act-mcp/tests/e2e/testdata/bin:$PATH" STUB_PAYLOAD_DIR="$PWD/crates/act-mcp/tests/e2e/testdata/payload" \
+  cargo run --release -p act-mcp -- serve --workspace "$DEMO/repo" \
+    --act-binary "$PWD/crates/act-mcp/tests/e2e/testdata/bin/act"
 ```
 
 Drive it (terminal 2, from the repo). The order is the intended one: `list_tasks` to find a
@@ -376,7 +381,7 @@ Then look at what it wrote:
 ```sh
 find /tmp/actmcp-runbook/repo/.evidence -type f | sed 's|/tmp/actmcp-runbook/repo/||' | sort
 cat /tmp/actmcp-runbook/repo/.gitignore        # act-mcp created it: evidence is local build output
-cargo run --release -- validate-evidence /tmp/actmcp-runbook/repo/.evidence --stats
+cargo run --release -p act-mcp -- validate-evidence /tmp/actmcp-runbook/repo/.evidence --stats
 ```
 
 ```
@@ -621,7 +626,7 @@ any of it by hand, including the MCP Inspector.
 | a benchmark run has no `step_duration_s` records, and `job_duration_s` looks like whole seconds | act only emits step timings (`executionTime`) from **v0.2.76**, and this server accepts act from 0.2.62; the run carries the `act_step_timings_unavailable` warning rather than a silent gap | upgrade act to ≥ 0.2.76, or have the job time its own steps; [docs/benchmark-inputs.md §3](docs/benchmark-inputs.md#3-acts-own-timings-need-act-0276-or-newer) |
 | a run fails in `Set up job` with `invalid reference format`, and act's log has `🚀  Start image=` with nothing after it | act has no container image for the job's `runs-on` label — act's own table stops at `ubuntu-22.04` | put `-P <label>=<image>` in an actrc the **server** can read; the run carries the `act_runs_on_unmapped` warning — [act has no image for the runner label](#act-has-no-image-for-the-runner-label--invalid-reference-format) |
 | `linker … Bad address (os error 14)` while building | bind-mounted `./target` | `export CARGO_TARGET_DIR=/tmp/tt` |
-| `pip` and `python3` disagree and `scripts/validate_evidence.py` cannot import `jsonschema` | dev-box packaging, not this repo | use the built-in checker: `cargo run -- validate-evidence <path>` |
+| `pip` and `python3` disagree and `scripts/validate_evidence.py` cannot import `jsonschema` | dev-box packaging, not this repo | use the built-in checker: `cargo run -p act-mcp -- validate-evidence <path>` |
 
 ## Checks
 
@@ -663,17 +668,32 @@ and `.github/workflows/nightly-real-act.yml` runs it nightly where docker exists
 
 ## Layout
 
+Three crates, one lockfile, one CI run ([ADR-0005](docs/adr/0005-fathom-crate-layout-and-dependencies.md)):
+
 | path | what it is |
 |---|---|
-| `src/server.rs`, `src/tools/` | the rmcp service, the mounted endpoint, one module per tool |
-| `src/registry/` | the run supervisor: state machine, run registry, workspace lock (ADR-0004) |
-| `src/runner/` | the act process: argv, log tee with redaction, process-group teardown |
-| `src/workspace/` | the pre-start validation gate: commit/HEAD gates, isolation policy, probes |
-| `src/evidence/` | the `.evidence` JSONL contract as code: records, writer, extractors, the checker |
-| `schema/` | the machine-readable contract: `evidence`, `run-meta`, `tool-contract` |
-| `tests/` | one suite per tool, the protocol conformance matrix, `tests/e2e` (the whole pipeline) |
-| `tests/realdata/` | the trivial two-workflow fixture, the `act --json` shape table and its captured goldens (when there are any), and the record goldens — see `tests/realdata/fixture/README.md` |
+| `Cargo.toml` | the virtual workspace: members, `default-members`, the shared `[workspace.package]` (version, MSRV, `publish = false`), the one dependency table, the shared `[workspace.lints]` |
+| `crates/act-mcp/` | the MCP server binary. Its integration tests live beside it, because Cargo looks for `tests/` next to the package manifest |
+| `crates/act-evidence/` | the `.evidence` contract as types: record structs, strict deserializers, the shape predicates, the embedded schemas, the tree validator. No tokio, no transport, no writer — the half a reader is allowed to link |
+| `crates/fathom/` | the read-only TUI: `clap` CLI surface, `fathom.toml` resolution, workspace/evidence/cache-root boot ([mact-by1.5](docs/adr/0006-fathom-workspace-layout.md); the ratatui app itself is mact-by1.6) |
+| `schema/` | the machine-readable contract, still one copy at the root: `evidence`, `run-meta`, `tool-contract`, `mi-definition`, `metric-model` |
 | `scripts/` | the CI scripts, the ADR/schema consistency checkers, and the runbook helpers (`mcp_call.sh`, `sample_evidence.py`, `evidence_recipes.sh`) |
+
+Inside `act-mcp`, which is the part that answers MCP:
+
+| path | what it is |
+|---|---|
+| `crates/act-mcp/src/server.rs`, `src/tools/` | the rmcp service, the mounted endpoint, one module per tool |
+| `crates/act-mcp/src/registry/` | the run supervisor: state machine, run registry, workspace lock (ADR-0004) |
+| `crates/act-mcp/src/runner/` | the act process: argv, log tee with redaction, process-group teardown |
+| `crates/act-mcp/src/workspace/` | the pre-start validation gate: commit/HEAD gates, isolation policy, probes |
+| `crates/act-mcp/src/evidence/` | the writer's half of the contract: the atomic append-only writer, the `validate-evidence` checker, the coverage and benchmark extractors (the types come from `act-evidence` and are re-exported here) |
+| `crates/act-mcp/tests/` | one suite per tool, the protocol conformance matrix, `tests/e2e` (the whole pipeline) |
+| `crates/act-mcp/tests/realdata/` | the trivial two-workflow fixture, the `act --json` shape table and its captured goldens (when there are any), and the record goldens — see `crates/act-mcp/tests/realdata/fixture/README.md` |
+
+The dependency arrows are one-way and checked by a script, not by convention:
+`act-mcp → act-evidence`, `fathom → act-evidence`, and nothing from `fathom` to `act-mcp` in either
+direction (`scripts/validate_crate_layout.py`, drilled by `scripts/crate_layout_drill.sh`).
 
 ## Further reading
 
@@ -686,8 +706,8 @@ and `.github/workflows/nightly-real-act.yml` runs it nightly where docker exists
 * [docs/adr/0004-run-lifecycle.md](docs/adr/0004-run-lifecycle.md) — runs that outlive the request
 * [docs/adr/0005-fathom-crate-layout-and-dependencies.md](docs/adr/0005-fathom-crate-layout-and-dependencies.md) — the Cargo workspace: where fathom lives and what it may depend on
 * [docs/adr/0006-fathom-workspace-layout.md](docs/adr/0006-fathom-workspace-layout.md) — the `.fathom` cache root, `fathom.toml` and the metric cache store (also: `.fathom/LAYOUT.md`, the same contract from inside the cache directory)
-* [docs/adr/0007-maintainability-index.md](docs/adr/0007-maintainability-index.md) — the Maintainability Index: the formula, what counts as an operator/decision point/logical line, the per-commit aggregate and bands, and the pure-Rust front end (also: `schema/mi-definition.json` for the machine-readable constants, `scripts/mi_reference.py` as the oracle, `tests/testdata/mi/` for the hand-counted golden vectors)
-* [docs/adr/0008-per-commit-metric-model.md](docs/adr/0008-per-commit-metric-model.md) — the per-commit metric model: how `.evidence` becomes one row per commit (which records are selected, how a coverage % is pooled, how benchmark groups are deduped, and what "action success" means when the server has forgotten the run) (also: `schema/metric-model.json` for the machine-readable rule set, `scripts/metric_model_reference.py` as the oracle, `tests/testdata/metrics/` for the golden vectors)
+* [docs/adr/0007-maintainability-index.md](docs/adr/0007-maintainability-index.md) — the Maintainability Index: the formula, what counts as an operator/decision point/logical line, the per-commit aggregate and bands, and the pure-Rust front end (also: `schema/mi-definition.json` for the machine-readable constants, `scripts/mi_reference.py` as the oracle, `crates/act-mcp/tests/testdata/mi/` for the hand-counted golden vectors)
+* [docs/adr/0008-per-commit-metric-model.md](docs/adr/0008-per-commit-metric-model.md) — the per-commit metric model: how `.evidence` becomes one row per commit (which records are selected, how a coverage % is pooled, how benchmark groups are deduped, and what "action success" means when the server has forgotten the run) (also: `schema/metric-model.json` for the machine-readable rule set, `scripts/metric_model_reference.py` as the oracle, `crates/act-mcp/tests/testdata/metrics/` for the golden vectors)
 * [docs/testing.md](docs/testing.md) — the suites, and how to read a red one
 * [docs/ci.md](docs/ci.md) — CI, in full
 * [docs/security.md](docs/security.md) — loopback-only, and what that does and does not protect

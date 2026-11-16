@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the ADR-0001 tool-contract fixtures under tests/e2e/testdata/tool-io.
+"""Generate the ADR-0001 tool-contract fixtures under crates/act-mcp/tests/e2e/testdata/tool-io.
 
 One reviewable source for the whole fixture tree, so the tree is reproducible and diffable
 instead of 48 hand-made files with inconsistent formatting. The fixtures are hand-authored
@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent / "tests/e2e/testdata/tool-io"
+ROOT = Path(__file__).resolve().parent.parent.parent / "crates/act-mcp/crates/act-mcp/tests/e2e/testdata/tool-io"
 SHA = "2f7c1a4b9e0d3c6a5b8f1e2d4c6a8b0f3e5d7c91"
 BENCH_RUN = "20261110T004203Z-a1b2c3"
 COV_RUN = "20261110T011507Z-d4e5f6"

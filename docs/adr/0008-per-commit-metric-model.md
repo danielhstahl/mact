@@ -70,7 +70,7 @@ date: 2026-11-16
   row field list; [`scripts/metric_model_reference.py`](../../scripts/metric_model_reference.py) is
   the reference implementation — *the oracle* mact-by1.6's Rust reader is graded against, and it
   **loads** that JSON rather than restating it (`--tree`, `--explain`, `--table`, `--vectors`); and
-  [`tests/testdata/metrics/`](../../tests/testdata/metrics) holds 16 golden vectors — a fixture tree
+  [`tests/testdata/metrics/`](../../crates/act-mcp/tests/testdata/metrics) holds 16 golden vectors — a fixture tree
   plus the hand-annotated row it must produce, one per awkward case.
 - **Checked by:** [`scripts/validate_metric_model.py`](../../scripts/validate_metric_model.py)
   (C1–C11, run in `scripts/ci.sh`'s `schema` step beside the other ADR checkers; `--self-test` breaks
@@ -844,7 +844,7 @@ not pretend the contract says something it does not.
 |---|---|---|
 | [`schema/metric-model.json`](../../schema/metric-model.json) | every constant, closed vocabulary, the row field list, the four states, the glyph table, the forbidden list | read by the reference and by the checker; nothing else parses it |
 | [`scripts/metric_model_reference.py`](../../scripts/metric_model_reference.py) | the semantics, executable: `--tree` derives rows, `--explain` prints every keep/drop decision, `--vectors --diff` re-derives the goldens | mact-by1.6's test oracle; CI via the checker |
-| [`tests/testdata/metrics/`](../../tests/testdata/metrics) | 16 vectors, each a fixture tree plus the row it must produce and a hand-written note showing the arithmetic (`expected/*.json` → `notes`); a fixture that needs an *empty* directory to make its point — a foreign SHA-shaped name, or a commit with no evidence at all — carries a `.gitkeep`, because git stores content and not intent and a directory a clone cannot recreate is a rule nobody can test | re-derived on every CI run |
+| [`tests/testdata/metrics/`](../../crates/act-mcp/tests/testdata/metrics) | 16 vectors, each a fixture tree plus the row it must produce and a hand-written note showing the arithmetic (`expected/*.json` → `notes`); a fixture that needs an *empty* directory to make its point — a foreign SHA-shaped name, or a commit with no evidence at all — carries a `.gitkeep`, because git stores content and not intent and a directory a clone cannot recreate is a rule nobody can test | re-derived on every CI run |
 | [`scripts/validate_metric_model.py`](../../scripts/validate_metric_model.py) | ADR ↔ JSON ↔ reference ↔ vectors ↔ docs, plus the arithmetic properties of C8 and a `--self-test` that proves the checks fire | `scripts/ci.sh schema` |
 | `docs/evidence-format.md` §12 recipes | the *other* implementation: jq, written from the reader's side | C7 diffs this reference against the recorded output of recipes 2 and 6 on the same tree |
 

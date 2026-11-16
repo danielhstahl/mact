@@ -17,7 +17,7 @@
 #                is a broken reference into the reasoning this crate's docs exist to carry,
 #                so it is an error, not a warning.
 #   test         `cargo test --all-features`. The whole contract: unit tests, the tool
-#                suites, the protocol conformance matrix and tests/e2e (real server, stub
+#                suites, the protocol conformance matrix and crates/act-mcp/tests/e2e (real server, stub
 #                act). Nothing in here needs docker or act — if a test needs them it is the
 #                wrong test, and it belongs behind `#[ignore]` with the reason in its
 #                `reason =` (see docs/testing.md).
@@ -44,10 +44,11 @@
 #   supply-chain cargo-deny: licences, duplicate/wildcard policy and sources always, RUSTSEC
 #                advisories when the network is allowed (`--offline` skips exactly that
 #                part and says so). `cargo tree -d` is printed alongside as a note.
-#   release      `cargo build --release` plus scripts/smoke_binary.sh: the shipped binary
-#                must answer --version and --help, must reject a bad flag, and must run
-#                validate-evidence for real. A binary that builds but cannot run is not a
-#                release.
+#   release      `cargo build --release -p act-mcp --bin act-mcp` plus scripts/smoke_binary.sh:
+#                the shipped binary must answer --version and --help, must reject a bad flag, and
+#                must run validate-evidence for real. A binary that builds but cannot run is not a
+#                release. Selective (`-p act-mcp --bin act-mcp`) on purpose: one artefact is one
+#                binary, and a broken TUI must never block shipping the server (ADR-0005 §3).
 #
 # Usage and the full flag list: `scripts/ci.sh --help`. CI runs
 # `scripts/ci.sh --keep-going fmt clippy doc test schema supply-chain` and a separate
@@ -164,6 +165,11 @@ cd "$repo_root"
 
 target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
 
+# The integration tests and their fixtures live in the crate since the workspace split
+# (ADR-0005 §9: Cargo looks for `tests/` next to the package manifest), while `schema/` and
+# `scripts/` stayed at the root — so anything that names a test fixture goes through this.
+crate_tests="$repo_root/crates/act-mcp/tests"
+
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
     c_bold=$'\033[1m'
     c_red=$'\033[31m'
@@ -225,7 +231,10 @@ step_schema() {
     # is `include_str!`-ed into act-mcp, so checking those bytes is what
     # `act-mcp validate-evidence` does in production. `--schema`/`--meta-schema` name the
     # files on disk so this step fails on the file, not only on the embedded copy.
-    cargo build
+    # Selective building, and not only for speed: the schema step is about the server's binary, and
+    # since ADR-0005 a broken TUI must never be able to fail the contract checker. `-p act-mcp
+    # --bin act-mcp` is the same spelling the release step uses.
+    cargo build -p act-mcp --bin act-mcp
     local bin
     if [[ -n "${CARGO_BUILD_TARGET:-}" ]]; then
         bin="$target_dir/$CARGO_BUILD_TARGET/debug/act-mcp"
@@ -241,7 +250,7 @@ step_schema() {
     "$bin" validate-evidence \
         --schema schema/evidence.schema.json \
         --meta-schema schema/run-meta.schema.json \
-        tests/e2e/testdata/expected
+        "$crate_tests/e2e/testdata/expected"
 
     local py=${PYTHON:-python3}
 
@@ -250,7 +259,7 @@ step_schema() {
     #    stop agreeing with one another. validate_tool_contract.py belongs here rather than
     #    with the jsonschema checks below because the half of it that matters most — ADR-0001's
     #    error-code and status tables, the schema, and the fixture index in
-    #    tests/e2e/testdata/README.md — needs no package at all; it skips its own
+    #    crates/act-mcp/tests/e2e/testdata/README.md — needs no package at all; it skips its own
     #    fixture-validating half, and says so, when jsonschema is absent.
     #    validate_crate_layout.py is the odd one out and belongs here anyway: it reads
     #    Cargo.toml/Cargo.lock instead of schema/*.json, because ADR-0005's artifacts *are*
@@ -326,7 +335,7 @@ PY
     "$py" scripts/validate_evidence.py \
         --schema schema/evidence.schema.json \
         --meta-schema schema/run-meta.schema.json \
-        tests/e2e/testdata/expected
+        "$crate_tests/e2e/testdata/expected"
 }
 
 step_supply_chain() {
@@ -372,12 +381,15 @@ step_release() {
         bin="$target_dir/release/act-mcp"
     fi
 
-    cargo build --release ${build_target[@]+"${build_target[@]}"}
+    # One artefact, one binary (ADR-0005 §3): the release tarball is `act-mcp` renamed, and a
+    # broken TUI must never block shipping the server. `fathom` gets its own build job when
+    # mact-by1.16 adds it (`-p fathom --bin fathom`), not a ride on this one.
+    cargo build --release -p act-mcp --bin act-mcp ${build_target[@]+"${build_target[@]}"}
 
     # Where the smoke script drops --version/sha256 for the artifact steps to upload.
     local report_dir
     report_dir=$(dirname "$bin")/dist
-    "$script_dir/smoke_binary.sh" --report "$report_dir" --fixture "$repo_root/tests/e2e/testdata/expected" "$bin"
+    "$script_dir/smoke_binary.sh" --report "$report_dir" --fixture "$crate_tests/e2e/testdata/expected" "$bin"
 }
 
 # What each step wants, printed when it fails so the log answers "now what".

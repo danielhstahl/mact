@@ -110,7 +110,9 @@ jobs:
           docker version --format 'docker daemon {{.Server.Version}}'
 
       - name: build release binary
-        run: cargo build --release
+        # The server crate only: this job drives `act-mcp`, and naming the crate keeps a TUI build
+        # failure from masquerading as an act-shape finding (ADR-0005 §3's selective building).
+        run: cargo build --release -p act-mcp --bin act-mcp
 
       # The deliverable, with the flags a human would use. `--strict-shape` because a shape
       # divergence is the finding this job exists to catch; `--with-cancel` for the SIGTERM and

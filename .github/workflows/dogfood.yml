@@ -7,8 +7,11 @@ on:
     # A docs-only commit cannot break the crate, and a build that runs anyway teaches
     # people to ignore the badge. The full set of paths that can break it:
     paths:
-      - "src/**"
-      - "tests/**"
+      # Every crate in the workspace, in one pattern: each crate's manifest, sources and tests
+      # live under `crates/` since the split (mact-by1.5, ADR-0005 §3), and a pattern that names
+      # the directory rather than the crates cannot forget the next one. The root manifest is
+      # listed below; a workspace member's own Cargo.toml is inside `crates/**`.
+      - "crates/**"
       - "schema/**"
       - "scripts/**"
       - "Cargo.toml"

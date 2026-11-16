@@ -11,7 +11,7 @@ same fixtures.
 Checks performed (all of them, every run):
 
   1. schema/tool-contract.schema.json is a legal JSON Schema 2020-12 document.
-  2. every fixture under tests/e2e/testdata/tool-io/valid validates against the $defs entry
+  2. every fixture under crates/act-mcp/tests/e2e/testdata/tool-io/valid validates against the $defs entry
      named by its filename, and every fixture under invalid/ is REJECTED (ideally for
      exactly one rule; more than one is reported as a weak fixture, not an error).
   3. run_workflow_result's field set is exactly run_view's field set plus 'deduplicated'
@@ -57,11 +57,11 @@ else:
 
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_SCHEMA = REPO / "schema/tool-contract.schema.json"
-DEFAULT_FIXTURES = REPO / "tests/e2e/testdata/tool-io"
+DEFAULT_FIXTURES = REPO / "crates/act-mcp/tests/e2e/testdata/tool-io"
 ADR_PATH = REPO / "docs/adr/0001-tool-contract.md"
 REFERENCE_PATH = REPO / "docs/tool-contract.md"
 
-TESTDATA_README = REPO / "tests/e2e/testdata/README.md"
+TESTDATA_README = REPO / "crates/act-mcp/tests/e2e/testdata/README.md"
 
 # The four tools, and the filename token that selects the shared error payload shape.
 TOOLS = ("run_workflow", "list_tasks", "run_status", "cancel_run")
@@ -330,7 +330,7 @@ def check_docs_text(problems: list[str]) -> None:
 
 
 def check_fixtures_documented(fixtures: Path, problems: list[str]) -> None:
-    """Every fixture must appear in tests/e2e/testdata/README.md.
+    """Every fixture must appear in crates/act-mcp/tests/e2e/testdata/README.md.
 
     The invalid/ set is the readable statement of what the schema forbids; an undocumented fixture
     is a rule nobody can look up. ADR-0002's fixtures are held to the same standard.

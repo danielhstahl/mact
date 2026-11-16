@@ -43,7 +43,7 @@ from typing import Any
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 DEFAULT_MODEL = REPO / "schema" / "metric-model.json"
-DEFAULT_VECTORS = REPO / "tests" / "testdata" / "metrics"
+DEFAULT_VECTORS = REPO / "crates" / "act-mcp" / "tests" / "testdata" / "metrics"
 
 # The highest evidence schema_version this reader understands. ADR-0002 section 11: refuse what you
 # cannot read — skip and count, never guess.
@@ -827,7 +827,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--explain", action="store_true", help="also print the per-record keep/drop table")
     ap.add_argument("--table", action="store_true", help="print the timeline columns instead of JSON")
     ap.add_argument("--ascii", action="store_true", dest="ascii_only", help="ascii glyphs only")
-    ap.add_argument("--vectors", action="store_true", help="work on tests/testdata/metrics instead of --tree")
+    ap.add_argument("--vectors", action="store_true", help="work on crates/act-mcp/tests/testdata/metrics instead of --tree")
     ap.add_argument("--diff", action="store_true", help="with --vectors: compare against expected/")
     ap.add_argument("--write", action="store_true", help="with --vectors: rewrite expected/")
     ap.add_argument("--quiet", action="store_true")

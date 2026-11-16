@@ -5,7 +5,7 @@
 - **Ticket:** mact-f1w.1
 - **Machine-readable form:** [`schema/evidence.schema.json`](../../schema/evidence.schema.json) (JSON Schema 2020-12, `schema_version: 1`), [`schema/run-meta.schema.json`](../../schema/run-meta.schema.json)
 - **Checked by:** [`scripts/validate_evidence.py`](../../scripts/validate_evidence.py) and the fixtures
-  under [`tests/e2e/testdata`](../../tests/e2e/testdata), plus `act-mcp validate-evidence` (mact-f1w.9),
+  under [`tests/e2e/testdata`](../../crates/act-mcp/tests/e2e/testdata), plus `act-mcp validate-evidence` (mact-f1w.9),
   which implements the same rules and the same exit codes so CI can run either; the two are required to
   reach the same verdict, and `tests/evidence_contract.rs` holds them to it
 - **Related:** ADR-0001 (tool contract), ADR-0003 (commit isolation / worktrees), ADR-0004 (run lifecycle)
@@ -631,7 +631,7 @@ lookahead in regexes, so the Rust `regex`-crate-backed validator accepts every p
 
 `tests/e2e/testdata/` layout: `expected/` holds hand-written valid records (one file per scenario,
 `benchmark.jsonl` and `coverage.jsonl` are the goldens the extraction tickets name), `invalid/` holds
-one violation per file. See [`tests/e2e/testdata/README.md`](../../tests/e2e/testdata/README.md).
+one violation per file. See [`tests/e2e/testdata/README.md`](../../crates/act-mcp/tests/e2e/testdata/README.md).
 
 ## Consequences
 

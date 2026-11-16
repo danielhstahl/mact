@@ -5,7 +5,7 @@ including the case where nothing did. It restates
 [ADR-0002 §3, §5](adr/0002-evidence-jsonl-contract.md) for the input side and adds the facts
 about third-party act versions that the ADR cannot know. Where this page and the ADR disagree,
 the ADR wins; where it disagrees with a released act, act wins and
-[tests/realdata/golden/act-shape.json](../tests/realdata/golden/act-shape.json) is where the
+[crates/act-mcp/tests/realdata/golden/act-shape.json](../crates/act-mcp/tests/realdata/golden/act-shape.json) is where the
 contradiction gets recorded.
 
 Contents: [1. the three producers](#1-the-three-producers) ·
@@ -15,7 +15,7 @@ Contents: [1. the three producers](#1-the-three-producers) ·
 [5. making sure a number exists](#5-making-sure-a-number-exists)
 
 Assumed versions, restated so a claim can be reproduced: act-mcp **0.1.0**, act
-**≥ 0.2.62** (`src/workspace.rs::MINIMUM_ACT_VERSION`, raisable with `--minimum-act-version`),
+**≥ 0.2.62** (`crates/act-mcp/src/workspace.rs::MINIMUM_ACT_VERSION`, raisable with `--minimum-act-version`),
 `schema_version` **1**.
 
 ---
@@ -45,9 +45,9 @@ Once a run has read the payload file it is moved out of `incoming/` and kept at
 `job_file` record was parsed from survives the scratch directory that `source_path` names
 ([ADR-0002 §3.4](adr/0002-evidence-jsonl-contract.md)).
 
-The parsing lives in [`act_mcp::evidence::benchmark`](../src/evidence/benchmark.rs); the
+The parsing lives in [`act_mcp::evidence::benchmark`](../crates/act-mcp/src/evidence/benchmark.rs); the
 field names it reads are pinned by
-[`tests/fixtures/benchmark/act.jsonl`](../tests/fixtures/benchmark/act.jsonl) rather than by
+[`crates/act-mcp/tests/fixtures/benchmark/act.jsonl`](../crates/act-mcp/tests/fixtures/benchmark/act.jsonl) rather than by
 code comments, because the log is act's format and not ours.
 
 ## 2. Precedence and suppression
@@ -142,11 +142,11 @@ without step timings": the flag may be raised freely, and never lowered below 0.
 exactly why it was not made for everybody by raising the floor.
 
 **Where this is pinned.**
-[`tests/fixtures/benchmark/act-pre-0.2.76.jsonl`](../tests/fixtures/benchmark/act-pre-0.2.76.jsonl)
+[`crates/act-mcp/tests/fixtures/benchmark/act-pre-0.2.76.jsonl`](../crates/act-mcp/tests/fixtures/benchmark/act-pre-0.2.76.jsonl)
 is the pre-v0.2.76 log shape (built from act's source at those tags, not typed from hope),
-[`tests/benchmark_extraction.rs`](../tests/benchmark_extraction.rs) turns it into the warning
-assertion, `src/evidence/benchmark/act_log.rs` carries the source quotation, and
-[`tests/realdata/golden/act-shape.json`](../tests/realdata/golden/act-shape.json) keeps the
+[`crates/act-mcp/tests/benchmark_extraction.rs`](../crates/act-mcp/tests/benchmark_extraction.rs) turns it into the warning
+assertion, `crates/act-mcp/src/evidence/benchmark/act_log.rs` carries the source quotation, and
+[`crates/act-mcp/tests/realdata/golden/act-shape.json`](../crates/act-mcp/tests/realdata/golden/act-shape.json) keeps the
 `executionTime-version-floor` gap on the record for the real-act smoke to re-check against a
 live log.
 

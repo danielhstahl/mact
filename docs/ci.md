@@ -36,11 +36,11 @@ matters on boxes where `pip` and `python3` disagree about where packages live.
 |---|---|---|
 | `fmt` | `cargo fmt --all -- --check` | hand-formatting drift; fix is `cargo fmt --all` |
 | `clippy` | `cargo clippy --all-targets --all-features -- -D warnings` | lints, and — because warnings are fatal — a toolchain bump's new opinions. A suppress carries `reason =` |
-| `doc` | `cargo doc --no-deps --all-features` with `RUSTDOCFLAGS=-D warnings -D rustdoc::broken_intra_doc_links` | a doc link that stopped pointing at the thing it meant — including a link into a `#[cfg(test)]` module, which rustdoc never builds and therefore can never resolve. This crate's module docs carry the reasoning for its design, so a dangling link is a lost argument, not cosmetics; the fix is to name a linkable path or write the reference as a code span, never to soften the lint |
-| `test` | `cargo test --all-features` | the contract: unit tests, one suite per tool, the MCP 2026-07-28 conformance matrix, and `tests/e2e` (real server, stub `act`, `.evidence` on disk) |
+| `doc` | `cargo doc --no-deps --all-features` with `RUSTDOCFLAGS=-D warnings -D rustdoc::broken_intra_doc_links` | a doc link that stopped pointing at the thing it meant — including a link into a `#[cfg(test)]` module, which rustdoc never builds and therefore can never resolve. These crates' module docs carry the reasoning for their design, so a dangling link is a lost argument, not cosmetics; the fix is to name a linkable path or write the reference as a code span, never to soften the lint |
+| `test` | `cargo test --all-features` | the contract: unit tests, one suite per tool, the MCP 2026-07-28 conformance matrix, and `crates/act-mcp/tests/e2e` (real server, stub `act`, `.evidence` on disk) |
 | `schema` | see below | the JSON Schema of both accepted contracts — ADR-0001's tool contract and ADR-0002's evidence format — and ADR↔schema drift |
 | `supply-chain` | `cargo deny check licenses bans sources` + `... advisories`, then a `cargo tree -d` note | licences, duplicate/wildcard policy, dependency provenance, RUSTSEC |
-| `release` | `cargo build --release` + `scripts/smoke_binary.sh` | that the artefact exists, reports its version, answers `--help`, refuses a bad flag, and validates evidence with its embedded schemas |
+| `release` | `cargo build --release -p act-mcp --bin act-mcp` + `scripts/smoke_binary.sh` | that the artefact exists, reports its version, answers `--help`, refuses a bad flag, and validates evidence with its embedded schemas. Selective on purpose: the artefact is one renamed binary, so a broken `fathom` must never block shipping the server (ADR-0005 §3) |
 
 `test` does not pass `--ignored`. The `#[ignore]`d tests are the ones that wait on
 wall-clock time (the `runner_pdeathsig` net, and its helper) or that need a 20 s term grace;
@@ -52,7 +52,7 @@ that needs a container daemon belongs behind `#[ignore]` with the reason in its
 ### What `schema` runs, in order
 
 1. `act-mcp validate-evidence --schema schema/evidence.schema.json --meta-schema
-   schema/run-meta.schema.json tests/e2e/testdata/expected` — the engine the binary embeds
+   schema/run-meta.schema.json crates/act-mcp/tests/e2e/testdata/expected` — the engine the binary embeds
    (`jsonschema-rs`, `include_str!` of the same bytes) compiles the schema *files* and
    validates the committed evidence tree. This is the hard one: it fails if the schema stops
    compiling or a record stops satisfying it, with no python involved.
@@ -69,12 +69,12 @@ that needs a container daemon belongs behind `#[ignore]` with the reason in its
    a fourth schema — and `.gitignore` plus `.fathom/LAYOUT.md` for the last, because ADR-0006's
    artifacts are a directory contract and the ignore rules that grant it visibility; it is what makes
    an orphaned `.fathom` whitelist entry a build failure instead of a mystery; and
-   `schema/mi-definition.json` plus the golden vectors in `tests/testdata/mi` for the sixth, because
+   `schema/mi-definition.json` plus the golden vectors in `crates/act-mcp/tests/testdata/mi` for the sixth, because
    what ADR-0007 pins is a set of numbers and a set of closed enumerations — the checker diffs the
    ADR's own copy of the constants against the JSON, re-derives every golden vector twice
    (`scripts/mi_reference.py` in binary64, the checker itself in 40-digit decimal), and fails if the
    `tree-sitter` ban ADR-0007 §6 depends on has been lifted; and
-   `schema/metric-model.json` plus the fixture trees in `tests/testdata/metrics` for the seventh,
+   `schema/metric-model.json` plus the fixture trees in `crates/act-mcp/tests/testdata/metrics` for the seventh,
    because what ADR-0008 pins is which records a commit's number is made of — that one additionally
    grades `scripts/metric_model_reference.py` against the recorded output of the jq recipes in
    `docs/evidence-format.md` §12, which is the only place this repo has the same question asked in two
@@ -82,7 +82,7 @@ that needs a container daemon belongs behind `#[ignore]` with the reason in its
    `validate_evidence.py`, which is check (1) above and check (3) below.) Of these,
    `validate_tool_contract.py` is the one that keeps ADR-0001's error-code table, the run
    status vocabulary and the fixture index in
-   [`tests/e2e/testdata/README.md`](../tests/e2e/testdata/README.md) in step with
+   [`crates/act-mcp/tests/e2e/testdata/README.md`](../crates/act-mcp/tests/e2e/testdata/README.md) in step with
    `schema/tool-contract.schema.json`; its fixture-validating half needs `jsonschema` (see 3)
    and says so when the package is missing, while its docs-parity half — the half that catches
    a renamed error code or an undocumented fixture — always runs.
@@ -93,8 +93,8 @@ that needs a container daemon belongs behind `#[ignore]` with the reason in its
    installs it, or set `PYTHON=` to an interpreter that has it.
 
 The fixture index rule is worth naming because it is the one a newcomer trips: every file in
-`tests/e2e/testdata/tool-io/{valid,invalid}/` has to be named in
-`tests/e2e/testdata/README.md`, which is the human-readable statement of what the schema
+`crates/act-mcp/tests/e2e/testdata/tool-io/{valid,invalid}/` has to be named in
+`crates/act-mcp/tests/e2e/testdata/README.md`, which is the human-readable statement of what the schema
 forbids. Add a fixture without a row and `schema` goes red; the row is the documentation, and
 an undocumented fixture is a contract rule nobody can look up. Fixtures themselves come from
 `scripts/gen_tool_contract_fixtures.py`, which is idempotent — edit the generator, re-run it,
@@ -106,7 +106,7 @@ never hand-edit a fixture.
 check ──► release (x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu)
 ```
 
-* **Triggers.** Pushes to `master` that touch the crate (`src/`, `tests/`, `schema/`,
+* **Triggers.** Pushes to `master` that touch the crate (`crates/act-mcp/src/`, `crates/act-mcp/tests/`, `schema/`,
   `scripts/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `deny.toml`, the workflow
   itself) and every pull request — PRs are unfiltered because a required status check that
   sometimes does not run is a required status check that blocks merges. A docs-only push
@@ -133,8 +133,10 @@ a cold cache is under ten minutes for `check`, and `release` runs after it.
 
 ## 4. Toolchain policy
 
-* `Cargo.toml`'s `rust-version = "1.88"` is the **floor**: rmcp 3.9's own floor, and the
-  oldest compiler allowed to build this crate. Do not lower it.
+* The root manifest's `[workspace.package] rust-version = "1.88"` is the **floor**: rmcp 3.9's own
+  floor, and the oldest compiler allowed to build any crate in this workspace. Members inherit it
+  (`rust-version.workspace = true`); do not lower it, and do not give a member its own —
+  `scripts/validate_crate_layout.py` C3 is about that, from both directions.
 * `rust-toolchain.toml` is the **pin**: the one toolchain CI and every local `cargo`
   invocation use, so "green on my box" and "green on GitHub" are the same claim. It is
   1.99.1 rather than the 1.88 floor because the committed `Cargo.lock` cannot be built by
@@ -173,7 +175,7 @@ check, and asserts that the matching `scripts/ci.sh` step exits non-zero:
 | `test-failing-assertion` | a unit test that asserts false | `test` |
 | `schema-broken-schema-file` | `schema/evidence.schema.json` edited into a document the engine refuses to compile | `schema` |
 | `schema-bad-evidence-record` | a record missing the required envelope fields appended to a golden | `schema` |
-| `schema-undocumented-tool-io-fixture` | the `tests/e2e/testdata/README.md` row naming one tool-io fixture, deleted | `schema` |
+| `schema-undocumented-tool-io-fixture` | the `crates/act-mcp/tests/e2e/testdata/README.md` row naming one tool-io fixture, deleted | `schema` |
 | `supply-chain-disallowed-licence` | `MIT` removed from `deny.toml`'s allow list | `supply-chain` |
 
 Run it after changing `ci.sh` itself, and before trusting a "green" that arrived after
@@ -209,7 +211,7 @@ Two plumbing notes, because both cost an hour once:
 ## 7. Deliberately not checked here
 
 * **Real `act`, real docker.** The runner has neither and must never need either;
-  `tests/e2e` is what proves the pipeline without them (docs/testing.md §1). Anything that
+  `crates/act-mcp/tests/e2e` is what proves the pipeline without them (docs/testing.md §1). Anything that
   needs a container daemon is `#[ignore]`d and lives on a docker-capable runner.
 * **Non-linux platforms.** `deny.toml`'s `[graph] targets` and the release matrix are the
   platforms this project ships; `runner` and `registry` are POSIX-only by decision, so a

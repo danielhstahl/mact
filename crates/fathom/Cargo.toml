@@ -1,0 +1,44 @@
+[package]
+name = "fathom"
+description = "Per-commit code and repo quality timeline: reads .evidence and git history, draws the timeline, prints the report"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# One package, two targets (ADR-0005 §6): the bin is `Clap::parse()` plus a call into the lib, and
+# the lib holds everything testable. That shape is what lets mact-by1.9 test a screen and
+# mact-by1.13 test `report`'s golden output without starting a TTY or a process — and it is how
+# `act-mcp` is shaped, so the two halves of the workspace are recognisably the same kind of program.
+[lib]
+name = "fathom"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fathom"
+path = "src/main.rs"
+
+[dependencies]
+# The contract, not the server (ADR-0005 P4): fathom reads `.evidence` with `act_evidence`'s
+# record types — the same strict deserializer the writer uses — and never names `act_mcp`. The
+# `json-schema` feature is deliberately NOT enabled: the `JsonSchema` impls are the server's need,
+# and this crate's build must not carry schemars (ADR-0005 §6, check C5/C6).
+# First real consumer: mact-by1.6 (the evidence reader). Today this crate names `SCHEMA_VERSION`
+# at boot, which is the one thing about the contract a reader must know before it can say
+# "this fathom speaks evidence schema v1".
+act-evidence = { workspace = true }
+
+clap = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+# `thiserror` is not on ADR-0005 §6's short list, and §6 says the list is a code-review question
+# rather than an ADR question as long as nothing on the forbidden side rides in with it: this is a
+# pure-proc-macro error enum crate with no runtime, no async, no transport. It is here because the
+# ticket asks fathom's refusals to mirror `act_mcp::config`'s style, and that style is thiserror.
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -498,3 +498,58 @@ against this ADR rather than inventing its own answer mid-move.
   tarball — mact-by1.16.
 - Whether `act-evidence` is ever published to crates.io for out-of-repo readers (§8). Deferred;
   `publish = false` until someone asks.
+
+## Implementation status
+
+Written by mact-by1.1 against a tree that was one crate: there was no `crates/`, no `act-evidence`,
+and `fathom` was a name in a dependency graph nobody had built. **mact-by1.5 executed §9**, so the
+tree is now §3's three crates with one root `Cargo.toml`/`Cargo.lock`, workspace inheritance for the
+package fields, one dependency table and `[workspace.lints]`; `scripts/validate_crate_layout.py`
+C1–C13 pass and `scripts/crate_layout_drill.sh` breaks each of them on purpose. What differs from
+the letter of this ADR, and why — read this section as an amendment, not a footnote:
+
+* **`act-evidence` has one Cargo feature, `json-schema`, default off.** §2 said it "does not need the
+  `schemars` dependency at all", which is true of the runtime path — the schema *files* are JSON text
+  and nothing here needs Rust codegen to read them. What needs `schemars` is the pair of second
+  opinions that prove the Rust types and `schema/evidence.schema.json` still agree: `validate.rs`'s
+  `load_schema`/`schema_says_the_same`, which `schema_for!(EvidenceRecord)` against the file, and
+  `act-mcp`'s `tests/evidence_contract.rs`, which runs that over the whole golden corpus. So the
+  derives and those two functions are behind `#[cfg(feature = "json-schema")]`; a reader that never
+  asks the question never links `schemars`, and the C5 drill ("schemars stays optional so a reader's
+  build can skip it") still fires. `act-mcp` turns the feature on, which is why the move changed no
+  behaviour at all.
+* **`validate.rs` crossed whole, not just its tree logic.** The pure half of it *is* the `.jsonl`
+  line-reader this ADR exists to share (§1): content-hash dedupe, line-numbered errors, `O_NOFOLLOW`
+  against a symlinked record file, size caps, and `create(false)`. Splitting it in two would hand
+  fathom a second implementation to write, which is P4's whole reason for existing. Consequence for
+  the tickets after this one: mact-by1.7's scanner goes through `act_evidence::validate` and must not
+  open the evidence root with its own `File::open` — the "a half-written file is not visible"
+  guarantee (§1) lives there, not in the tree walk.
+* **`unsafe_code = "deny"` reached the integration tests, and four of them now carry an audited
+  `allow`.** §8's workspace lint applies to every target, and the test crates signal process groups
+  with `libc::kill`/`killpg`/`getpgid` (`boot.rs`, `hardening.rs`, `runner_execution.rs`,
+  `runner_pdeathsig.rs`, plus the shared `tests/common` module the e2e suites include). Each carries
+  a `reason =`, per §12's rule about the *form* an exception takes. `unsafe_code` stays `deny`, never
+  `forbid`, exactly as §8 says: `evidence::writer`'s `gethostname` audit continues to compile.
+* **`missing_docs` did not move into `[workspace.lints]`.** The checker (C8, drilled) requires it to
+  stay a per-crate attribute, and the crates keep `#![warn(missing_docs)]` in their `lib.rs`. A
+  workspace-wide `missing_docs` would apply to binaries and test crates, where the rule is not wanted;
+  the ADR's own §12 argument — an exception must name a line and a reason — cuts against spraying the
+  warning over targets that have no public surface.
+* **`.fathom/LAYOUT.md` stays at the repository root**, one copy. §9's "copy `.fathom/LAYOUT.md` too"
+  was about not *duplicating* the contract; `validate_fathom_layout.py` reads the root path and needed
+  no change, and a cache-root contract is not a crate's private detail.
+* **CI changed as §9 predicted, in `scripts/ci.sh` rather than only in the workflows.** The `schema`
+  step and the `release` step now build `-p act-mcp --bin act-mcp`; the workflow path filters are
+  `crates/**` because `src/**` and `tests/**` would have matched nothing and silently stopped running
+  CI at all. `cd.yml` no longer installs `cargo-edit`: with inherited versions there is one line to
+  set, and `scripts/set_version.py` sets it *and* checks that every member still inherits (C7's rule)
+  and that `cargo metadata` agrees. The separate `fathom` release job is still mact-by1.16's.
+
+Not done here, because they are later tickets and this ADR says so: the ratatui front end (by1.6), the
+evidence scanner (by1.7), git history and `history.jsonl` (by1.8), MI and Halstead (by1.9), the store
+(by1.10–by1.12), `report`'s engine (by1.13). What `fathom` is today: the clap surface above, `fathom.toml`
+discovery and refusal (§7.1), the workspace/evidence/cache-root boot rules including `.fathom` creation
+and `LAYOUT.md` (§4.1), and `index --status`'s root-precedence output (§10.1). `tui`, `report` and
+`index`'s write path validate the workspace — so a bad workspace is refused with exit 1 and a `fix:`
+today, in the shape later tickets must keep — and then exit 3 naming the ticket that owns the engine.

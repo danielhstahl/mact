@@ -1,0 +1,105 @@
+[package]
+name = "act-mcp"
+description = "HTTP MCP server (protocol 2026-07-28 and 2025-11-25) wrapping nektos/act with .evidence JSONL output"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The names did not change in the workspace split (ADR-0005 §6/P6, check C10): `cd.yml`,
+# `scripts/smoke_binary.sh`, `scripts/ci.sh`, `docs/ci.md` and the README all name `act-mcp`,
+# and the release tarball renames that binary to `mact`. Churn there buys nothing.
+[lib]
+name = "act_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "act-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# The `.evidence` contract: the record types, the shapes, the embedded schemas and the tree
+# validator. act-mcp is the *writer* and the `validate-evidence` checker; the types moved out to
+# `crates/act-evidence` so the reader side (fathom) can share them without borrowing the server.
+# `json-schema` is the feature that turns on the `JsonSchema` impls this crate needs to advertise
+# its tool schemas; fathom does not enable it (ADR-0005 §6).
+act-evidence = { workspace = true, features = ["json-schema"] }
+
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+clap = { workspace = true }
+tokio-util = { workspace = true }
+# tower-http is used for the request-trace layer; tower is here because rmcp's
+# tower services are composed with it directly (mact-f1w.13 adds the Host/Origin
+# guards as tower layers).
+serde = { workspace = true }
+serde_json = { workspace = true }
+# `schemars` is a direct dependency, not only act-evidence's: the tool input/output schemas in
+# `src/tools/` are written with it. The `JsonSchema` impls *on the record types* come from
+# act-evidence's `json-schema` feature above.
+schemars = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+which = { workspace = true }
+# YAML: needed to read `.github/workflows/*.yml` (the `name:` key and the `jobs:` map) during
+# workflow/task resolution — mact-f1w.6. Deliberately yaml-rust2 and not serde_yaml: serde_yaml is
+# unmaintained (RUSTSEC-2024-0320), and we need only "parse and walk", not serde derives on
+# untrusted workflow files. `default-features = false` drops encoding_rs; the loader reads &str.
+# mact-f1w.7 (`list_tasks`) builds its richer job index on the same crate rather than adding a
+# second parser.
+yaml-rust2 = { workspace = true }
+
+rmcp = { workspace = true }
+# Timestamps: UTC everywhere (ADR-0002 §2.2). The contract crate stamps the envelope's instants;
+# the runner stamps run start/finish, and both take the version pinned in the root manifest.
+chrono = { workspace = true }
+
+# git: plain `git` CLI via tokio::process, NOT git2/libgit2. Decided in
+# mact-f1w.5 and recorded here so nobody re-litigates it: act itself shells out
+# to git, the gates we need (rev-parse, status --porcelain, worktree add) are all
+# CLI subcommands, and libgit2 would add a C build dependency for no gain.
+# The CLI is first used in mact-f1w.6 (workspace + commit validator).
+#
+# Deferred deps, deliberately not listed yet so `cargo build` stays honest about
+# what this crate actually links; each lands with the ticket that consumes it:
+#   uuid          - NOT wanted after all: the ADR-0002 §1.2 run_id shape is
+#                   `YYYYMMDDTHHMMSSZ-<6 hex>`, which `runner::RunId::generate` builds from
+#                   chrono plus 3 bytes of /dev/urandom. A v7 UUID adds a dependency to
+#                   produce 6 hex characters; if a later ticket wants a real UUID, it is
+#                   additive inside `RunId`.
+#   jsonschema    - moved to `crates/act-evidence` with `schema.rs`/`validate.rs` (mact-by1.5);
+#                   act-mcp reaches the engine through `act_evidence::schema`, and the CLI flags
+#                   `--schema`/`--meta-schema` still name the same files on disk.
+
+# The runner (mact-f1w.8) is the only code in this crate that signals a process, and
+# signalling a *process group* has no `std` API: `killpg(2)`/`prctl(2)` come from libc.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+# Same rmcp, plus the client half so the tests can be a real MCP client (a stock
+# client listing tools is the ticket's definition of done).
+rmcp = { workspace = true, features = [
+    "client",
+    "transport-streamable-http-client-reqwest",
+] }
+tempfile = { workspace = true }
+# The protocol-conformance suite validates the advertised tool schemas with the same engine the
+# contract crate embeds. Since mact-by1.5 that engine is `act-evidence`'s dependency, but the test
+# names it directly, so it is declared here too — dev-only, so the shipped binary does not grow it.
+jsonschema = { workspace = true }
+# Raw JSON-RPC over plain HTTP for the cases a well-behaved client never sends
+# (e.g. an initialize naming an older protocol revision).
+reqwest = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+
+# libc is a regular (unix) dependency since mact-f1w.8; integration tests keep using it for
+# `libc::kill`, which is why the crate attribute is `deny(unsafe_code)` and not `forbid`, and why
+# the test crates that signal processes say so locally (the workspace lint covers every target).
+
+[lints]
+workspace = true

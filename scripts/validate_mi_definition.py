@@ -84,8 +84,12 @@ ADR_NAME = "0007-maintainability-index.md"
 DEFAULT_ADR = REPO / "docs" / "adr" / ADR_NAME
 ADR0006_NAME = "0006-fathom-workspace-layout.md"
 DEFAULT_DEFINITION = REPO / "schema" / "mi-definition.json"
-DEFAULT_VECTORS = REPO / "tests" / "testdata" / "mi"
+DEFAULT_VECTORS = REPO / "crates" / "act-mcp" / "tests" / "testdata" / "mi"
 SCRIPT_NAME = "validate_mi_definition.py"
+
+#: Where the golden MI vectors live. They moved into the crate with `tests/` in mact-by1.5's workspace
+#: split; `schema/mi-definition.json` and `deny.toml` stayed at the root (ADR-0005 §9).
+MI_TESTDATA = "crates/act-mcp/tests/testdata/mi"
 
 #: Check ids this script implements, so an ADR that cites "C9" cannot cite a check that does not exist.
 CHECK_IDS = {f"C{i}" for i in range(1, 14)}
@@ -168,9 +172,9 @@ class Tree:
         self.adr_text = self.adr.read_text(encoding="utf-8")
         self.definition = json.loads(self.definition_path.read_text(encoding="utf-8"))
         self.defn = mir.Definition(self.definition)
-        self.vector_dir = self.root / "tests/testdata/mi/vectors"
-        self.source_dir = self.root / "tests/testdata/mi/src"
-        self.aggregate_dir = self.root / "tests/testdata/mi/aggregates"
+        self.vector_dir = self.root / MI_TESTDATA / "vectors"
+        self.source_dir = self.root / MI_TESTDATA / "src"
+        self.aggregate_dir = self.root / MI_TESTDATA / "aggregates"
         self.vectors = load_json_dir(self.vector_dir)
         self.aggregates = load_json_dir(self.aggregate_dir)
         self.adr0006 = read_if_exists(self.root / "docs/adr" / ADR0006_NAME)
@@ -555,7 +559,7 @@ def check_languages(tree: Tree, problems: list[str], stats: dict[str, int]) -> N
 
 def check_vectors(tree: Tree, problems: list[str], stats: dict[str, int]) -> None:
     if not tree.vectors:
-        problems.append("C6: no golden vectors under tests/testdata/mi/vectors; the ADR would be "
+        problems.append(f"C6: no golden vectors under {MI_TESTDATA}/vectors; the ADR would be "
                         "asserting numbers nobody can re-derive")
         return
     for name, vector in sorted(tree.vectors.items()):
@@ -860,7 +864,8 @@ def build_fixture(dest: Path, adr: Path, definition: Path) -> Path:
     shutil.copy2(adr, dest / "docs" / "adr" / ADR_NAME)
     shutil.copy2(REPO / "docs" / "adr" / ADR0006_NAME, dest / "docs" / "adr" / ADR0006_NAME)
     shutil.copy2(definition, dest / "schema" / "mi-definition.json")
-    shutil.copytree(REPO / "tests/testdata/mi", dest / "tests" / "testdata" / "mi")
+    (dest / MI_TESTDATA).parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(REPO / MI_TESTDATA, dest / MI_TESTDATA)
     for name in ("deny.toml", "Cargo.lock", "Cargo.toml", "README.md", ".gitignore"):
         if (REPO / name).is_file():
             shutil.copy2(REPO / name, dest / name)
@@ -908,19 +913,19 @@ def mutate(kind: str, fixture: Path) -> None:
         # losing it is a three-check event and the drill says so
         rewrite("docs/adr/" + ADR_NAME, lambda t: t.replace("never 0", "never zero"))
     elif kind == "vector-mi":
-        json_rewrite("tests/testdata/mi/vectors/rust_basic.json", ["expect", "mi"], 56.2)
+        json_rewrite(f"{MI_TESTDATA}/vectors/rust_basic.json", ["expect", "mi"], 56.2)
     elif kind == "vector-table":
-        json_rewrite("tests/testdata/mi/vectors/rust_tiny.json", ["expect", "operators", "total"], 9)
+        json_rewrite(f"{MI_TESTDATA}/vectors/rust_tiny.json", ["expect", "operators", "total"], 9)
     elif kind == "vector-boundary":
-        json_rewrite("tests/testdata/mi/vectors/rust_tiny.json", ["expect", "statements"], 58)
+        json_rewrite(f"{MI_TESTDATA}/vectors/rust_tiny.json", ["expect", "statements"], 58)
     elif kind == "drop-vacuous-vectors":
         for name in ("rust_comment_only", "python_comment_only", "python_docstring"):
-            (fixture / f"tests/testdata/mi/vectors/{name}.json").unlink()
+            (fixture / f"{MI_TESTDATA}/vectors/{name}.json").unlink()
     elif kind == "identical-pair":
-        shutil.copy2(fixture / "tests/testdata/mi/src/rust_reformat_a.rs",
-                     fixture / "tests/testdata/mi/src/rust_reformat_b.rs")
+        shutil.copy2(fixture / f"{MI_TESTDATA}/src/rust_reformat_a.rs",
+                     fixture / f"{MI_TESTDATA}/src/rust_reformat_b.rs")
     elif kind == "aggregate-drift":
-        json_rewrite("tests/testdata/mi/aggregates/commit_small.json", ["expect", "aggregate"], 30.0)
+        json_rewrite(f"{MI_TESTDATA}/aggregates/commit_small.json", ["expect", "aggregate"], 30.0)
     elif kind == "treesitter":
         rewrite("Cargo.lock", lambda t: t + '\n[[package]]\nname = "tree-sitter"\nversion = "0.22.6"\n')
     elif kind == "unbanned":

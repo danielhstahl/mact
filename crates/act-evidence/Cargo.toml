@@ -1,0 +1,35 @@
+[package]
+name = "act-evidence"
+description = "The .evidence JSONL contract as code: record types, shape predicates, the embedded schemas, the tree validator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# A library only, on purpose (ADR-0005 §6, check C10): this crate is the contract, and a contract
+# crate with a binary starts owning CLI surface that belongs to `act-mcp validate-evidence` (the
+# writer's checker) or to `fathom` (the reader). `src/evidence/writer.rs` stayed in `act-mcp` for
+# the same reason — a reader must not be able to write.
+[lib]
+name = "act_evidence"
+path = "src/lib.rs"
+
+[features]
+default = []
+# The `JsonSchema` impls on the record types exist to mirror `schema/evidence.schema.json` for the
+# server's *tool* schemas. They are act-mcp's need, not a reader's, so they cost a reader nothing:
+# `act-mcp` enables this feature, `fathom` does not (ADR-0005 §6).
+json-schema = ["dep:schemars"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+jsonschema = { workspace = true }
+# Optional and feature-gated (see [features] above): without it a reader's build carries neither
+# schemars nor the code paths that use it.
+schemars = { workspace = true, optional = true }
+
+[lints]
+workspace = true

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Check ADR-0008 (the per-commit metric model): the ADR, schema/metric-model.json, the reference
-implementation, the golden vectors in tests/testdata/metrics and the sibling docs say one thing — read
+implementation, the golden vectors in crates/act-mcp/tests/testdata/metrics and the sibling docs say one thing — read
 from those artifacts, not from prose.
 
 This is the dev-time checker for ADR-0008 (ticket mact-by1.4), the sibling of
@@ -69,7 +69,7 @@ import metric_model_reference as mmr  # noqa: E402
 
 DEFAULT_ADR = REPO / "docs/adr/0008-per-commit-metric-model.md"
 DEFAULT_MODEL = REPO / "schema/metric-model.json"
-DEFAULT_VECTORS = REPO / "tests/testdata/metrics"
+DEFAULT_VECTORS = REPO / "crates/act-mcp/tests/testdata/metrics"
 DEFAULT_FORMAT_DOC = REPO / "docs/evidence-format.md"
 TICKET = "mact-by1.4"
 CHECK_IDS = [f"C{i}" for i in range(1, 12)]

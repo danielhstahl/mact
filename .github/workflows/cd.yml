@@ -39,17 +39,19 @@ jobs:
       - name: target
         run: rustup target add "${{ matrix.target }}"
 
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-edit
-
-      - name: update cargo.toml
+      - name: update the workspace version
+        # One version for one repo (ADR-0005 §8): the tag sets `[workspace.package] version` in the
+        # root manifest once and every member inherits it. Logic lives in a script, not in this
+        # YAML, so it is runnable and checkable before a tag exists (`scripts/set_version.py
+        # --check 0.0.1`), and it refuses a tag that is not a version instead of shipping a tarball
+        # named after a typo.
         run: |
           version=${{ github.event.release.tag_name }}
-          version="${version#v}"
-          cargo set-version "$version"
+          scripts/set_version.py "${version#v}"
 
       - name: release build and smoke test
+        # scripts/ci.sh's release step builds `-p act-mcp --bin act-mcp` and smoke-tests it: the
+        # artefact is one renamed binary, and a broken TUI must not block shipping the server.
         run: scripts/ci.sh release
 
       - name: Release

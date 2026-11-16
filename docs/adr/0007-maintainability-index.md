@@ -50,7 +50,7 @@ date: 2026-11-16
   keywords, ignored punctuation, decision points, statement rules, ambiguities) and every reason code;
   [`scripts/mi_reference.py`](../../scripts/mi_reference.py) is the reference implementation of the
   arithmetic — *the oracle* mact-by1.7's Rust port is checked against, and it loads the JSON rather
-  than duplicating it; and [`tests/testdata/mi/`](../../tests/testdata/mi) holds the golden vectors:
+  than duplicating it; and [`tests/testdata/mi/`](../../crates/act-mcp/tests/testdata/mi) holds the golden vectors:
   fixture sources whose token tables, V, G, LOC, MI and band were counted by hand and are re-derived
   on every CI run. The ADR carries its own copy of the numbers twice more, in the two blocks below,
   and the checker diffs all four copies.
@@ -817,7 +817,7 @@ migrate blind.
 ## 9. Golden vectors, and the tests that make them real
 
 Everything a reader needs to re-derive a number lives under
-[`tests/testdata/mi/`](../../tests/testdata/mi): fixture sources, one vector per fixture
+[`tests/testdata/mi/`](../../crates/act-mcp/tests/testdata/mi): fixture sources, one vector per fixture
 (`vectors/*.json`, each naming its `source`), and two commit fixtures
 (`aggregates/*.json`). The token tables, the decision-point counts and the statement counts were
 counted **by hand** from the files — that is the ticket's "hand-computed V, G, LOC, MI in the test

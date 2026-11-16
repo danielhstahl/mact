@@ -93,8 +93,8 @@ allowlist (`Config::resolve_allowed_hosts`); a **DNS name** never does, and must
 with `--allow-host`. That asymmetry is on purpose: the address was acknowledged, the name
 was not.
 
-Tests: `tests/boot.rs::boot_fails_when_the_bind_is_not_loopback`,
-`tests/hardening.rs::{a_non_loopback_bind_without_the_acknowledgement_refuses_to_boot,
+Tests: `crates/act-mcp/tests/boot.rs::boot_fails_when_the_bind_is_not_loopback`,
+`crates/act-mcp/tests/hardening.rs::{a_non_loopback_bind_without_the_acknowledgement_refuses_to_boot,
 a_loopback_bind_boots_quietly, the_acknowledgement_flag_boots_and_shouts_about_it,
 the_acknowledgement_can_come_from_the_environment}`.
 
@@ -129,7 +129,7 @@ act-mcp serve --allow-origin 'http://localhost:3000'      # or ://…:* for any 
 `--allow-origin` values must carry a scheme; a schemeless entry is a boot error
 (`ConfigError::OriginInvalid`) rather than an allowlist entry that silently never matches.
 
-Tests: `tests/hardening.rs::{a_foreign_host_header_is_refused,
+Tests: `crates/act-mcp/tests/hardening.rs::{a_foreign_host_header_is_refused,
 a_loopback_host_header_is_accepted, a_browser_origin_is_refused_by_default,
 a_named_origin_is_accepted_when_the_operator_allows_it, an_extra_allowed_host_is_honoured}`.
 
@@ -152,8 +152,8 @@ dialect. Refusing it (`400`) is what ADR-0001 §7 and `docs/tool-contract.md` §
 pin, and it is asserted on the wire rather than in source. A request with no version signal at all
 is read as session-era and refused there for its missing session id; either way nothing is served.
 
-Tests: `tests/hardening.rs::an_oversized_request_body_is_413` (both framed and chunked),
-`tests/protocol.rs` and `tests/protocol_conformance.rs` for the protocol-shape refusals
+Tests: `crates/act-mcp/tests/hardening.rs::an_oversized_request_body_is_413` (both framed and chunked),
+`crates/act-mcp/tests/protocol.rs` and `crates/act-mcp/tests/protocol_conformance.rs` for the protocol-shape refusals
 (`a_request_that_omits_the_protocol_version_is_refused_not_assumed` is the one above).
 
 ---
@@ -170,7 +170,7 @@ logged, so the log is not a probe oracle). `Config`'s debug output prints
 
 Why opt-in and not on-by-default:
 
-1. It would break the contract the epic already ships. Every existing client — `tests/protocol.rs`,
+1. It would break the contract the epic already ships. Every existing client — `crates/act-mcp/tests/protocol.rs`,
    the e2e harness, the stock rmcp client — dials loopback with no credentials, and the
    ticket's own framing is "cheap defence against another local process hammering the
    endpoint", not "access control".
@@ -183,7 +183,7 @@ Why opt-in and not on-by-default:
 So the flag exists, is tested, and is documented — and the default remains "loopback is the
 control", which is what the rest of this file assumes.
 
-Tests: `tests/hardening.rs::{the_opt_in_shared_secret_gates_every_request,
+Tests: `crates/act-mcp/tests/hardening.rs::{the_opt_in_shared_secret_gates_every_request,
 no_shared_secret_is_required_by_default, the_session_token_does_not_print_itself}`.
 
 ---
@@ -196,16 +196,16 @@ command, a path, or a shell.
 
 | Input | Who supplies it | The control | Where | Test |
 |---|---|---|---|---|
-| `workflow` | `run_workflow`, `list_tasks` | **Shape**: 1..=255 bytes, `".."` anywhere is rejected, so traversal is inexpressible **before any path is joined**. **Resolution**: the value is matched against the *index* of `.github/workflows` — never opened directly. The index canonicalises the directory and keeps only files that canonicalise **under** it, so a symlink out of `.github/workflows` is not a workflow of this repository. Reads are size-bounded (`workflow_yaml::MAX_WORKFLOW_BYTES`, 448 KiB) | `workspace::validator` (`workflow_shape_ok`), `workflows::index_directory`, `workflows::resolve` | `tests/hardening.rs::a_traversal_in_the_workflow_argument_is_refused_before_any_path_is_joined`, `a_workflow_symlink_pointing_out_of_the_workflows_dir_is_not_indexed`, `src/workspace/tests.rs::workflow_names_that_cannot_be_a_workflow_are_rejected_by_shape` |
-| `task` (job id) | caller | **Whitelisted, not validated**: it must be a key of the parsed workflow file's `jobs:` map (`task_not_found` otherwise), so the value the server uses is one it read out of the file, not one it was told. It reaches act only as the argv token after `-j` — there is no shell, no `sh -c`, anywhere in the runner | `workspace::validator`, `runner::argv` | `src/workspace/tests.rs::an_unknown_task_lists_the_job_ids_that_exist`, `src/runner/argv.rs` golden argv |
-| `commit` | caller (abbrev or full) | **Hex-shape check before any `git` argv**: 7..=40 chars, all lowercase hex, no whitespace, `..`, `~`, or leading `-`. Only then is it passed to `git rev-parse`/`git rev-parse <x>^{commit}`, again as an argv element, never a shell string. Resolution happens against the *accepted* workspace root (canonicalised, symlink-free), and a root that resolves through a symlink out of the accepted root is refused | `workspace::validator` (`is_commit_shaped`, `TreeRoot` gate) | `src/workspace/tests.rs::{an_untrusted_commit_shape_is_refused…}`, `the_head_only_policy_refuses_a_non_head_commit_after_resolution` |
-| `category` | caller | **Two independent rules.** (1) Shape: `^[a-z][a-z0-9_]*$`, ≤64 bytes, enforced **in Rust** by `tools::category::is_valid_category`, not only advertised in `tools/list` — the schema pattern and the Rust check name the same `SCHEMA_PATTERN` constant and a test fails if they drift. That pattern contains no `.` and no `/`, so a legal category cannot be a path component. (2) **Even a legal category does not build a path**: the output file is named from `evidence::records::Kind`, the *closed* `benchmark \| coverage` enum, reached via `category::kind_of`; an unknown-but-legal category runs the job and publishes nothing. The writer then re-checks every component (`EvidenceRoot::checked_child`) and refuses `..`, empty, and any existing component that is a symlink | `tools::category`, `evidence::writer` | `tests/hardening.rs::a_category_cannot_become_a_path`, `src/tools/category.rs::{a_category_cannot_be_a_path, the_rust_check_mirrors_the_advertised_schema}`, `src/workspace/tests.rs::job_ids_and_categories_are_shape_checked_too` |
-| evidence output dir | derived (`<kind>/<sha>/<run_id>.jsonl`) | The path is built from validated components only (a `Kind`, a 40-hex `Commit`, a run id that matches the pinned shape). `checked_child` additionally canonicalises the deepest existing component and refuses when it differs from the literal path — that is what catches a `coverage/<sha>` turned into a symlink to `/home/dev`, which no input validation could catch because the input was a legitimate SHA. Publish is temp-file + rename inside the root, and the root itself was canonicalised at boot | `evidence::writer` | `src/evidence/writer.rs::a_symlinked_commit_directory_is_refused`, `tests/evidence_contract.rs` |
-| `--var` / `--input` / `--env` values | caller | Keys are shape-checked (single line, no `=`/`:`, no `ACTMCP_*` shadowing) and every value is passed as an **argv element** to act, never interpolated into a shell. `ACTMCP_*` — the server's own evidence-transport contract — is refused from any caller map. Values are **excluded from the process log** (argv is not logged) and are redacted in the recorded argv that becomes `meta.json.act.argv` when the *name* says secret (§6). Keys and values both run through the redactor's name rule, so a `--var NPM_TOKEN=…` does not survive into any file | `runner::RunSpec::validate`, `runner::argv`, `RunSpec::redaction_needles` | `src/runner.rs::{a_spec_that_cannot_be_spawned_safely_is_refused_before_anything_happens, the_redaction_needles_are_the_declared_secrets_plus_everything_named_like_one}`, `tests/hardening.rs::a_secret_reaches_no_file_a_run_produces_whichever_route_it_arrived_by` |
-| the repository's `.actrc` | the repository | **Not honoured, and stated: act's cwd is the per-run scratch directory we create (`ADR-0003 §7.6`), never the workspace, and act looks up `.actrc` from the *process cwd* — so a `.actrc` committed to the repository is never read.** The operator's own `$XDG_CONFIG_HOME/act/actrc` and `$HOME/.actrc` **are** honoured, because they are operator config and are the sanctioned extension point. One caveat is load-bearing and belongs to every operator who uses it (ADR-0003 F2): act's `StringArray` flags — `--env`, `--var`, `--input`, `--platform`, `--matrix` — **accumulate across sources**, so an operator actrc adds to what we pass rather than being overridden by it. Flags we merely assume are flags an operator actrc can quietly flip, which is why §7.5 of ADR-0003 lists the flags we always pass | `runner::run` (`current_dir(&spec.scratch_dir)`) | `tests/runner_execution.rs::the_stub_act_receives_exactly_the_argv_build_argv_produced` (asserts act's cwd **is** the scratch dir), `src/runner/argv.rs::adr_0003_7_4_golden_command_line_is_the_default_argv` |
-| the repository's `.env` / `.vars` / `.input` | the repository | **Redirected, not ignored-by-luck**: act's `--var-file`, `--env-file` and `--input-file` all point at a 0-byte file we own (`ProjectConfigFiles::Inert`, the default), so a `.env` shipped by the target repository cannot inject host state into a measurement. `--act-workspace-config-files=discover` opts back into act's own lookup, for a repository that legitimately depends on it | `runner::argv`, `ProjectConfigFiles` | `src/runner/argv.rs::discover_mode_passes_no_inert_project_files_but_keeps_the_secret_file` |
-| workflow YAML itself | the repository | Parsed by `yaml-rust2` (not the unmaintained `serde_yaml`, RUSTSEC-2024-0320) with a size cap, a flow-depth cap and an indent cap; a file that will not parse is reported as `parse_error` inside a successful `list_tasks` rather than failing the call, and never reaches a shell | `workflow_yaml` | `src/workflow_yaml.rs`, `tests/list_tasks.rs` |
-| the workspace path at boot | operator | Must exist, be a directory, contain `.github`, and is canonicalised once so every later prefix comparison is against one symlink-free root | `config::validate_workspace` | `src/config.rs`, `tests/boot.rs` |
+| `workflow` | `run_workflow`, `list_tasks` | **Shape**: 1..=255 bytes, `".."` anywhere is rejected, so traversal is inexpressible **before any path is joined**. **Resolution**: the value is matched against the *index* of `.github/workflows` — never opened directly. The index canonicalises the directory and keeps only files that canonicalise **under** it, so a symlink out of `.github/workflows` is not a workflow of this repository. Reads are size-bounded (`workflow_yaml::MAX_WORKFLOW_BYTES`, 448 KiB) | `workspace::validator` (`workflow_shape_ok`), `workflows::index_directory`, `workflows::resolve` | `crates/act-mcp/tests/hardening.rs::a_traversal_in_the_workflow_argument_is_refused_before_any_path_is_joined`, `a_workflow_symlink_pointing_out_of_the_workflows_dir_is_not_indexed`, `crates/act-mcp/src/workspace/tests.rs::workflow_names_that_cannot_be_a_workflow_are_rejected_by_shape` |
+| `task` (job id) | caller | **Whitelisted, not validated**: it must be a key of the parsed workflow file's `jobs:` map (`task_not_found` otherwise), so the value the server uses is one it read out of the file, not one it was told. It reaches act only as the argv token after `-j` — there is no shell, no `sh -c`, anywhere in the runner | `workspace::validator`, `runner::argv` | `crates/act-mcp/src/workspace/tests.rs::an_unknown_task_lists_the_job_ids_that_exist`, `crates/act-mcp/src/runner/argv.rs` golden argv |
+| `commit` | caller (abbrev or full) | **Hex-shape check before any `git` argv**: 7..=40 chars, all lowercase hex, no whitespace, `..`, `~`, or leading `-`. Only then is it passed to `git rev-parse`/`git rev-parse <x>^{commit}`, again as an argv element, never a shell string. Resolution happens against the *accepted* workspace root (canonicalised, symlink-free), and a root that resolves through a symlink out of the accepted root is refused | `workspace::validator` (`is_commit_shaped`, `TreeRoot` gate) | `crates/act-mcp/src/workspace/tests.rs::{an_untrusted_commit_shape_is_refused…}`, `the_head_only_policy_refuses_a_non_head_commit_after_resolution` |
+| `category` | caller | **Two independent rules.** (1) Shape: `^[a-z][a-z0-9_]*$`, ≤64 bytes, enforced **in Rust** by `tools::category::is_valid_category`, not only advertised in `tools/list` — the schema pattern and the Rust check name the same `SCHEMA_PATTERN` constant and a test fails if they drift. That pattern contains no `.` and no `/`, so a legal category cannot be a path component. (2) **Even a legal category does not build a path**: the output file is named from `evidence::records::Kind`, the *closed* `benchmark \| coverage` enum, reached via `category::kind_of`; an unknown-but-legal category runs the job and publishes nothing. The writer then re-checks every component (`EvidenceRoot::checked_child`) and refuses `..`, empty, and any existing component that is a symlink | `tools::category`, `evidence::writer` | `crates/act-mcp/tests/hardening.rs::a_category_cannot_become_a_path`, `crates/act-mcp/src/tools/category.rs::{a_category_cannot_be_a_path, the_rust_check_mirrors_the_advertised_schema}`, `crates/act-mcp/src/workspace/tests.rs::job_ids_and_categories_are_shape_checked_too` |
+| evidence output dir | derived (`<kind>/<sha>/<run_id>.jsonl`) | The path is built from validated components only (a `Kind`, a 40-hex `Commit`, a run id that matches the pinned shape). `checked_child` additionally canonicalises the deepest existing component and refuses when it differs from the literal path — that is what catches a `coverage/<sha>` turned into a symlink to `/home/dev`, which no input validation could catch because the input was a legitimate SHA. Publish is temp-file + rename inside the root, and the root itself was canonicalised at boot | `evidence::writer` | `crates/act-mcp/src/evidence/writer.rs::a_symlinked_commit_directory_is_refused`, `crates/act-mcp/tests/evidence_contract.rs` |
+| `--var` / `--input` / `--env` values | caller | Keys are shape-checked (single line, no `=`/`:`, no `ACTMCP_*` shadowing) and every value is passed as an **argv element** to act, never interpolated into a shell. `ACTMCP_*` — the server's own evidence-transport contract — is refused from any caller map. Values are **excluded from the process log** (argv is not logged) and are redacted in the recorded argv that becomes `meta.json.act.argv` when the *name* says secret (§6). Keys and values both run through the redactor's name rule, so a `--var NPM_TOKEN=…` does not survive into any file | `runner::RunSpec::validate`, `runner::argv`, `RunSpec::redaction_needles` | `crates/act-mcp/src/runner.rs::{a_spec_that_cannot_be_spawned_safely_is_refused_before_anything_happens, the_redaction_needles_are_the_declared_secrets_plus_everything_named_like_one}`, `crates/act-mcp/tests/hardening.rs::a_secret_reaches_no_file_a_run_produces_whichever_route_it_arrived_by` |
+| the repository's `.actrc` | the repository | **Not honoured, and stated: act's cwd is the per-run scratch directory we create (`ADR-0003 §7.6`), never the workspace, and act looks up `.actrc` from the *process cwd* — so a `.actrc` committed to the repository is never read.** The operator's own `$XDG_CONFIG_HOME/act/actrc` and `$HOME/.actrc` **are** honoured, because they are operator config and are the sanctioned extension point. One caveat is load-bearing and belongs to every operator who uses it (ADR-0003 F2): act's `StringArray` flags — `--env`, `--var`, `--input`, `--platform`, `--matrix` — **accumulate across sources**, so an operator actrc adds to what we pass rather than being overridden by it. Flags we merely assume are flags an operator actrc can quietly flip, which is why §7.5 of ADR-0003 lists the flags we always pass | `runner::run` (`current_dir(&spec.scratch_dir)`) | `crates/act-mcp/tests/runner_execution.rs::the_stub_act_receives_exactly_the_argv_build_argv_produced` (asserts act's cwd **is** the scratch dir), `crates/act-mcp/src/runner/argv.rs::adr_0003_7_4_golden_command_line_is_the_default_argv` |
+| the repository's `.env` / `.vars` / `.input` | the repository | **Redirected, not ignored-by-luck**: act's `--var-file`, `--env-file` and `--input-file` all point at a 0-byte file we own (`ProjectConfigFiles::Inert`, the default), so a `.env` shipped by the target repository cannot inject host state into a measurement. `--act-workspace-config-files=discover` opts back into act's own lookup, for a repository that legitimately depends on it | `runner::argv`, `ProjectConfigFiles` | `crates/act-mcp/src/runner/argv.rs::discover_mode_passes_no_inert_project_files_but_keeps_the_secret_file` |
+| workflow YAML itself | the repository | Parsed by `yaml-rust2` (not the unmaintained `serde_yaml`, RUSTSEC-2024-0320) with a size cap, a flow-depth cap and an indent cap; a file that will not parse is reported as `parse_error` inside a successful `list_tasks` rather than failing the call, and never reaches a shell | `workflow_yaml` | `crates/act-mcp/src/workflow_yaml.rs`, `crates/act-mcp/tests/list_tasks.rs` |
+| the workspace path at boot | operator | Must exist, be a directory, contain `.github`, and is canonicalised once so every later prefix comparison is against one symlink-free root | `config::validate_workspace` | `crates/act-mcp/src/config.rs`, `crates/act-mcp/tests/boot.rs` |
 
 Two things on this list are worth dwelling on because they are the ones a reviewer skims:
 
@@ -262,12 +262,12 @@ Redaction is byte-level, not `str`-level: container output need not be valid UTF
 redactor that failed on invalid UTF-8 would leak the secret it was standing on. Needles are
 applied longest-first so overlapping secrets leave no remnant.
 
-Tests: `tests/runner_execution.rs::a_secret_value_appears_in_no_file_the_run_produces`,
-`tests/hardening.rs::a_secret_reaches_no_file_a_run_produces_whichever_route_it_arrived_by`
+Tests: `crates/act-mcp/tests/runner_execution.rs::a_secret_value_appears_in_no_file_the_run_produces`,
+`crates/act-mcp/tests/hardening.rs::a_secret_reaches_no_file_a_run_produces_whichever_route_it_arrived_by`
 (walks every file under the evidence root **and** the scratch dir, asserts the argv record is
 masked, and asserts an ordinary var value *survives* — a redactor that over-redacts is also a
-bug), `src/runner/log.rs::{redactor_survives_invalid_utf8_around_a_secret, longest_needle_wins_so_overlapping_secrets_leave_no_remnant, the_name_rule_skips_values_too_short_to_redact}`,
-`src/runner.rs::the_redaction_needles_are_the_declared_secrets_plus_everything_named_like_one`.
+bug), `crates/act-mcp/src/runner/log.rs::{redactor_survives_invalid_utf8_around_a_secret, longest_needle_wins_so_overlapping_secrets_leave_no_remnant, the_name_rule_skips_values_too_short_to_redact}`,
+`crates/act-mcp/src/runner.rs::the_redaction_needles_are_the_declared_secrets_plus_everything_named_like_one`.
 
 ---
 
@@ -305,9 +305,9 @@ process can spawn N containers" false. The server-wide cap is above 1 only so tw
 and a second request is refused rather than queued (`phase: "queued"` means pre-spawn, never
 "waiting its turn").
 
-Tests: `tests/hardening.rs::{a_run_is_refused_when_the_runs_directory_is_at_its_cap,
+Tests: `crates/act-mcp/tests/hardening.rs::{a_run_is_refused_when_the_runs_directory_is_at_its_cap,
 a_zero_run_dir_cap_is_refused_at_boot, the_log_caps_truncate_instead_of_growing,
-the_metric_caps_exist_and_are_finite}`, `tests/run_supervisor.rs::{a_second_run_in_a_locked_workspace_is_busy_immediately, a_run_in_another_workspace_is_not_blocked_by_the_first, the_server_wide_cap_is_too_many_runs_rather_than_a_wait}`, `tests/runner_execution.rs::{the_on_disk_cap_truncates_with_a_marker_and_the_tail_stays_in_budget, the_tail_budget_holds_whole_lines_from_the_end}`.
+the_metric_caps_exist_and_are_finite}`, `crates/act-mcp/tests/run_supervisor.rs::{a_second_run_in_a_locked_workspace_is_busy_immediately, a_run_in_another_workspace_is_not_blocked_by_the_first, the_server_wide_cap_is_too_many_runs_rather_than_a_wait}`, `crates/act-mcp/tests/runner_execution.rs::{the_on_disk_cap_truncates_with_a_marker_and_the_tail_stays_in_budget, the_tail_budget_holds_whole_lines_from_the_end}`.
 
 ---
 
@@ -342,9 +342,9 @@ the_metric_caps_exist_and_are_finite}`, `tests/run_supervisor.rs::{a_second_run_
 1. New caller-supplied string? Shape-check it, add the refusal to the table in §5, and add
    the test that sends the traversal/hex-breaking/newline version of it.
 2. New file a run writes? Add it to the redaction scan in
-   `tests/hardening.rs::a_secret_reaches_no_file_a_run_produces_whichever_route_it_arrived_by`.
+   `crates/act-mcp/tests/hardening.rs::a_secret_reaches_no_file_a_run_produces_whichever_route_it_arrived_by`.
 3. New cap? Decide and state which failure style (§7) it uses; "silently smaller" is not one.
 4. New bind/host/origin flag? It must not widen anything by default, and the widened case must
    be as loud as `--i-understand-this-is-unauthenticated`.
-5. `cargo clippy --all-targets -- -D warnings` and the whole `tests/` suite, because every
+5. `cargo clippy --all-targets -- -D warnings` and the whole `crates/act-mcp/tests/` suite, because every
    claim above is a test someone can run.

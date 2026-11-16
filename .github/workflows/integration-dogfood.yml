@@ -27,7 +27,7 @@ jobs:
 
       - name: Start mcp
         run: |
-          cargo build --release
+          cargo build --release -p act-mcp --bin act-mcp
           ./target/release/act-mcp serve --act-binary $(pwd)/bin/act > /tmp/act-mcp.log 2>&1 & # nohup
 
       - name: Wait for port 8080

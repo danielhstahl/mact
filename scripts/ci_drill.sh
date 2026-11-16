@@ -9,7 +9,7 @@
 # check, or pointing a step at the wrong file, this is where it shows up.
 #
 # Nothing is modified in the real working tree: every drill copies Cargo.toml, Cargo.lock,
-# rust-toolchain.toml, deny.toml, schema/, scripts/, src/ and tests/ into a temporary
+# rust-toolchain.toml, deny.toml, schema/, scripts/, crates/ and docs/ into a temporary
 # directory, breaks the copy, and runs the step there.
 #
 # Usage:
@@ -52,7 +52,7 @@ drill_list() { printf '%s\n' "${DRILLS[@]}"; }
 
 # Each mutation takes the copy's root as $1 and makes exactly one violation.
 mut_fmt_misformatted_code() {
-    cat >> "$1/src/lib.rs" <<'RS'
+    cat >> "$1/crates/act-mcp/src/lib.rs" <<'RS'
 
 /// Injected by scripts/ci_drill.sh: valid Rust that rustfmt will not accept.
 pub fn ci_drill_fmt() -> u32 {
@@ -63,7 +63,7 @@ RS
 }
 
 mut_clippy_lint() {
-    cat >> "$1/src/lib.rs" <<'RS'
+    cat >> "$1/crates/act-mcp/src/lib.rs" <<'RS'
 
 /// Injected by scripts/ci_drill.sh: compiles, but trips clippy::needless_return.
 #[allow(dead_code)]
@@ -75,7 +75,7 @@ RS
 }
 
 mut_doc_broken_intra_doc_link() {
-    cat >> "$1/src/lib.rs" <<'RS'
+    cat >> "$1/crates/act-mcp/src/lib.rs" <<'RS'
 
 /// Injected by scripts/ci_drill.sh: a link to something that does not exist, which is
 /// exactly the rot this step exists to catch ([`ci_drill_no_such_item`]).
@@ -92,7 +92,7 @@ mut_doc_link_to_test_only_module() {
     # happy — rustdoc is the only tool that does not build cfg(test) code, so the doc step is
     # the only place the link can show up as dead. This drill is the proof that it stays an
     # error instead of quietly turning the sentence into a reference to nothing.
-    cat >> "$1/src/lib.rs" <<'RS'
+    cat >> "$1/crates/act-mcp/src/lib.rs" <<'RS'
 
 /// Injected by scripts/ci_drill.sh: a link to a module `#[cfg(test)]` hides from rustdoc
 /// ([`ci_drill_test_only_module`]).
@@ -110,7 +110,7 @@ RS
 }
 
 mut_test_failing_assertion() {
-    cat >> "$1/src/lib.rs" <<'RS'
+    cat >> "$1/crates/act-mcp/src/lib.rs" <<'RS'
 
 #[cfg(test)]
 mod ci_drill_tests {
@@ -139,14 +139,14 @@ PY
 mut_schema_bad_evidence_record() {
     # A record that satisfies nothing: a JSONL line missing the required envelope fields.
     printf '%s\n' '{"schema_version":1,"kind":"benchmark"}' \
-        >> "$1/tests/e2e/testdata/expected/benchmark.jsonl"
+        >> "$1/crates/act-mcp/tests/e2e/testdata/expected/benchmark.jsonl"
 }
 
 mut_schema_undocumented_tool_io_fixture() {
     # Delete the README row that names one tool-io fixture. The contract checker refuses an
     # undocumented fixture, because a contract rule nobody can look up is a rule that will be
     # broken by accident; this proves that refusal is fatal and not advice.
-    python3 - "$1/tests/e2e/testdata/README.md" <<'PY'
+    python3 - "$1/crates/act-mcp/tests/e2e/testdata/README.md" <<'PY'
 import sys
 
 path = sys.argv[1]
@@ -181,7 +181,7 @@ copy_repo() {
     local dest=$1
     mkdir -p "$dest"
     local item
-    for item in Cargo.toml Cargo.lock rust-toolchain.toml deny.toml schema scripts src tests docs; do
+    for item in Cargo.toml Cargo.lock rust-toolchain.toml deny.toml schema scripts crates docs; do
         [[ -e "$repo_root/$item" ]] && cp -a "$repo_root/$item" "$dest/"
     done
     chmod -R u+w "$dest"
