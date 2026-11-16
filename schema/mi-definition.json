@@ -130,9 +130,9 @@
     "stored_in_cache": false,
     "is_config": false,
     "note": "declared here, not invented in the view layer (ticket rule). Not stored: a band change must not invalidate a cache full of numbers that did not move. Not config: two readers of one repository must not see different traffic lights for one commit, and a per-user band would make `fathom report --json` disagree between CI and a laptop for a non-measurement reason.",
-    "calibration": "the ticket suggested < 85 amber and < 65 red, and those edges cannot be used with the formula this ticket pins. They belong to the UPDATED MI, which estimates Halstead volume from LOC instead of measuring it, so it lands 60-90 for ordinary code. With a measured volume the 5.2*ln(V) term is 25-55 points instead of ~5, and the 16.2*ln(LOC) term dominates: this ADR's own hand-counted 16-statement fixture scores 55.9, and section 5.3 shows a 1000-line file scoring 0. Bands at 85/65 would call an entire real repository red, and a band that everything fails is not a signal. The edges here are placed where the formula separates the corpus: green is a file nobody needs to argue about, amber is a file worth a look, red is a file whose size and density is the finding. Section 5.3 carries the arithmetic and the line counts each edge falls at.",
+    "calibration": "the ticket suggested < 85 amber and < 65 red, and those edges cannot be used with the formula this ticket pins. They belong to the UPDATED MI, which estimates Halstead volume from LOC instead of measuring it, so it lands 60-90 for ordinary code. With a measured volume the 5.2*ln(V) term is 25-55 points instead of ~5, and the 16.2*ln(LOC) term dominates: this ADR's own hand-counted 16-statement fixture scores 55.9, and section 5.2 shows a 1000-line file scoring 0. Bands at 85/65 would call an entire real repository red, and a band that everything fails is not a signal. The edges here are placed where the formula separates the corpus: green is a file nobody needs to argue about, amber is a file worth a look, red is a file whose size and density is the finding. Section 5.2 carries the arithmetic and the line counts each edge falls at.",
     "provenance": "the hand-counted golden vectors in tests/testdata/mi plus the extrapolation table in ADR-0007 section 5.2, both computed from the pinned formula",
-    "revisit_when": "mact-by1.7's first full-corpus run: its histogram is attached to ADR-0007 section 5 or these two numbers are amended, in one commit"
+    "revisit_when": "mact-by1.7's first full-corpus run: its histogram is attached to ADR-0007 section 5 or these two numbers are amended, in one commit. Spent by mact-by1.7: the histogram is ADR-0007 section 5.3, the edges stand, and the next trigger is a second corpus of a different shape."
   },
   "aggregation": {
     "unit": "file",
@@ -494,6 +494,7 @@
       "enabled_in_v1": true,
       "operator_keywords": [
         "and",
+        "as",
         "assert",
         "async",
         "await",
@@ -520,6 +521,7 @@
         "pass",
         "raise",
         "return",
+        "try",
         "while",
         "with",
         "yield"

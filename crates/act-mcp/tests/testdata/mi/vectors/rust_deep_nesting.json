@@ -1,0 +1,72 @@
+{
+  "vector": "rust_deep_nesting",
+  "language": "rust",
+  "frontend": "lexer1",
+  "source": "../src/rust_deep_nesting.rs",
+  "sources_equal": null,
+  "hand_computed": "N, n, the decision-point counts and LOC are counted by hand from the file; V, G, MI and the band are re-derived by scripts/mi_reference.py and checked by scripts/validate_mi_definition.py",
+  "notes": "Deep nesting, the case the ticket named that no other vector carried: seven block headers nested inside one another, two `else if` rungs, a two-arm `match`, and both short-circuit operators used as forks. Statements, in §3.4's letters: D = 2 (`fn`, `let`); E = 4 (the four `;` statements in the loop bodies — an arm body ending in `,` is not a `;` statement, and a `let`'s own `;` adds nothing); A = 2 (two arms); B = 7 (two `for`, five `if` — an `else` adds nothing, `match` adds nothing, and the tail expression `total` costs nothing). Decision points: 5 `if`, because both `else if` rungs count their `if` and none of the four `else` does; 2 `for`; one `&&`/`||` pair on each rung that uses them, each preceded by an operand so both are forks under `value_preceded`; 2 arms. `!flag` is an operator and never a fork. `grade` is an *operand*, not a call-shaped operator, because §3.2's name rules are ordered and rule 3 (a name after `fn`) outranks rule 4 (a name before `(`) — the first count of this file got that ordering wrong, and an occurrence table is where that shows up. N = 38 over n = 19 operators; the operands are recorded because the occurrence table is what a re-count reads, but they do not enter V.",
+  "expect": {
+    "status": "ok",
+    "operators": {
+      "total": 38,
+      "unique": 19,
+      "occurrences": {
+        "!": 1,
+        "&": 1,
+        "&&": 2,
+        "*": 2,
+        "+=": 3,
+        "-=": 3,
+        "..": 1,
+        "<": 1,
+        "=": 1,
+        ">": 4,
+        "else": 4,
+        "fn": 1,
+        "for": 2,
+        "if": 5,
+        "in": 2,
+        "let": 1,
+        "match": 1,
+        "mut": 1,
+        "||": 2
+      }
+    },
+    "operands": {
+      "total": 43,
+      "unique": 15,
+      "occurrences": {
+        "0": 4,
+        "1": 5,
+        "10": 1,
+        "2": 2,
+        "60": 1,
+        "90": 1,
+        "_": 1,
+        "bool": 1,
+        "flag": 5,
+        "grade": 1,
+        "score": 4,
+        "scores": 2,
+        "total": 9,
+        "tweak": 4,
+        "u32": 2
+      }
+    },
+    "volume": 161.42124551085624,
+    "decision_points": {
+      "if": 5,
+      "for": 2,
+      "and_and": 2,
+      "or_or": 2,
+      "match_arm": 2
+    },
+    "cyclomatic": 14,
+    "statements": 15,
+    "loc": 15,
+    "mi_raw": 97.47269636702751,
+    "mi": 57.0,
+    "band": "green"
+  }
+}

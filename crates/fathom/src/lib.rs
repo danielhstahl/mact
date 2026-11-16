@@ -19,6 +19,8 @@
 //!   (ADR-0006 §7).
 //! * [`metrics`] — ADR-0008 executed once: the evidence tree in, one [`metrics::CommitMetrics`] per
 //!   SHA out, with the drop log that explains every number (mact-by1.6).
+//! * [`mi`] — ADR-0007 executed: per-file Maintainability Index from a `(path, bytes)` blob, and the
+//!   LOC-weighted per-commit aggregate with its delta, hotspots and watchlist (mact-by1.7).
 //! * [`log`] — stderr-only diagnostics behind a hand-rolled `RUST_LOG`-style filter, because this
 //!   crate may not own a subscriber (see rule 1 below).
 //! * [`exit`] — what each process status promises.
@@ -34,10 +36,9 @@
 //! * [`classify`] — the one path classifier ADR-0007 §7.1 shares between the `+`/`−` column and the
 //!   MI column, so one row's two columns always describe the same file set.
 //!
-//! Still absent on purpose: the MI analyser (mact-by1.7), the store (mact-by1.10), the screens
-//! (mact-by1.9/.11/.12/.14), `report` and `doctor` (mact-by1.13). The subcommands that will call
-//! them already parse and validate: they exit `3` with the ticket that owns them rather than
-//! pretending.
+//! Still absent on purpose: the store (mact-by1.10), the screens (mact-by1.9/.11/.12/.14), `report`
+//! and `doctor` (mact-by1.13). The subcommands that will call them already parse and validate: they
+//! exit `3` with the ticket that owns them rather than pretending.
 //!
 //! ## Two rules this crate keeps
 //!
@@ -73,6 +74,7 @@ pub mod git;
 pub mod history;
 pub mod log;
 pub mod metrics;
+pub mod mi;
 
 use thiserror::Error;
 

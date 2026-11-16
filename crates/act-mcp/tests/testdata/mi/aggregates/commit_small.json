@@ -1,6 +1,6 @@
 {
   "fixture": "commit_small",
-  "notes": "Six measurable files and five gaps, over a parent whose two worst files got better and whose big file is gone. Accumulation is path-bytes ascending. The weighted mean is (400*22.0 + 45*45.3 + 16*55.9 + 10*61.8 + 6*71.1 + 1*95.1) / 478.",
+  "notes": "Six measurable files and five gaps, over a parent whose two worst files got better and whose big file is gone. Accumulation is path-bytes ascending. The weighted mean is (400*22.0 + 45*45.3 + 16*55.9 + 10*61.8 + 6*70.9 + 6*73.4 + 1*95.1) / 484. Corrected by mact-by1.7 to carry src/rust_reformat_a.rs at the MI its own vector now derives.",
   "files": [
     {
       "path": "src/huge.rs",
@@ -30,7 +30,7 @@
       "path": "src/rust_reformat_a.rs",
       "status": "ok",
       "loc": 6,
-      "mi": 71.1
+      "mi": 70.9
     },
     {
       "path": "src/rust_question.rs",
@@ -133,7 +133,7 @@
       },
       {
         "path": "src/rust_reformat_a.rs",
-        "mi": 71.1,
+        "mi": 70.9,
         "loc": 6
       }
     ],

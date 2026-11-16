@@ -5,7 +5,7 @@
   "source": "../src/rust_generics.rs",
   "sources_equal": null,
   "hand_computed": "N, n, the decision-point counts and LOC are counted by hand from the file; V, G, MI and the band are re-derived by scripts/mi_reference.py and checked by scripts/validate_mi_definition.py",
-  "notes": "The cases where tokenising Rust is not trivial. Maximal munch makes `Vec<Vec<u8>>`-style `>>` one operator, so `<`/`>` counts are not the brace count; `&&str` is one `&&` operator token that is NOT a decision point (the preceding token is `:`); `unwrap_or_else`-style `||` here is `|| key.is_empty()`, which IS one; lifetimes `'a` are ignored while the char literal `'x'` is an operand; the attribute `#![allow(..)]` and `#[inline]` and the doc comment emit nothing; the raw string swallows a `(`; `cmp` is an operator at the call site `cmp(&self.1)` and an operand in the path `std::cmp::Ordering`; `where V: Default` is not a statement.",
+  "notes": "The cases where tokenising Rust is not trivial. Maximal munch makes `Vec<Vec<u8>>`-style `>>` one operator, so `<`/`>` counts are not the brace count; `&&str` is one `&&` operator token that is NOT a decision point (the preceding token is `:`); `unwrap_or_else`-style `||` here is `|| key.is_empty()`, which IS one; lifetimes `'a` are ignored while the char literal `'x'` is an operand; the attribute `#![allow(..)]` and `#[inline]` and the doc comment emit nothing; the raw string swallows a `(`; `cmp` is an operator at the call site `cmp(&self.1)` and an operand in the path `std::cmp::Ordering`; `where V: Default` is not a statement. Corrected by mact-by1.7: the raw string's operand key is its delimiter text included, `r#\"not ( a token\"#`, because §3.1 says the delimiter text is part of the operand key so that `r#\"a\"#` is not `\"a\"`; the table listed the contents alone, which is the confusion §3.1 exists to prevent. Unique and total are unchanged, and operands do not enter V, so no derived number moves.",
   "expect": {
     "status": "ok",
     "operators": {
@@ -58,8 +58,8 @@
         "cmp": 1,
         "flag": 2,
         "key": 3,
-        "not ( a token": 1,
         "pick": 1,
+        "r#\"not ( a token\"#": 1,
         "raw": 1,
         "self": 4,
         "std": 1,

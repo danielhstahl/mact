@@ -8,7 +8,7 @@
     "rust_reformat_b.rs"
   ],
   "hand_computed": "N, n, the decision-point counts and LOC are counted by hand from the file; V, G, MI and the band are re-derived by scripts/mi_reference.py and checked by scripts/validate_mi_definition.py",
-  "notes": "Two files, one token stream: rust_reformat_a.rs and rust_reformat_b.rs differ only in whitespace and brace placement, so N, n, G and LOC are identical and a reformat moves MI by exactly zero. Statements: 2 introductions (fn, let) + 2 semicolon statements + 0 arms + 2 block headers (for, if).",
+  "notes": "Two files, one token stream: rust_reformat_a.rs and rust_reformat_b.rs differ only in whitespace and brace placement, so N, n, G and LOC are identical and a reformat moves MI by exactly zero. Statements: 2 introductions (fn, let) + 2 semicolon statements + 0 arms + 2 block headers (for, if). Corrected by mact-by1.7: the decision-point table omitted the `for`, although this fixture's `for` loop is exactly §3.3's `while`/`loop`/`for` row and this vector's own statement count names it. G is 3, so MI is 70.9, re-derived by the oracle from the corrected table.",
   "expect": {
     "status": "ok",
     "operators": {
@@ -45,13 +45,14 @@
     },
     "volume": 46.60451250937503,
     "decision_points": {
+      "for": 1,
       "if": 1
     },
-    "cyclomatic": 2,
+    "cyclomatic": 3,
     "statements": 6,
     "loc": 6,
-    "mi_raw": 121.53667026718117,
-    "mi": 71.1,
+    "mi_raw": 121.30667026718118,
+    "mi": 70.9,
     "band": "green",
     "also_holds_for": "rust_reformat_b.rs",
     "pair_rule": "every number in this expect block must be identical for both files"

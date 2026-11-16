@@ -589,9 +589,9 @@ the exact failure mode this ticket exists to prevent.
   "stored_in_cache": false,
   "is_config": false,
   "note": "declared here, not invented in the view layer (ticket rule). Not stored: a band change must not invalidate a cache full of numbers that did not move. Not config: two readers of one repository must not see different traffic lights for one commit, and a per-user band would make `fathom report --json` disagree between CI and a laptop for a non-measurement reason.",
-  "calibration": "the ticket suggested < 85 amber and < 65 red, and those edges cannot be used with the formula this ticket pins. They belong to the UPDATED MI, which estimates Halstead volume from LOC instead of measuring it, so it lands 60-90 for ordinary code. With a measured volume the 5.2*ln(V) term is 25-55 points instead of ~5, and the 16.2*ln(LOC) term dominates: this ADR's own hand-counted 16-statement fixture scores 55.9, and section 5.3 shows a 1000-line file scoring 0. Bands at 85/65 would call an entire real repository red, and a band that everything fails is not a signal. The edges here are placed where the formula separates the corpus: green is a file nobody needs to argue about, amber is a file worth a look, red is a file whose size and density is the finding. Section 5.3 carries the arithmetic and the line counts each edge falls at.",
+  "calibration": "the ticket suggested < 85 amber and < 65 red, and those edges cannot be used with the formula this ticket pins. They belong to the UPDATED MI, which estimates Halstead volume from LOC instead of measuring it, so it lands 60-90 for ordinary code. With a measured volume the 5.2*ln(V) term is 25-55 points instead of ~5, and the 16.2*ln(LOC) term dominates: this ADR's own hand-counted 16-statement fixture scores 55.9, and section 5.2 shows a 1000-line file scoring 0. Bands at 85/65 would call an entire real repository red, and a band that everything fails is not a signal. The edges here are placed where the formula separates the corpus: green is a file nobody needs to argue about, amber is a file worth a look, red is a file whose size and density is the finding. Section 5.2 carries the arithmetic and the line counts each edge falls at.",
   "provenance": "the hand-counted golden vectors in tests/testdata/mi plus the extrapolation table in ADR-0007 section 5.2, both computed from the pinned formula",
-  "revisit_when": "mact-by1.7's first full-corpus run: its histogram is attached to ADR-0007 section 5 or these two numbers are amended, in one commit"
+  "revisit_when": "mact-by1.7's first full-corpus run: its histogram is attached to ADR-0007 section 5 or these two numbers are amended, in one commit. Spent by mact-by1.7: the histogram is ADR-0007 section 5.3, the edges stand, and the next trigger is a second corpus of a different shape."
 }
 ```
 <!-- mi-bands:end -->
@@ -638,6 +638,69 @@ runbook (mact-by1.15):
    right, and it is why the hotspots list carries `loc` beside `mi` always.
 2. **It is a poor gate.** Nothing in this epic gates on MI; if anyone ever wants to, the argument to
    re-litigate is this table, not a threshold.
+
+### 5.3 The first full-corpus run: the histogram this section was waiting for
+
+§5.1's `revisit_when` and §5.2's closing paragraph made one promise: the analyzer's first corpus run
+publishes its histogram here, in the same commit as the analyzer, or these two edges are amended.
+mact-by1.7 is that commit, and this is the histogram. It is a snapshot of the tree at the commit that
+added this section, produced by the test the ticket asked for —
+`cargo test -p fathom --test mi the_repositorys_own_source_measures_plausibly -- --nocapture` — and
+measured exactly the way production measures: each file handed to the analyzer as `(path, bytes)`
+content, the shared classifier deciding what is in scope, the edges of §5.1 applied afterwards.
+
+Corpus: `crates/**/*.rs` and `scripts/**/*.py`. 125 files in scope, **84 measurable**, 41
+`skipped_noise` (the `tests/` and `testdata/` trees the classifier sets aside), 19,186 logical LOC,
+and zero gaps — every file in scope lexed, which is the front end's own pass criterion and the reason
+the corpus is worth reading.
+
+| MI | files | |
+|---|---|---|
+| 0–9 | 27 | `########################################` |
+| 10–19 | 16 | `#######################` |
+| 20–29 | 17 | `#########################` |
+| 30–39 | 14 | `####################` |
+| 40–49 | 4 | `#####` |
+| 50–59 | 2 | `##` |
+| 60–69 | 3 | `###` |
+| 70–79 | 1 | `#` |
+
+| band | files | logical LOC of the files in that band |
+|---|---|---|
+| green (`>= 50`) | 6 | 8 – 17 |
+| amber (25 – 49.9) | 25 | 38 – 131 |
+| red (`< 25`) | 53 | 124 – 903 |
+
+Aggregate **9.2** (red) over the corpus, median per-file MI **19.7**, files under 60 logical lines
+averaging **52.2** and files of 300+ averaging **1.9**, and **13 files clamped to 0.0** — the bottom of
+the scale is a pile, not a tail.
+
+Three things follow, and the first is the one §5 was asking about.
+
+1. **The edges are not wrong by more than a few points, so they stay.** The bands came out separated by
+   file size almost perfectly: the largest green file here is 17 logical lines and the smallest red one
+   is 124. That is §5.2's disclosure 1 — "at file granularity this metric is substantially a size
+   metric" — confirmed on real files instead of on an extrapolation table, and it says the edges would
+   have to move by twenty or thirty points, not by a few, to re-sort this corpus. A red file is a file
+   the formula wants split; §5.2 already said that, and the histogram agrees with it rather than
+   contradicting it.
+2. **A whole-repository aggregate sits deep in red, and that is not a verdict.** 9.2 over 19k LOC is
+   what §4.3's weighting does to a corpus whose median file is 19.7: the `16.2*ln(LOC)` penalty is
+   applied per file and then weighted by LOC, which multiplies the size penalty instead of averaging it
+   away. §4.2's rule — the aggregate is an aggregate and not a measurement — is what keeps this honest.
+   The timeline plots the delta against the parent and the hotspot list; a view that paints 9.2 as "this
+   repository is unmaintainable" is misusing the number, and the runbook (mact-by1.15) owes its readers
+   that sentence in one line.
+3. **The trigger is spent, so name the next one.** "mact-by1.7's first full-corpus run" has now happened,
+   on one repository of one shape. What would honestly reopen the edges is a second corpus of a
+   different shape — a workspace of 30-line modules, or a Python tree of 500-line scripts — whose median
+   sits more than a band width from this one. That is an amendment to `revisit_when`, and it belongs to
+   whichever ticket runs a second repository; this section deliberately changes no number.
+
+The five worst files were `scripts/validate_metric_model.py` (903 LOC, 0.0),
+`scripts/validate_mi_definition.py` (872, 0.0), `scripts/metric_model_reference.py` (834, 0.0),
+`scripts/mi_reference.py` (600, 0.0) and `scripts/validate_isolation.py` (586, 0.0) — this repository's
+own largest validators, which is exactly the kind of thing a hotspot list exists to say out loud.
 
 ## 6. The front end
 
@@ -839,6 +902,7 @@ different numeric representations (C6 and C7).
 | `python_comment_only` | `LOC == 0` again, including a `def` hidden inside a comment — the case the "comments are not tokens" rule exists for. |
 | `python_while` | rule coverage for Python's `while`: four logical lines plus two block headers (`def`, `while`) = 6, one decision point. Small on purpose: a file this size is one a human can count, and that is the point of a golden vector. |
 | `python_docstring` | `LOC == 1` but Halstead vocabulary `n == 0`: the **second** way a file is vacuous, since `ln(1)` was fine and `log2(0)` is not. |
+| `rust_deep_nesting` | the deep-nesting case the ticket named: seven block headers inside one another, two `else if` rungs, a two-arm `match`, both short-circuit operators as forks, and `fn grade(` as an *operand* because §3.2's name rules are ordered and rule 3 outranks rule 4. Added by mact-by1.7. |
 
 `definition.vectors.required_cases` is the list the ticket demanded and C6 refuses a set that stops
 covering it: one normal file per language, the comment-only/`LOC == 0` case, the `LOC == 1` case, the
@@ -854,7 +918,8 @@ does not change the aggregate**.
 The **determinism** tests the ticket asked for, in the order each one can fail:
 
 1. *same tree, two runs, identical MI* — the oracle runs twice in `--selftest` and compares the
-   serialised results byte for byte; mact-by1.7 re-runs the same assertion in Rust over every vector.
+   serialised results byte for byte; mact-by1.7 re-runs the same assertion in Rust over every vector,
+   and over this repository's own source, in [`crates/fathom/tests/mi.rs`](../../crates/fathom/tests/mi.rs).
 2. *two implementations, one number* — C7 recomputes every vector in 40-digit decimal and requires the
    same stored digit; `scripts/mi_reference.py` is the oracle a Rust port is graded against, and the
    vectors' `mi_raw` fields pin the intermediate to a relative `1e-9`, which is the room a different
@@ -867,6 +932,20 @@ The **determinism** tests the ticket asked for, in the order each one can fail:
 6. *an `analyzer_version` bump is loud* — ADR-0006 §6.3's rule that every analyzer has a golden block
    fixture means a count change without a version bump shows up as a fixture diff in the PR that caused
    it. The vectors above are those fixtures.
+
+**What the Rust port found in these vectors (mact-by1.7).** Running the Rust front end against the hand
+counts disagreed with three of them, and the hand count was wrong every time; the rules were not.
+`python_basic` listed the operand `1` six times, and the file has five — the sixth was the `1` of `.1f`
+inside an f-string, which §3.1 forbids tokenising and this vector's own notes celebrate. `rust_generics`
+keyed the raw string by its contents, which §3.1's "the delimiter text is part of the operand key, so
+`r#"a"#` is not `"a"`"` forbids. `rust_reformat` omitted the `for` from its decision points although
+§3.3's table lists `for` and the vector's own statement note names the `for` as a block header, so `G`
+is 3 and its MI is 70.9. None of the three moved a rule, so none of them is an amendment under ADR-0006
+§7 — the ADR text was authoritative and the fixtures moved, which is what §6.4 of that ADR prescribes.
+The two operand corrections are inert (operands do not enter `V`); the `for` moved one file's MI by 0.2,
+and `commit_small.json`'s aggregate is 27.5 before and after, which is the LOC weighting doing its job
+rather than the change being too small to matter. One vector was added: `rust_deep_nesting`, the case
+the ticket asked for that nothing here carried.
 
 ## 10. Failure modes and what is shown
 
