@@ -35,8 +35,11 @@
 #                ADR-0006's `.fathom` layout (`validate_fathom_layout.py`, which reads
 #                .gitignore and .fathom/LAYOUT.md) and ADR-0007's Maintainability Index
 #                (`validate_mi_definition.py`, which reads schema/mi-definition.json, the golden
-#                vectors in tests/testdata/mi and deny.toml, and re-derives every number twice) —
-#                and python's own jsonschema over the same
+#                vectors in tests/testdata/mi and deny.toml, and re-derives every number twice)
+#                and ADR-0008's per-commit metric model (`validate_metric_model.py`, which reads
+#                schema/metric-model.json, re-derives the golden vectors in tests/testdata/metrics,
+#                and diffs the reference implementation against the recorded jq-recipe output in
+#                docs/evidence-format.md §12) — and python's own jsonschema over the same
 #                evidence tree as a second, independent implementation.
 #   supply-chain cargo-deny: licences, duplicate/wildcard policy and sources always, RUSTSEC
 #                advisories when the network is allowed (`--offline` skips exactly that
@@ -261,6 +264,12 @@ step_schema() {
     #    scripts/mi_reference.py, then 40-digit decimal in the checker itself), and fails if the
     #    tree-sitter ban that the ADR's front-end decision depends on has been lifted. No third-party
     #    package, no cargo, milliseconds.
+    #    validate_metric_model.py is the fourth: ADR-0008's artifacts are a selection policy and an
+    #    aggregation, so it diffs the ADR's pinned blocks against schema/metric-model.json, re-derives
+    #    every golden vector in tests/testdata/metrics through scripts/metric_model_reference.py (the
+    #    oracle mact-by1.6 is graded against), and cross-checks that implementation against the *jq
+    #    recipes' recorded output* in docs/evidence-format.md — two languages, one answer, or the build
+    #    says which record each side picked.
     echo "--- ADR <-> schema checkers ($py)"
     "$py" scripts/validate_tool_contract.py
     "$py" scripts/validate_run_lifecycle.py
@@ -268,6 +277,7 @@ step_schema() {
     "$py" scripts/validate_crate_layout.py
     "$py" scripts/validate_fathom_layout.py
     "$py" scripts/validate_mi_definition.py
+    "$py" scripts/validate_metric_model.py
 
     # 3. python's jsonschema as a second, independent implementation of the same contract
     #    (ADR-0002 §7 wants a disagreement between two engines to show up here rather than

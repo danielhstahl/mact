@@ -1,0 +1,34 @@
+{
+  "case": "zero_is_zero",
+  "model_version": 1,
+  "notes": "hit 0 over found 500 is a measured 0.0 % - a number, with a down-delta and no caveat. The unknown glyph is reserved for 'there is no number', which is why this row has one and vacuous_only has none.",
+  "rows": {
+    "1111111111111111111111111111111111111111": {
+      "action_detail": [
+        {
+          "category": "coverage",
+          "kind": "coverage",
+          "ok": true,
+          "run_id": "20261110T041000Z-dd0002",
+          "status": "success",
+          "task": "coverage",
+          "workflow": "coverage"
+        }
+      ],
+      "action_success": "success",
+      "commit": "1111111111111111111111111111111111111111",
+      "coverage": {
+        "found": 500,
+        "hit": 0,
+        "measure": "lines",
+        "percent": 0.0,
+        "runs": [
+          "20261110T041000Z-dd0002"
+        ]
+      },
+      "gaps": {
+        "benchmarks": "no_records"
+      }
+    }
+  }
+}

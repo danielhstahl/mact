@@ -1,0 +1,15 @@
+{
+  "case": "no_evidence",
+  "model_version": 1,
+  "notes": "git knows the commit; .evidence has never heard of it. Both columns are unknown and the state is no_evidence - not failed, not 0 %, and not the parent's number.",
+  "rows": {
+    "1111111111111111111111111111111111111111": {
+      "action_success": "no_evidence",
+      "commit": "1111111111111111111111111111111111111111",
+      "gaps": {
+        "benchmarks": "no_evidence",
+        "coverage": "no_evidence"
+      }
+    }
+  }
+}

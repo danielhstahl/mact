@@ -1,0 +1,34 @@
+{
+  "case": "outside_workspace_total",
+  "model_version": 1,
+  "notes": "The run's own total says 4000/5000 while its file records sum to 3000/4000. The difference is instrumented files outside the workspace (ADR-0002 4.2): a documented property, not corruption, and sum(file records) == total is therefore never a check. The total wins: 80.0 %, not the file sum's 75.0 %.",
+  "rows": {
+    "1111111111111111111111111111111111111111": {
+      "action_detail": [
+        {
+          "category": "coverage",
+          "kind": "coverage",
+          "ok": true,
+          "run_id": "20261110T110000Z-cc0005",
+          "status": "success",
+          "task": "coverage",
+          "workflow": "coverage"
+        }
+      ],
+      "action_success": "success",
+      "commit": "1111111111111111111111111111111111111111",
+      "coverage": {
+        "found": 5000,
+        "hit": 4000,
+        "measure": "lines",
+        "percent": 80.0,
+        "runs": [
+          "20261110T110000Z-cc0005"
+        ]
+      },
+      "gaps": {
+        "benchmarks": "no_records"
+      }
+    }
+  }
+}

@@ -1,0 +1,329 @@
+{
+  "$comment": [
+    "ADR-0008's normative rules: what one Fathom commit row's numbers mean.",
+    "This file is the machine-readable form of docs/adr/0008-per-commit-metric-model.md. It is the ONE",
+    "spelling of the selection pipeline, the drop-reason vocabulary, the aggregation arithmetic, the",
+    "action-success state machine and the glyph table. scripts/metric_model_reference.py loads it and is",
+    "the oracle mact-by1.6's Rust reader is graded against, and the ADR's fenced blocks are diffed",
+    "against it by scripts/validate_metric_model.py. Prose that disagrees with this file is a bug in the",
+    "prose.",
+    "Changing anything here changes the meaning of every row already in every .fathom cache: bump the",
+    "evidence-derivation analyzer version (ADR-0006 section 6.3) in the same commit, and if the change",
+    "alters a row field's meaning rather than adding a field, bump `row_version` (ADR-0006 section 6.4).",
+    "The evidence contract itself does not change here: ADR-0002 stays normative about records, this",
+    "file is normative about what a reader derives from them."
+  ],
+  "model_version": 1,
+  "adr": "ADR-0008",
+  "ticket": "mact-by1.4",
+  "consumes": {
+    "contract": "ADR-0002 / schema/evidence.schema.json, schema_version 1",
+    "reader": "crates/act-evidence (ADR-0005): the record types, never a second struct set",
+    "store": "ADR-0006 section 6.4 rows: coverage, benchmarks, action_success, gaps",
+    "renderer": "mact-by1.9 timeline, mact-by1.12 bench panel, mact-by1.13 report and doctor"
+  },
+  "row_key": {
+    "type": "full commit SHA",
+    "hex_length": 40,
+    "case": "lowercase",
+    "display_length": 7,
+    "short_sha_may_join_paths": false,
+    "rule": "a directory name under .evidence is always 40 lowercase hex (ADR-0002 section 1.1), so a short-SHA path join is a bug, not a shortcut"
+  },
+  "pipeline": {
+    "stages": ["walk", "retain", "select", "aggregate"],
+    "stage_meaning": {
+      "walk": "which bytes are read at all",
+      "retain": "which records a number may be built from, per record, in path order",
+      "select": "which retained run is the newest for its identity",
+      "aggregate": "the arithmetic that turns the selected records into the row's numbers"
+    },
+    "explain_rule": "every record read is either retained or dropped with exactly one reason code from drop_reasons; --explain and gaps exist so a wrong number is answerable (mact-by1.6)"
+  },
+  "walk": {
+    "kinds": ["benchmark", "coverage"],
+    "never_walk": ["runs", "incoming"],
+    "skip_dot_files": true,
+    "record_file_suffix": ".jsonl",
+    "directory_must_be_sha": true,
+    "rule": "kind/<full-sha>/<run_id>.jsonl and nothing else; a glob of ** / *.jsonl walks into runs/<run_id>/act.jsonl, which is act's log and not a record"
+  },
+  "retention": {
+    "run_status_eligible": ["success"],
+    "run_status_all": ["success", "failed", "cancelled", "timed_out", "error"],
+    "other_statuses_are": "written on purpose (ADR-0002 section 4.4) so a broken run is visible and filterable; they never feed a number and are always listed in the row",
+    "truncated_run_never_pooled": true,
+    "coverage_measures": {
+      "lines": ["lines_hit", "lines_found"],
+      "statements": ["statements_hit", "statements_found"],
+      "branches": ["branches_hit", "branches_found"],
+      "functions": ["functions_hit", "functions_found"]
+    },
+    "measure_order": ["lines", "statements", "branches", "functions"],
+    "measure_rule": "one measure per pooled number; records of a non-primary measure are never pooled with it because istanbul statements are a different unit from lcov lines (ADR-0002 section 4.2)",
+    "benchmark_precedence_within_run": ["job_file", "in_band_stdout", "act_log"],
+    "benchmark_precedence_rule": "within one run and one group, the highest-precedence source present wins and the others are dropped as source_shadowed; this is ADR-0002 section 5.1's precedence applied to what survived the writer's own dedup"
+  },
+  "drop_reasons": [
+    { "code": "not_a_record_path", "stage": "walk", "meaning": "path is not <kind>/<40-hex>/<run_id>.jsonl" },
+    { "code": "temp_file", "stage": "walk", "meaning": "dot-file: .<run_id>.jsonl.<random>.tmp is a crashed publish (ADR-0002 section 1.1)" },
+    { "code": "directory_not_sha", "stage": "walk", "meaning": "directory name is not 40 lowercase hex: short SHA, mixed case, or a foreign name" },
+    { "code": "schema_unsupported", "stage": "retain", "meaning": "schema_version newer than this build reads: skip and count, never guess (ADR-0002 section 7; the same rule ADR-0007 checker follows)" },
+    { "code": "malformed", "stage": "retain", "meaning": "not strict JSON, not one object, missing a required envelope field, a kind disagreeing with its directory, a last byte that is not LF (a torn write), or a schema failure" },
+    { "code": "commit_mismatch", "stage": "retain", "meaning": "the record's commit is not the directory it was read from; the directory is trusted, the record is dropped (ADR-0002 section 1.1)" },
+    { "code": "bad_run_id", "stage": "retain", "meaning": "run_id does not match ADR-0002 section 1.2, so it cannot be sorted and cannot be selected" },
+    { "code": "run_status_excluded", "stage": "retain", "meaning": "run_status is not in retention.run_status_eligible" },
+    { "code": "run_truncated", "stage": "retain", "meaning": "flags contains truncated: the run hit the metric cap, so what survived must never be summed and called the run (ADR-0002 section 5.1)" },
+    { "code": "config_filtered", "stage": "retain", "meaning": "excluded by fathom.toml benchmarks.allow / benchmarks.deny (ADR-0006 section 7.2)" },
+    { "code": "source_shadowed", "stage": "retain", "meaning": "same run, same group, lower-precedence source (retention.benchmark_precedence_within_run)" },
+    { "code": "superseded", "stage": "select", "meaning": "an older run of the same (kind, workflow, task) group: kept for spread and for --explain, never part of the headline value" },
+    { "code": "percent_only", "stage": "aggregate", "meaning": "reported_percent with no raw counts: a caveat, never a plotted number (ADR-0002 section 4.3)" },
+    { "code": "low_confidence", "stage": "aggregate", "meaning": "flags contains low_confidence: text-scraped, a caveat, never a plotted number" },
+    { "code": "vacuous", "stage": "aggregate", "meaning": "found == 0: the ratio is undefined, the entry contributes nothing to a pool and is excluded from any average (ADR-0002 section 4.3)" },
+    { "code": "measure_not_primary", "stage": "aggregate", "meaning": "the record's measure is not the commit's primary measure: kept as a secondary number, never pooled with it" },
+    { "code": "no_counts", "stage": "aggregate", "meaning": "coverage record with no complete count pair: nothing to pool" },
+    { "code": "file_under_total", "stage": "aggregate", "meaning": "a file record of a run that also published a total: the run's own total is that run's number (ADR-0002 section 4.3)" }
+  ],
+  "selection": {
+    "group_key": ["kind", "workflow", "task"],
+    "newest_by": "run_id",
+    "newest_rule": "lexical maximum of run_id, which is the chronologically newest run because the id embeds a UTC timestamp (ADR-0002 section 1.2)",
+    "ties": "impossible: run_id is unique per run and one file is exactly one run",
+    "per_kind_because": "one run may publish one file per kind; grouping without kind would let a benchmark run supersede a coverage run",
+    "git_log_order_note": "git log yields newest-first and ls yields oldest-first; the rule is a max over the group, so neither order can get it wrong"
+  },
+  "row_shape": {
+    "$comment": "the closed field list the derivation emits, as a supplement to ADR-0006 section 6.4's row: coverage, benchmarks, action_success and gaps are that row's fields, extended here with the detail this ADR owns. A reader may assume nothing else is present; a writer may not add a field without adding it here, to the ADR and to the golden vectors in the same commit.",
+    "row": ["action_detail", "action_success", "benchmarks", "caveats", "commit", "coverage", "excluded_runs", "gaps", "superseded_runs", "unreadable_records"],
+    "coverage": ["found", "hit", "measure", "percent", "runs", "secondary"],
+    "coverage_secondary": ["found", "hit", "measure", "percent"],
+    "benchmarks": ["comparable", "context", "flags", "labels", "max", "min", "name", "run_count", "run_id", "samples", "source", "unit", "value"],
+    "action_detail": ["category", "kind", "ok", "run_id", "status", "task", "workflow"],
+    "excluded_runs": ["reason", "run_id", "status"],
+    "gaps": ["benchmarks", "coverage"],
+    "gaps_adr0006": ["no_evidence", "no_mi", "unanalysed_paths"],
+    "gaps_adr0006_note": "these three keys of the row's gaps object belong to ADR-0006 and ADR-0007, not here; this ADR writes only the two above, and gaps.no_evidence is true exactly when action_success is no_evidence",
+    "nulls": "none anywhere: an unknown value is an absent key (ADR-0002 2.1, ADR-0006 6.3), which is why a benchmark with no unit has no unit key at all rather than a null one"
+  },
+  "gap_reasons": {
+    "$comment": "a column with no number carries exactly one of these; it is what the unknown glyph stands for and what doctor and --explain print",
+    "coverage": ["no_evidence", "unreadable", "all_runs_excluded", "only_percent_only", "vacuous", "no_counts", "no_records"],
+    "benchmarks": ["no_evidence", "unreadable", "all_runs_excluded", "config_filtered", "no_records"],
+    "priority": [
+      "nothing readable at this SHA: unreadable if a record was present but unreadable, else no_evidence",
+      "coverage: percent_only or low_confidence was the only thing there: only_percent_only",
+      "coverage: every pooled denominator was 0: vacuous",
+      "a run at this SHA was excluded by retention: all_runs_excluded",
+      "benchmarks: a name was filtered by config: config_filtered",
+      "coverage: a record had no count pair at all: no_counts",
+      "otherwise: no_records"
+    ]
+  },
+  "caveat_codes": {
+    "$comment": "the closed set a row's caveats[] may contain; the timeline shows one marker glyph and the detail view names the codes",
+    "all": [
+      "percent_only",
+      "low_confidence",
+      "vacuous",
+      "total_from_file_sum",
+      "secondary_measures",
+      "measure_not_primary",
+      "run_excluded",
+      "superseded_runs",
+      "unreadable",
+      "unit_missing",
+      "source_changed",
+      "context_only"
+    ],
+    "coverage": ["percent_only", "low_confidence", "vacuous", "total_from_file_sum", "secondary_measures", "measure_not_primary", "run_excluded", "superseded_runs", "unreadable"],
+    "benchmarks": ["unit_missing", "source_changed", "context_only", "run_excluded", "superseded_runs", "unreadable"],
+    "marker_glyph": "the glyph appended to a column whose value has caveats; it never appears on a column with no value behind it"
+  },
+  "coverage": {
+    "identity": "(commit, kind, run_id, scope, path) per ADR-0002 section 4.4",
+    "per_run_total_source": ["scope_total", "else_sum_of_file_records"],
+    "per_run_total_rule": "a selected run's scope:total record IS that run's total and is used directly; only when a run has no total record are its file records summed, and then the row carries the caveat total_from_file_sum",
+    "sum_invariant_used_as_a_check": false,
+    "sum_invariant_note": "sum(file records) == total is FALSE by design: a tool that instrumented files outside the workspace puts them in the total and in no file record (ADR-0002 section 4.2). A reader must not treat the difference as corruption and must not renumber the total",
+    "pool": "sum of numerators over sum of denominators across the selected runs, per measure",
+    "pool_flat": "sum of numerators over sum of denominators, per measure",
+    "never": "average per-file percentages; average per-run percentages; use a rounded intermediate as an input",
+    "primary_measure": "first entry of retention.measure_order whose pooled found > 0",
+    "secondary_measures": "every other measure with pooled found > 0, pooled the same way and stored under coverage.secondary",
+    "percent_formula": "percent = round_half_away(100 * sum(hit) / sum(found), 1)",
+    "percent_input": "raw counts only, never a rounded intermediate",
+    "percent_decimals": 1,
+    "rounding": "half away from zero, from the raw counts only; the stored digit is what a renderer prints",
+    "rounding_flat": "half away from zero",
+    "vacuous": "found == 0 after pooling: coverage is absent, reason vacuous, glyph is the unknown glyph, and the commit is excluded from any window average; a vacuous record inside a non-vacuous pool is a no-op because 0/0 adds nothing to either sum",
+    "zero_is_zero": "hit == 0 with found > 0 is a real 0.0 %, rendered as a number with a down-delta, never as the unknown glyph",
+    "excluded_from_number": ["percent_only", "low_confidence"],
+    "excluded_still_shown": "as caveat markers on the row and as named entries in the detail view, with reported_percent, reported_measure and source_path",
+    "single_percent_only_commit": "coverage absent + caveat percent_only: the scraped number is a signal that something ran, never this commit's coverage %",
+    "superseded_runs_kept": "listed in coverage.superseded_runs so a re-run is visible",
+    "pooled_bound": "pooling is a size-weighted mean of the selected runs' rates, so the pooled percent is always between the smallest and the largest of them; it can neither invent coverage nor hide a drop"
+  },
+  "benchmarks": {
+    "identity": "(commit, kind, run_id, name, labels, sample) per ADR-0002 section 4.4",
+    "sample_stays_in_the_key": true,
+    "sample_note": "samples are the noise estimate, not duplicates; a dedup that drops them throws away the spread",
+    "group_key": ["name", "labels", "unit"],
+    "group_key_rule": "unit is part of the identity, so a metric whose unit changed is a different metric and cannot be plotted against its former self; an absent unit is its own group key (unit_missing)",
+    "value": "median over the samples of the newest selected run",
+    "spread_flat": "min and max over every retained run of that group",
+    "median_even_n": "mean of the two middle values (ascending by value), which is what docs/evidence-format.md recipe 6 prints",
+    "median_even_n_flat": "mean of the two middle values",
+    "median_population": "all records of the group in that run, whether or not sample is set: the writer numbers samples only when a job really emitted more than one (ADR-0002 section 4.4)",
+    "spread": "min and max over the RETAINED records of the group at this commit (every successful, non-truncated run), with runs = distinct run_id count; the spread deliberately spans superseded runs",
+    "spread_single_run": "min == max with runs == 1 is an unmeasured noise floor, not a stable metric; a renderer says so rather than drawing a confidence interval out of one number",
+    "serialization": "shortest round-trip decimal of the binary64 value (Rust {}, Python repr, jq 1.7.1 agree); never re-rounded for storage",
+    "display_precision": "4 significant digits, half away from zero, at render time only",
+    "comparable": "unit present and identical across the group's history; unit_missing means displayable but not comparable: no delta, no sparkline, no cross-metric axis",
+    "never_compare": ["different units", "absent unit", "different metric names on one axis", "act_log context rows against a job_file measurement"],
+    "context_sources": ["act_log"],
+    "context_rule": "job_duration_s and step_duration_s describe the run, not the code: kept, shown with the context glyph, and never a regression signal by default",
+    "absent_is_not_zero": "step_duration_s is legitimately absent on act 0.2.62..0.2.75 (docs/evidence-format.md section 5); absence renders as the unknown glyph with a reason and is never a hole, a 0 or a regression",
+    "headline": "every retained group after the fathom.toml allow/deny filter; the timeline's single bench column shows the first group in (name, canon(labels)) order plus a +N for the rest, preferring a comparable group over a context one",
+    "missing_group_vs_zero": "a group absent at this commit is absent: no 0, no carry-forward from the parent, no interpolation across commits"
+  },
+  "action_success": {
+    "durable_source": "the run_status field on every evidence record (ADR-0002 section 2.2): it is in the contract, it is on disk, and it is the only thing that answers the question three weeks later",
+    "never_the_source": [
+      "the run_status MCP tool: in-memory, newest 50, evicts, and answers run_not_found afterwards (docs/tool-contract.md section 5)",
+      "runs/<run_id>/meta.json in the index path: audit material, not the contract (ADR-0002 section 1.3)",
+      "the server of any kind: fathom is a reader, never a client (ADR-0005 section 7)"
+    ],
+    "group_key": ["kind", "workflow", "task"],
+    "group_verdict": "the newest run's run_status for that group (selection.newest_by), so a failed run followed by a successful re-run is a pass and not a mixed",
+    "success_statuses": ["success"],
+    "states": ["success", "failed", "mixed", "no_evidence"],
+    "decision_order": [
+      "no records at all for this SHA, under either kind: no_evidence",
+      "every group verdict in action_success.success_statuses: success",
+      "no group verdict in action_success.success_statuses: failed",
+      "otherwise: mixed"
+    ],
+    "mutually_exclusive": true,
+    "exhaustive": true,
+    "detail": "action_detail lists one entry per group: kind, workflow, task, category, status, run_id, and whether that verdict is what drove the row state",
+    "category_grouping": "category is the classification that caused the evidence (ADR-0002 section 2.2) and is what tells the UI which column's workflow failed; in v1 it equals kind, and the grouping is therefore kind-shaped today and forward-compatible tomorrow",
+    "no_evidence_is_not_failure": "a commit with no records may never have run at all: render unknown, never failed, never ✗, never 0 %",
+    "indistinguishable_cases": [
+      "no workflow ran for this SHA",
+      "a run was cancelled before publishing (ADR-0002 section 1.1: cancel publishes nothing)",
+      "a run succeeded and its extractor found nothing (meta.json evidence[] would say so, and the index may not read it)"
+    ],
+    "unreadable_records_are": "a SHA whose records exist but cannot be read stays no_evidence and carries unreadable_records with a count: 'unreadable' and 'never ran' are different answers, both unknown, neither a failure",
+    "resolution": "mact-by1.18 (evidence contract v2: a durable run-outcome record) is what would separate these; until then the row says no_evidence and doctor may, as advisory, name a run directory that published nothing",
+    "meta_json_policy": {
+      "index_path_reads_runs": false,
+      "advisory_readers": ["fathom doctor", "fathom index --explain"],
+      "advisory_marking": "anything derived from runs/ is labelled advisory in the output and is never written into a row's contract fields",
+      "missing_or_renamed_meta_never_breaks": "a render or an index run MUST NOT fail because runs/ is absent, unreadable, or has no meta.json for a run_id an evidence file names",
+      "why_not_the_index": "runs/ is not commit-keyed, so joining it to a commit is a scan of every run directory; and ADR-0002 section 1.3 already says it is audit material"
+    }
+  },
+  "display": {
+    "unicode": {
+      "unknown": "\u2014",
+      "caveat_marker": "*",
+      "context": "~",
+      "delta_up": "\u25b2",
+      "delta_down": "\u25bc",
+      "delta_flat": "\u00b7",
+      "success": "\u2713",
+      "failed": "\u2717",
+      "mixed": "\u25d0",
+      "no_evidence": "\u2014"
+    },
+    "ascii": {
+      "unknown": "-",
+      "caveat_marker": "*",
+      "context": "~",
+      "delta_up": "^",
+      "delta_down": "v",
+      "delta_flat": "=",
+      "success": "pass",
+      "failed": "fail",
+      "mixed": "mix",
+      "no_evidence": "-"
+    },
+    "rules": [
+      "every number carries an explicit unknown / zero / empty state; 0 always means a measured zero",
+      "unknown is the same glyph in every column, so absence never reads as a failure and a failure never reads as absence",
+      "the caveat marker is appended to the column it qualifies and the caveat codes live on the row; a marker with nothing behind it is a bug",
+      "no colour-only signal: the glyph alone must carry the state (NO_COLOR and TERM=dumb are supported terminals)",
+      "delta arrows need both sides: no parent value means no arrow, and an arrow is never a directionless decoration",
+      "--plain and fathom report --format tsv use the ascii column of this table, so a log file is readable without a unicode terminal"
+    ],
+    "parent_rules": {
+      "root_commit": "a commit with no parent has no delta anywhere: delta fields are absent, not 0, not the value itself; absolute values still render",
+      "merge_commit": "deltas are against the FIRST parent, which is the line history was merged onto; the evidence is whatever ran on this SHA and nothing else",
+      "no_inheritance": "a commit never borrows a parent's or a sibling's number: no carry-forward for coverage or benchmarks, because a number attributed to a commit that never ran is a lie",
+      "octopus_merge": "additional parents are displayable in the detail view and are never a delta base",
+      "config": "history.first_parent (ADR-0006 section 7.2) narrows the walk; it does not change which parent a delta is against"
+    }
+  },
+  "adr_pins": {
+    "$comment": "the exact lines docs/adr/0008 section 0 duplicates; C2 requires the ADR block to equal this object field for field, and each value to agree with the normative field it names",
+    "percent_decimals": "1",
+    "percent_rounding": "half away from zero",
+    "percent_input": "raw counts only, never a rounded intermediate",
+    "run_status_eligible": "success",
+    "selection_key": "kind, workflow, task",
+    "newest_by": "run_id",
+    "coverage_run_total": "scope_total, else_sum_of_file_records",
+    "coverage_pool": "sum of numerators over sum of denominators, per measure",
+    "measure_order": "lines, statements, branches, functions",
+    "vacuous_found_zero": "no number, reason vacuous, excluded from every average",
+    "zero_means_zero": "hit == 0 with found > 0 is 0.0 %",
+    "benchmark_group_key": "name, labels, unit",
+    "benchmark_value": "median over the samples of the newest selected run",
+    "median_even_n": "mean of the two middle values",
+    "benchmark_spread": "min and max over every retained run of that group",
+    "benchmark_context": "act_log",
+    "action_states": "success, failed, mixed, no_evidence",
+    "action_source": "the run_status field on every evidence record",
+    "action_group_key": "kind, workflow, task",
+    "meta_json_in_index": "never"
+  },
+  "forbidden": [
+    "average per-file or per-run percentages instead of summing numerators and denominators",
+    "use sum(file records) == total as a validity check",
+    "plot or diff a percent_only or low_confidence record",
+    "compare, diff or plot values whose unit differs or is absent",
+    "treat an absent value as 0, as an empty string, or as a regression",
+    "call a vacuous found == 0 a 0 %",
+    "render no_evidence as failed",
+    "read runs/ or incoming/ in the index path",
+    "join evidence on a short SHA",
+    "carry a parent's number forward to a child with no evidence",
+    "sum the surviving records of a truncated run and call it the run",
+    "invent a denominator for a scraped percentage",
+    "silently prefer one of two disagreeing coverage sources",
+    "average across commits, per-file, or per-run to fill a hole in a history sparkline"
+  ],
+  "vectors": {
+    "dir": "tests/testdata/metrics",
+    "fixture_dir": "tests/testdata/metrics/fixtures",
+    "expected_dir": "tests/testdata/metrics/expected",
+    "required_cases": [
+      "three_runs_one_task",
+      "two_coverage_tasks",
+      "percent_only_only",
+      "vacuous_only",
+      "zero_is_zero",
+      "failed_only",
+      "retry_passes",
+      "mixed_action",
+      "unit_missing_and_changed",
+      "even_median_and_spread",
+      "act_log_context",
+      "outside_workspace_total",
+      "total_absent",
+      "dirty_tree",
+      "unreadable_only",
+      "no_evidence"
+    ]
+  }
+}

@@ -58,11 +58,12 @@ that needs a container daemon belongs behind `#[ignore]` with the reason in its
    compiling or a record stops satisfying it, with no python involved.
 2. `scripts/validate_tool_contract.py`, `scripts/validate_run_lifecycle.py`,
    `scripts/validate_isolation.py`, `scripts/validate_crate_layout.py`,
-   `scripts/validate_fathom_layout.py` and
-   `scripts/validate_mi_definition.py` — the six
+   `scripts/validate_fathom_layout.py`,
+   `scripts/validate_mi_definition.py` and
+   `scripts/validate_metric_model.py` — the seven
    ADR↔contract checkers docs/testing.md calls CI's: ADR-0001's tool contract, ADR-0004's run
    lifecycle, ADR-0003's isolation protocol, ADR-0005's crate layout, ADR-0006's `.fathom`
-   workspace layout and ADR-0007's Maintainability Index, each checked against the
+   workspace layout, ADR-0007's Maintainability Index and ADR-0008's per-commit metric model, each checked against the
    artifact that implements it (a `schema/*.json` for the first three, `Cargo.toml`/`Cargo.lock` for
    the fourth — ADR-0005's load-bearing form *is* the manifests, so that checker reads them instead of
    a fourth schema — and `.gitignore` plus `.fathom/LAYOUT.md` for the last, because ADR-0006's
@@ -72,7 +73,12 @@ that needs a container daemon belongs behind `#[ignore]` with the reason in its
    what ADR-0007 pins is a set of numbers and a set of closed enumerations — the checker diffs the
    ADR's own copy of the constants against the JSON, re-derives every golden vector twice
    (`scripts/mi_reference.py` in binary64, the checker itself in 40-digit decimal), and fails if the
-   `tree-sitter` ban ADR-0007 §6 depends on has been lifted). (ADR-0002's checker is
+   `tree-sitter` ban ADR-0007 §6 depends on has been lifted; and
+   `schema/metric-model.json` plus the fixture trees in `tests/testdata/metrics` for the seventh,
+   because what ADR-0008 pins is which records a commit's number is made of — that one additionally
+   grades `scripts/metric_model_reference.py` against the recorded output of the jq recipes in
+   `docs/evidence-format.md` §12, which is the only place this repo has the same question asked in two
+   languages). (ADR-0002's checker is
    `validate_evidence.py`, which is check (1) above and check (3) below.) Of these,
    `validate_tool_contract.py` is the one that keeps ADR-0001's error-code table, the run
    status vocabulary and the fixture index in

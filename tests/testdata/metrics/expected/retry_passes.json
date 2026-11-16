@@ -1,0 +1,44 @@
+{
+  "case": "retry_passes",
+  "model_version": 1,
+  "notes": "A failed run then a successful re-run of the same (kind, workflow, task): the newest verdict is the group's verdict, so the row is success and not mixed, while the failed run is still listed under excluded_runs. The number is the successful run's 450/500 = 90.0.",
+  "rows": {
+    "1111111111111111111111111111111111111111": {
+      "action_detail": [
+        {
+          "category": "coverage",
+          "kind": "coverage",
+          "ok": true,
+          "run_id": "20261110T053000Z-dd0005",
+          "status": "success",
+          "task": "coverage",
+          "workflow": "coverage"
+        }
+      ],
+      "action_success": "success",
+      "caveats": [
+        "run_excluded"
+      ],
+      "commit": "1111111111111111111111111111111111111111",
+      "coverage": {
+        "found": 500,
+        "hit": 450,
+        "measure": "lines",
+        "percent": 90.0,
+        "runs": [
+          "20261110T053000Z-dd0005"
+        ]
+      },
+      "excluded_runs": [
+        {
+          "reason": "run_status_excluded",
+          "run_id": "20261110T043000Z-dd0004",
+          "status": "failed"
+        }
+      ],
+      "gaps": {
+        "benchmarks": "all_runs_excluded"
+      }
+    }
+  }
+}

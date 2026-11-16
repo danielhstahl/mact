@@ -1,0 +1,67 @@
+{
+  "case": "two_coverage_tasks",
+  "model_version": 1,
+  "notes": "Two coverage tasks on one commit are two measurements, not a duplicate. Numerators and denominators are pooled - hit 3581+1904=5485 over found 4120+2210=6330 = 86.65086... -> 86.7 - and the two rates (86.92 and 86.15) are never averaged: their mean 86.535 is a number about nothing. Statements (2079/2415 = 86.1), branches (1507/1882 = 80.1) and functions (286/318 = 89.9) are secondary numbers: a different unit is a different measurement and is never pooled with lines.",
+  "rows": {
+    "1111111111111111111111111111111111111111": {
+      "action_detail": [
+        {
+          "category": "coverage",
+          "kind": "coverage",
+          "ok": true,
+          "run_id": "20261110T011507Z-d4e5f6",
+          "status": "success",
+          "task": "coverage",
+          "workflow": "coverage"
+        },
+        {
+          "category": "coverage",
+          "kind": "coverage",
+          "ok": true,
+          "run_id": "20261110T021244Z-0f9e8d",
+          "status": "success",
+          "task": "coverage-istanbul",
+          "workflow": "coverage"
+        }
+      ],
+      "action_success": "success",
+      "caveats": [
+        "secondary_measures"
+      ],
+      "commit": "1111111111111111111111111111111111111111",
+      "coverage": {
+        "found": 6330,
+        "hit": 5485,
+        "measure": "lines",
+        "percent": 86.7,
+        "runs": [
+          "20261110T011507Z-d4e5f6",
+          "20261110T021244Z-0f9e8d"
+        ],
+        "secondary": [
+          {
+            "found": 2415,
+            "hit": 2079,
+            "measure": "statements",
+            "percent": 86.1
+          },
+          {
+            "found": 1882,
+            "hit": 1507,
+            "measure": "branches",
+            "percent": 80.1
+          },
+          {
+            "found": 318,
+            "hit": 286,
+            "measure": "functions",
+            "percent": 89.9
+          }
+        ]
+      },
+      "gaps": {
+        "benchmarks": "no_records"
+      }
+    }
+  }
+}

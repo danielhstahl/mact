@@ -55,7 +55,7 @@ A few environment quirks worth knowing before the first red build:
 
 The shell checkers under `scripts/` (`validate_tool_contract.py`, `validate_run_lifecycle.py`,
 `validate_isolation.py`, `validate_crate_layout.py`, `validate_fathom_layout.py`,
-`validate_mi_definition.py`) are CI's, and each
+`validate_mi_definition.py`, `validate_metric_model.py`) are CI's, and each
 one's Rust counterpart is named in the file it guards. The first three read `schema/*.json` against
 the ADR that wrote it; the fourth reads `Cargo.toml`, because what ADR-0005 pins is which crate may
 depend on which; the fifth reads `.gitignore` and `.fathom/LAYOUT.md`, because what ADR-0006 pins is
@@ -64,7 +64,13 @@ the sixth reads `schema/mi-definition.json`, the golden vectors under `tests/tes
 `deny.toml`, because what ADR-0007 pins is arithmetic and enumerations — and it re-derives every
 vector twice, once through `scripts/mi_reference.py` (the oracle mact-by1.7's Rust port is graded
 against) and once in 40-digit `decimal` inside the checker, so a future Rust implementation has
-something to be wrong against before a trend line is.
+something to be wrong against before a trend line is; and the seventh reads
+`schema/metric-model.json` plus the fixture trees under `tests/testdata/metrics`, because what
+ADR-0008 pins is *which records a commit's number is built from* — it re-derives all sixteen vectors
+through `scripts/metric_model_reference.py` (the oracle mact-by1.6 is graded against), re-checks the
+worked example in the ADR against a freshly built sample tree, and then diffs that Python
+implementation against the **recorded output of the jq recipes** in `docs/evidence-format.md` §12, so
+the reader and the documented reader's-view of the contract cannot drift apart quietly.
 
 | suite | what it pins |
 |---|---|

@@ -1,0 +1,37 @@
+{
+  "case": "total_absent",
+  "model_version": 1,
+  "notes": "No total record: the file records are summed (150+50 over 300+100 = 200/400 = 50.0) and the row carries total_from_file_sum, because that total is the reader's construction and not the tool's claim.",
+  "rows": {
+    "1111111111111111111111111111111111111111": {
+      "action_detail": [
+        {
+          "category": "coverage",
+          "kind": "coverage",
+          "ok": true,
+          "run_id": "20261110T120000Z-cc0006",
+          "status": "success",
+          "task": "coverage",
+          "workflow": "coverage"
+        }
+      ],
+      "action_success": "success",
+      "caveats": [
+        "total_from_file_sum"
+      ],
+      "commit": "1111111111111111111111111111111111111111",
+      "coverage": {
+        "found": 400,
+        "hit": 200,
+        "measure": "lines",
+        "percent": 50.0,
+        "runs": [
+          "20261110T120000Z-cc0006"
+        ]
+      },
+      "gaps": {
+        "benchmarks": "no_records"
+      }
+    }
+  }
+}

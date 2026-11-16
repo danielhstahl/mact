@@ -1,0 +1,50 @@
+{
+  "case": "even_median_and_spread",
+  "model_version": 1,
+  "notes": "The newest run carries samples 184320.4 and 185012.7, so the value is the mean of the two middle values, (184320.4+185012.7)/2 = 184666.55 - the same digits docs/evidence-format.md recipe 6 prints, in shortest round-trip form. The superseded run's 170000.0 stays in the spread (min 170000.0, max 185012.7, runs 2): the older run is the noise floor, which is what the spread is for.",
+  "rows": {
+    "1111111111111111111111111111111111111111": {
+      "action_detail": [
+        {
+          "category": "benchmark",
+          "kind": "benchmark",
+          "ok": true,
+          "run_id": "20261110T090000Z-aa0003",
+          "status": "success",
+          "task": "bench",
+          "workflow": "benchmark"
+        }
+      ],
+      "action_success": "success",
+      "benchmarks": [
+        {
+          "comparable": true,
+          "context": false,
+          "flags": [],
+          "labels": {
+            "job": "bench"
+          },
+          "max": 185012.7,
+          "min": 170000.0,
+          "name": "tokenizer_throughput",
+          "run_count": 2,
+          "run_id": "20261110T090000Z-aa0003",
+          "samples": 2,
+          "source": "job_file",
+          "unit": "ops/s",
+          "value": 184666.55
+        }
+      ],
+      "caveats": [
+        "superseded_runs"
+      ],
+      "commit": "1111111111111111111111111111111111111111",
+      "gaps": {
+        "coverage": "no_records"
+      },
+      "superseded_runs": [
+        "20261110T080000Z-aa0002"
+      ]
+    }
+  }
+}
