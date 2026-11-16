@@ -21,7 +21,7 @@
 #                   runtime answering the *same* probe the server uses (`docker info`), free
 #                   disk for an image pull, the act-mcp binary running, and — needing no
 #                   daemon at all — real act accepting every flag src/runner/argv.rs emits
-#   fixture         copy tests/realdata/fixture into a throwaway git repo and commit it
+#   fixture         copy `crates/act-mcp/tests/realdata/fixture` into a throwaway git repo and commit it
 #   boot            `act-mcp serve --bind 127.0.0.1:0` against that repo; the port is read
 #                   back out of the listening line, exactly as tests/common reads it
 #   list_tasks      both workflows and both job ids are visible
@@ -30,10 +30,10 @@
 #   payload         the files the *job* wrote inside the container are here on the host
 #   log             runs/<run_id>/act.jsonl exists and contains the job's own stdout
 #   shape           scripts/realdata_report.py compares the log against
-#                   tests/realdata/golden/act-shape.json and prints every divergence
+#                   crates/act-mcp/tests/realdata/golden/act-shape.json and prints every divergence
 #   validate        `act-mcp validate-evidence` over the produced tree, exit 0
 #   records         the values the fixture hard-codes are the values the records carry
-#   expected        optional byte-for-byte diff against tests/realdata/expected
+#   expected        optional byte-for-byte diff against crates/act-mcp/tests/realdata/expected
 #   actrc           (real mode) a workspace `.actrc` pinning an unpullable image is inert —
 #                   act reads `.actrc` from its cwd, which is the run scratch (ADR-0003 F2/F3)
 #   worktree        (real mode; --skip-worktree to skip) the same run under
@@ -46,19 +46,19 @@
 # MODES
 #
 #   (default)       real act, real container runtime. This is the deliverable.
-#   --stub          the identical steps against tests/e2e/testdata/bin/{act,docker}: no
+#   --stub          the identical steps against crates/act-mcp/tests/e2e/testdata/bin/{act,docker}: no
 #                   docker, no network, a few seconds. It proves THIS SCRIPT's plumbing (boot,
 #                   every MCP call, the evidence machinery, the summary) and nothing about act
 #                   — so it is wired into `cargo test --test realdata_smoke`, and a red --stub
 #                   run means the smoke is broken rather than that act changed. The fixture's
 #                   value assertions are real-mode only: the stub's payload comes from
-#                   tests/e2e/testdata/payload, not from this fixture's steps.
+#                   crates/act-mcp/tests/e2e/testdata/payload, not from this fixture's steps.
 #   --prereq-only   run the prerequisite report and stop.
 #
 # ─────────────────────────────────────────────────────────────────────────────────────────
 # WHAT A DIVERGENCE MEANS, AND WHAT TO DO WITH IT
 #
-# tests/realdata/golden/act-shape.json records what this crate's extractors assume about act's
+# crates/act-mcp/tests/realdata/golden/act-shape.json records what this crate's extractors assume about act's
 # `--json` log, field by field, with the provenance of every claim. When a live act contradicts
 # one of those claims the script prints
 #
@@ -75,8 +75,8 @@
 # --strict-shape is given: it is a follow-up ticket, not a broken build.
 #
 # The golden log: --capture-golden copies the coverage run's act.jsonl to
-# tests/realdata/golden/act.jsonl plus a provenance sidecar. Nothing is committed here yet
-# because nothing has been *captured* yet — tests/realdata/golden/README.md is the policy, and
+# crates/act-mcp/tests/realdata/golden/act.jsonl plus a provenance sidecar. Nothing is committed here yet
+# because nothing has been *captured* yet — crates/act-mcp/tests/realdata/golden/README.md is the policy, and
 # .github/workflows/nightly-real-act.yml runs this script nightly with --capture-golden and
 # uploads the result as an artefact for a human to review and commit.
 #
@@ -97,8 +97,8 @@
 #   --with-cancel      also run the cancel / orphaned-container step
 #   --strict-shape     make an act --json shape divergence fail the run
 #   --capture-golden   write the captured act --json log (and provenance) into the golden dir
-#   --golden-dir DIR   golden directory (default: tests/realdata/golden)
-#   --write-expected   write tests/realdata/expected from this run (real mode; human review!)
+#   --golden-dir DIR   golden directory (default: crates/act-mcp/tests/realdata/golden)
+#   --write-expected   write crates/act-mcp/tests/realdata/expected from this run (real mode; human review!)
 #   -q, --quiet        step verdicts and the summary only
 #   --no-colour        no ANSI
 #   -h, --help         this text
@@ -165,9 +165,14 @@ if repo_root=$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null); then
 else
     repo_root=$(cd -- "$script_dir/.." && pwd)
 fi
-fixture_dir=$repo_root/tests/realdata/fixture
-GOLDEN_DIR=${GOLDEN_DIR:-$repo_root/tests/realdata/golden}
-expected_dir=$repo_root/tests/realdata/expected
+# ADR-0005 §9: the scripts stayed at the workspace root when the crate tree grew; the fixtures came
+# with act-mcp. Everything below that names a fixture resolves through this, because a script that
+# looked for `$repo_root/tests` after the split silently found nothing — which is what `--stub` did,
+# answering "no such file" for the stub act three steps later.
+crate_tests=$repo_root/crates/act-mcp/tests
+fixture_dir=$crate_tests/realdata/fixture
+GOLDEN_DIR=${GOLDEN_DIR:-$crate_tests/realdata/golden}
+expected_dir=$crate_tests/realdata/expected
 report=$repo_root/scripts/realdata_report.py
 mcp_client=$repo_root/scripts/mcp_call.sh
 
@@ -313,9 +318,9 @@ step_prerequisites() {
     detail "act-mcp → $BIN ($("$BIN" --version 2>&1 | head -n1))"
 
     if [[ $MODE == stub ]]; then
-        detail "mode --stub: act is tests/e2e/testdata/bin/act and docker is the stub beside it"
-        ACT=$repo_root/tests/e2e/testdata/bin/act
-        PATH="$repo_root/tests/e2e/testdata/bin:$PATH"
+        detail "mode --stub: act is crates/act-mcp/tests/e2e/testdata/bin/act and docker is the stub beside it"
+        ACT=$crate_tests/e2e/testdata/bin/act
+        PATH="$crate_tests/e2e/testdata/bin:$PATH"
         export PATH
     else
         ACT=${ACT:-$(command -v act || true)}
@@ -483,10 +488,10 @@ step_boot() {
         # The stub is steered by environment (the runner hands its own env to act). `all`
         # drops every payload fixture, so both runs have something to extract.
         env=(
-            "STUB_PAYLOAD_DIR=$repo_root/tests/e2e/testdata/payload"
+            "STUB_PAYLOAD_DIR=$crate_tests/e2e/testdata/payload"
             "STUB_PAYLOAD=all"
             "STUB_BENCHMARK_MARKER=1"
-            "STUB_LOG=$repo_root/tests/e2e/testdata/logs/benchmark-success.jsonl"
+            "STUB_LOG=$crate_tests/e2e/testdata/logs/benchmark-success.jsonl"
             "STUB_ARGV_FILE=$OUT/stub-argv.txt"
         )
     fi
@@ -587,9 +592,9 @@ diagnose_run_error() {
     reason=$(jq -r '.result.structuredContent.error.detail.reason // ""' "$file")
     case "$code/$reason" in
         isolation_failed/dirty_worktree)
-            note "this workspace is a fresh commit of tests/realdata/fixture, so any dirt is the server's own:"
+            note "this workspace is a fresh commit of the realdata fixture, so any dirt is the server's own:"
             note "ADR-0002 §6.4 appends .evidence/ and .act-mcp.lock to the repo's .gitignore. If .gitignore is tracked and did not already list them, that append is a tracked modification and ADR-0003 G5 refuses every later run."
-            note "the fixture commits those patterns for exactly that reason (see tests/realdata/fixture/.gitignore)."
+            note "the fixture commits those patterns for exactly that reason (see the fixture's .gitignore)."
             detail "git status --porcelain --untracked-files=no:"
             git -C "$OUT/repo" status --porcelain --untracked-files=no | sed 's/^/         | /'
             ;;
@@ -701,7 +706,7 @@ step_shape() {
         fi
         diverged=1
         note "SHAPE DIVERGENCE ($label). File the follow-up before touching the manifest:"
-        detail "  bd create 'real act --json log diverges from tests/realdata/golden/act-shape.json' \\"
+        detail "  bd create 'real act --json log diverges from crates/act-mcp/tests/realdata/golden/act-shape.json' \\"
         detail "    -d 'captured log: $(basename "$log"); the shape report is in this smoke run's output' -p 2"
         return 3
     elif [[ $rc -ne 0 ]]; then

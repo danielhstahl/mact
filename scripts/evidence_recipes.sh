@@ -13,7 +13,7 @@
 #   scripts/evidence_recipes.sh --no-setup            # do not rebuild the sample tree first
 #
 # With no path it calls scripts/sample_evidence.py, which lays the checked-in goldens
-# under tests/e2e/testdata/expected/ out as a real tree (three commits, five runs). A
+# under crates/act-mcp/tests/e2e/testdata/expected/ out as a real tree (three commits, five runs). A
 # real root works the same way — the scanner-visible half of it is all these recipes read.
 # Recipe 12 joins the tree with `git log`, so it needs a repository whose commits the tree
 # is keyed by: pass it with --repo and it runs, pass none and it says so and skips.
