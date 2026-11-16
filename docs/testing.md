@@ -54,11 +54,17 @@ A few environment quirks worth knowing before the first red build:
   `cargo run -- validate-evidence <workspace>`.
 
 The shell checkers under `scripts/` (`validate_tool_contract.py`, `validate_run_lifecycle.py`,
-`validate_isolation.py`, `validate_crate_layout.py`, `validate_fathom_layout.py`) are CI's, and each
+`validate_isolation.py`, `validate_crate_layout.py`, `validate_fathom_layout.py`,
+`validate_mi_definition.py`) are CI's, and each
 one's Rust counterpart is named in the file it guards. The first three read `schema/*.json` against
 the ADR that wrote it; the fourth reads `Cargo.toml`, because what ADR-0005 pins is which crate may
 depend on which; the fifth reads `.gitignore` and `.fathom/LAYOUT.md`, because what ADR-0006 pins is
-which paths inside the cache root exist, which are ignored, and which belong to somebody else's tool.
+which paths inside the cache root exist, which are ignored, and which belong to somebody else's tool;
+the sixth reads `schema/mi-definition.json`, the golden vectors under `tests/testdata/mi` and
+`deny.toml`, because what ADR-0007 pins is arithmetic and enumerations — and it re-derives every
+vector twice, once through `scripts/mi_reference.py` (the oracle mact-by1.7's Rust port is graded
+against) and once in 40-digit `decimal` inside the checker, so a future Rust implementation has
+something to be wrong against before a trend line is.
 
 | suite | what it pins |
 |---|---|

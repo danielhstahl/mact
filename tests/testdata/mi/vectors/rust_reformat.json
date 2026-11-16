@@ -1,0 +1,59 @@
+{
+  "vector": "rust_reformat",
+  "language": "rust",
+  "frontend": "lexer1",
+  "source": "../src/rust_reformat_a.rs",
+  "sources_equal": [
+    "rust_reformat_a.rs",
+    "rust_reformat_b.rs"
+  ],
+  "hand_computed": "N, n, the decision-point counts and LOC are counted by hand from the file; V, G, MI and the band are re-derived by scripts/mi_reference.py and checked by scripts/validate_mi_definition.py",
+  "notes": "Two files, one token stream: rust_reformat_a.rs and rust_reformat_b.rs differ only in whitespace and brace placement, so N, n, G and LOC are identical and a reformat moves MI by exactly zero. Statements: 2 introductions (fn, let) + 2 semicolon statements + 0 arms + 2 block headers (for, if).",
+  "expect": {
+    "status": "ok",
+    "operators": {
+      "total": 13,
+      "unique": 12,
+      "occurrences": {
+        "&": 1,
+        "*": 1,
+        "+=": 1,
+        "=": 2,
+        ">": 1,
+        "as": 1,
+        "fn": 1,
+        "for": 1,
+        "if": 1,
+        "in": 1,
+        "let": 1,
+        "mut": 1
+      }
+    },
+    "operands": {
+      "total": 16,
+      "unique": 8,
+      "occurrences": {
+        "0": 1,
+        "8": 2,
+        "b": 2,
+        "sum": 1,
+        "t": 5,
+        "u32": 2,
+        "u8": 1,
+        "v": 2
+      }
+    },
+    "volume": 46.60451250937503,
+    "decision_points": {
+      "if": 1
+    },
+    "cyclomatic": 2,
+    "statements": 6,
+    "loc": 6,
+    "mi_raw": 121.53667026718117,
+    "mi": 71.1,
+    "band": "green",
+    "also_holds_for": "rust_reformat_b.rs",
+    "pair_rule": "every number in this expect block must be identical for both files"
+  }
+}

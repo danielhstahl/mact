@@ -1,0 +1,28 @@
+{
+  "vector": "python_docstring",
+  "language": "python",
+  "frontend": "lexer1",
+  "source": "../src/python_docstring.py",
+  "derived": false,
+  "notes": "One logical line holding a bare string: LOC is 1 (a docstring is a statement), but there are no operator tokens at all, so the Halstead vocabulary n is 0 and n < 2 is the second way a file is vacuous. ln(LOC) would have been fine; ln(0) from the volume is not.",
+  "expect": {
+    "status": "vacuous",
+    "operators": {
+      "total": 0,
+      "unique": 0,
+      "occurrences": {}
+    },
+    "operands": {
+      "total": 0,
+      "unique": 0,
+      "occurrences": {}
+    },
+    "volume": null,
+    "decision_points": {},
+    "cyclomatic": null,
+    "statements": null,
+    "loc": null,
+    "mi": null,
+    "band": null
+  }
+}

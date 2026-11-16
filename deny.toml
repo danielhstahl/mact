@@ -98,6 +98,29 @@ reason = "ADR-0006 §5: the .fathom store is plain JSON files; sqlite would add 
 name = "libsqlite3-sys"
 reason = "ADR-0006 §5: same decision as rusqlite — this repo has no C build dependency and keeps none (see ADR-0003's refusal of libgit2)"
 
+# ADR-0007 §6 decides the Maintainability Index front end is a pure-Rust, hand-written tokeniser per
+# language. The alternative on the table was tree-sitter plus a grammar crate per language, and the
+# refusal is the same one made twice before: the `tree-sitter` runtime and every generated grammar are
+# C, so `cc` becomes a build requirement on all five cd.yml targets — two musl (needs musl-gcc) and
+# aarch64-apple-darwin (needs an OS X cross toolchain) — for a metric that needs a token stream,
+# statement boundaries and decision points, none of which needs a C parser. Banning the grammars too,
+# because a grammar crate can be added first and drag the runtime in behind it.
+[[bans.deny]]
+name = "tree-sitter"
+reason = "ADR-0007 §6: the MI front end is pure Rust; its C runtime would make a C toolchain a build requirement on five cross targets, the same refusal as libgit2 (ADR-0003) and rusqlite (ADR-0006)"
+
+[[bans.deny]]
+name = "tree-sitter-language"
+reason = "ADR-0007 §6: grammar crates are generated C; banning the carrier and the grammars together is what keeps the decision from being reversed by a transitive edge"
+
+[[bans.deny]]
+name = "tree-sitter-rust"
+reason = "ADR-0007 §6: the Rust grammar for the rejected front end"
+
+[[bans.deny]]
+name = "tree-sitter-python"
+reason = "ADR-0007 §6: the Python grammar for the rejected front end"
+
 # ---------------------------------------------------------------------------
 # Where dependencies may come from
 # ---------------------------------------------------------------------------

@@ -686,6 +686,7 @@ and `.github/workflows/nightly-real-act.yml` runs it nightly where docker exists
 * [docs/adr/0004-run-lifecycle.md](docs/adr/0004-run-lifecycle.md) — runs that outlive the request
 * [docs/adr/0005-fathom-crate-layout-and-dependencies.md](docs/adr/0005-fathom-crate-layout-and-dependencies.md) — the Cargo workspace: where fathom lives and what it may depend on
 * [docs/adr/0006-fathom-workspace-layout.md](docs/adr/0006-fathom-workspace-layout.md) — the `.fathom` cache root, `fathom.toml` and the metric cache store (also: `.fathom/LAYOUT.md`, the same contract from inside the cache directory)
+* [docs/adr/0007-maintainability-index.md](docs/adr/0007-maintainability-index.md) — the Maintainability Index: the formula, what counts as an operator/decision point/logical line, the per-commit aggregate and bands, and the pure-Rust front end (also: `schema/mi-definition.json` for the machine-readable constants, `scripts/mi_reference.py` as the oracle, `tests/testdata/mi/` for the hand-counted golden vectors)
 * [docs/testing.md](docs/testing.md) — the suites, and how to read a red one
 * [docs/ci.md](docs/ci.md) — CI, in full
 * [docs/security.md](docs/security.md) — loopback-only, and what that does and does not protect

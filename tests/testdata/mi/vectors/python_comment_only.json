@@ -1,0 +1,28 @@
+{
+  "vector": "python_comment_only",
+  "language": "python",
+  "frontend": "lexer1",
+  "source": "../src/python_comment_only.py",
+  "derived": false,
+  "notes": "Same as rust_comment_only for Python. The `def` inside a comment is the case the rule exists for: a comment can never be a decision point.",
+  "expect": {
+    "status": "vacuous",
+    "operators": {
+      "total": 0,
+      "unique": 0,
+      "occurrences": {}
+    },
+    "operands": {
+      "total": 0,
+      "unique": 0,
+      "occurrences": {}
+    },
+    "volume": null,
+    "decision_points": {},
+    "cyclomatic": null,
+    "statements": null,
+    "loc": null,
+    "mi": null,
+    "band": null
+  }
+}

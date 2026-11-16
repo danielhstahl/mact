@@ -1,0 +1,39 @@
+{
+  "vector": "rust_tiny",
+  "language": "rust",
+  "frontend": "lexer1",
+  "source": "../src/rust_tiny.rs",
+  "sources_equal": null,
+  "hand_computed": "N, n, the decision-point counts and LOC are counted by hand from the file; V, G, MI and the band are re-derived by scripts/mi_reference.py and checked by scripts/validate_mi_definition.py",
+  "notes": "LOC == 1, so ln(LOC) == 0: legal, and the top of the reachable range. The tail expression `a + b` has no `;`, so it is not an expression_statement and adds no line: a one-line function is one logical line. `add` is a definition name, so it is an operand.",
+  "expect": {
+    "status": "ok",
+    "operators": {
+      "total": 3,
+      "unique": 3,
+      "occurrences": {
+        "+": 1,
+        "fn": 1,
+        "pub": 1
+      }
+    },
+    "operands": {
+      "total": 8,
+      "unique": 4,
+      "occurrences": {
+        "a": 2,
+        "add": 1,
+        "b": 2,
+        "u8": 3
+      }
+    },
+    "volume": 4.754887502163468,
+    "decision_points": {},
+    "cyclomatic": 1,
+    "statements": 1,
+    "loc": 1,
+    "mi_raw": 162.66230020829434,
+    "mi": 95.1,
+    "band": "green"
+  }
+}

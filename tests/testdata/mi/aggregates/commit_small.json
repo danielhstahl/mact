@@ -1,0 +1,153 @@
+{
+  "fixture": "commit_small",
+  "notes": "Six measurable files and five gaps, over a parent whose two worst files got better and whose big file is gone. Accumulation is path-bytes ascending. The weighted mean is (400*22.0 + 45*45.3 + 16*55.9 + 10*61.8 + 6*71.1 + 1*95.1) / 478.",
+  "files": [
+    {
+      "path": "src/huge.rs",
+      "status": "ok",
+      "loc": 400,
+      "mi": 22.0
+    },
+    {
+      "path": "src/python_basic.py",
+      "status": "ok",
+      "loc": 45,
+      "mi": 45.3
+    },
+    {
+      "path": "src/rust_basic.rs",
+      "status": "ok",
+      "loc": 16,
+      "mi": 55.9
+    },
+    {
+      "path": "src/rust_generics.rs",
+      "status": "ok",
+      "loc": 10,
+      "mi": 61.8
+    },
+    {
+      "path": "src/rust_reformat_a.rs",
+      "status": "ok",
+      "loc": 6,
+      "mi": 71.1
+    },
+    {
+      "path": "src/rust_question.rs",
+      "status": "ok",
+      "loc": 6,
+      "mi": 73.4
+    },
+    {
+      "path": "src/rust_tiny.rs",
+      "status": "ok",
+      "loc": 1,
+      "mi": 95.1
+    },
+    {
+      "path": "src/comment_only.rs",
+      "status": "vacuous",
+      "loc": 0
+    },
+    {
+      "path": "src/broken.rs",
+      "status": "parse_error"
+    },
+    {
+      "path": "src/main.go",
+      "status": "unsupported_language"
+    },
+    {
+      "path": "src/big_blob.rs",
+      "status": "oversized"
+    },
+    {
+      "path": "tests/legacy.rs",
+      "status": "skipped_noise"
+    }
+  ],
+  "parent_files": [
+    {
+      "path": "src/python_basic.py",
+      "status": "ok",
+      "loc": 45,
+      "mi": 38.0
+    },
+    {
+      "path": "src/rust_basic.rs",
+      "status": "ok",
+      "loc": 16,
+      "mi": 39.5
+    },
+    {
+      "path": "src/rust_generics.rs",
+      "status": "ok",
+      "loc": 10,
+      "mi": 61.8
+    },
+    {
+      "path": "src/rust_reformat_a.rs",
+      "status": "ok",
+      "loc": 6,
+      "mi": 80.0
+    },
+    {
+      "path": "src/main.go",
+      "status": "unsupported_language"
+    }
+  ],
+  "expect": {
+    "aggregate": 27.5,
+    "band": "amber",
+    "loc": 484,
+    "files": 7,
+    "counts": {
+      "ok": 7,
+      "oversized": 1,
+      "parse_error": 1,
+      "skipped_noise": 1,
+      "unsupported_language": 1,
+      "vacuous": 1
+    },
+    "unanalysed_paths": 4,
+    "hotspots": [
+      {
+        "path": "src/huge.rs",
+        "mi": 22.0,
+        "loc": 400
+      },
+      {
+        "path": "src/python_basic.py",
+        "mi": 45.3,
+        "loc": 45
+      },
+      {
+        "path": "src/rust_basic.rs",
+        "mi": 55.9,
+        "loc": 16
+      },
+      {
+        "path": "src/rust_generics.rs",
+        "mi": 61.8,
+        "loc": 10
+      },
+      {
+        "path": "src/rust_reformat_a.rs",
+        "mi": 71.1,
+        "loc": 6
+      }
+    ],
+    "sub_threshold_set": [
+      "src/huge.rs"
+    ],
+    "sub_threshold_added": [
+      "src/huge.rs"
+    ],
+    "sub_threshold_removed": [],
+    "delta_vs_parent": -17.2,
+    "amber_paths": [
+      "src/huge.rs",
+      "src/python_basic.py"
+    ]
+  }
+}

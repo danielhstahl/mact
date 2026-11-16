@@ -33,7 +33,10 @@
 #                (`validate_isolation.py`), ADR-0005's crate layout
 #                (`validate_crate_layout.py`, which reads Cargo.toml rather than a schema) and
 #                ADR-0006's `.fathom` layout (`validate_fathom_layout.py`, which reads
-#                .gitignore and .fathom/LAYOUT.md) — and python's own jsonschema over the same
+#                .gitignore and .fathom/LAYOUT.md) and ADR-0007's Maintainability Index
+#                (`validate_mi_definition.py`, which reads schema/mi-definition.json, the golden
+#                vectors in tests/testdata/mi and deny.toml, and re-derives every number twice) —
+#                and python's own jsonschema over the same
 #                evidence tree as a second, independent implementation.
 #   supply-chain cargo-deny: licences, duplicate/wildcard policy and sources always, RUSTSEC
 #                advisories when the network is allowed (`--offline` skips exactly that
@@ -252,12 +255,19 @@ step_schema() {
     #    validate_fathom_layout.py is the other one: ADR-0006's artifacts are a directory contract
     #    and an ignore file, so it diffs .gitignore, .fathom/LAYOUT.md and the ADR against each other
     #    and fails on an orphaned whitelist entry (the state this repo was in when ADR-0006 was written).
+    #    validate_mi_definition.py is the third one of that kind: ADR-0007's artifacts are numbers and
+    #    closed enumerations, so it diffs the ADR's constants block against schema/mi-definition.json,
+    #    re-derives every golden vector in tests/testdata/mi twice (binary64 through
+    #    scripts/mi_reference.py, then 40-digit decimal in the checker itself), and fails if the
+    #    tree-sitter ban that the ADR's front-end decision depends on has been lifted. No third-party
+    #    package, no cargo, milliseconds.
     echo "--- ADR <-> schema checkers ($py)"
     "$py" scripts/validate_tool_contract.py
     "$py" scripts/validate_run_lifecycle.py
     "$py" scripts/validate_isolation.py
     "$py" scripts/validate_crate_layout.py
     "$py" scripts/validate_fathom_layout.py
+    "$py" scripts/validate_mi_definition.py
 
     # 3. python's jsonschema as a second, independent implementation of the same contract
     #    (ADR-0002 §7 wants a disagreement between two engines to show up here rather than
