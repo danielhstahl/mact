@@ -16,10 +16,12 @@
 //! `--cache-dir` is the same question whichever command asks it (ADR-0006 §3.1).
 //!
 //! What is not here yet, and where it comes from: the frames (mact-by1.9, by1.11, by1.12, by1.14),
-//! the store (mact-by1.10), the report and `doctor` (mact-by1.13), the git reader (mact-by1.8).
-//! Those subcommands are wired to `not_yet_wired` — they parse, they validate the workspace, and
-//! they exit `3` naming the ticket instead of panicking or pretending to have produced a report
-//! ([`crate::exit`]).
+//! the report and `doctor` (mact-by1.13), the git reader (mact-by1.8). Those subcommands are wired
+//! to `not_yet_wired` — they parse, they validate the workspace, and they exit `3` naming the ticket
+//! instead of panicking or pretending to have produced a report ([`crate::exit`]).
+//!
+//! `fathom index` is wired for real (mact-by1.10): it takes the cache lock, builds or updates
+//! `index/`, and publishes its own counters. It is the only command in this crate that writes.
 
 use std::path::PathBuf;
 
@@ -28,6 +30,8 @@ use clap::{Args, Parser, Subcommand};
 use crate::boot::{Access, Boot};
 use crate::config::Config;
 use crate::exit::Exit;
+use crate::history::Query;
+use crate::store::{self, Runbook, Store};
 use crate::{debug, error, info, warn, FathomError};
 
 /// Per-commit repo quality: coverage, benchmarks and maintainability, one row per commit.
@@ -162,7 +166,7 @@ pub struct TuiArgs {
     pub workspace: Option<PathBuf>,
 }
 
-/// `fathom index [WORKSPACE] [--status]`.
+/// `fathom index [WORKSPACE] [--status] [--rebuild]`.
 #[derive(Args, Debug)]
 pub struct IndexArgs {
     /// The workspace to index; defaults to the current directory.
@@ -175,6 +179,13 @@ pub struct IndexArgs {
         help = "Print the store and configuration state as key<TAB>value lines and exit 0"
     )]
     pub status: bool,
+
+    /// Throw the store away and build it again from nothing (ADR-0006 §3.2: the store is disposable).
+    #[arg(
+        long,
+        help = "Delete <cache root>/index and rebuild it; nothing else under the cache root is touched"
+    )]
+    pub rebuild: bool,
 }
 
 /// `fathom report [WORKSPACE]`.
@@ -190,7 +201,7 @@ pub struct ReportArgs {
 pub enum Mode {
     /// Draw the timeline. This ticket cannot: no frame is drawn before mact-by1.9.
     Tui,
-    /// Write the store. This ticket cannot: the store is mact-by1.10's.
+    /// Write the store: the walk, the derive, the metric cache (mact-by1.10).
     Index,
     /// Answer questions about the workspace and the store; the one `index` mode that works today.
     IndexStatus,
@@ -213,8 +224,7 @@ impl Mode {
     pub const fn owner(self) -> &'static str {
         match self {
             Self::Tui => "mact-by1.9 (the timeline screen, ratatui)",
-            Self::Index => "mact-by1.10 (the metric cache store)",
-            Self::IndexStatus => "mact-by1.10 (the metric cache store)",
+            Self::Index | Self::IndexStatus => "mact-by1.10 (the metric cache store)",
             Self::Report => "mact-by1.13 (the headless report)",
         }
     }
@@ -233,7 +243,7 @@ impl Mode {
 pub fn run(cli: &Cli) -> Result<Exit, FathomError> {
     crate::log::init(cli.common.verbose);
 
-    let (workspace_argument, mode) = resolve_request(cli);
+    let (workspace_argument, mode, rebuild) = resolve_request(cli);
     let workspace = Boot::resolve_workspace(workspace_argument.as_deref())?;
     let boot = Boot::validate(&workspace, &cli.common, mode.access())?;
 
@@ -289,23 +299,63 @@ pub fn run(cli: &Cli) -> Result<Exit, FathomError> {
             print_status(&boot, &config, &cli.common);
             Ok(Exit::Success)
         }
-        Mode::Tui | Mode::Index | Mode::Report => {
+        Mode::Index => index(&boot, &config, &cli.common, rebuild).map(|()| Exit::Success),
+        Mode::Tui | Mode::Report => {
             not_yet_wired(mode);
             Ok(Exit::NotImplemented)
         }
     }
 }
 
-/// Which workspace and which mode the argv asked for.
+/// `fathom index [WORKSPACE] [--rebuild]`: build the store, and say on stderr what it cost.
 ///
-/// A workspace may be given at the top level (`fathom ../repo tui`) or after the subcommand
-/// (`fathom tui ../repo`); the subcommand's own argument wins when both are present, and the
-/// position of the flag is logged at `-v` so a confused user can see what fathom chose.
-fn resolve_request(cli: &Cli) -> (Option<PathBuf>, Mode) {
+/// Nothing here goes to stdout. `index` has no data output — its product is the store — and the rule
+/// that a redirect of `fathom report` must stay parseable is kept by never writing data to anything
+/// but the store (ADR-0005 §6; `tests/cli.rs` asserts the split).
+fn index(
+    boot: &Boot,
+    config: &Config,
+    common: &CommonArgs,
+    rebuild: bool,
+) -> Result<(), FathomError> {
+    let query = window(config, common);
+    let trigger = if rebuild { "rebuild" } else { "manual" };
+    let mut indexer = store::Indexer::new(boot, config.clone(), query, trigger)?;
+    let run = if rebuild {
+        indexer.rebuild()?
+    } else {
+        indexer.run()?
+    };
+    info!(
+        "{} {}: {} commits seen, {} rows written ({} new), cache {}/{} hits, {} blobs read, {} \
+         analyses, {} bytes published in {} ms",
+        run.kind,
+        trigger,
+        run.commits_seen,
+        run.rows_written,
+        run.commits_added,
+        run.cache_hits,
+        run.cache_lookups,
+        run.blobs_read,
+        run.analyses,
+        run.bytes_written,
+        run.duration_ms
+    );
+    if run.rows_pruned > 0 || run.blocks_pruned > 0 {
+        info!(
+            "pruned {} rows and {} blocks outside the walk set",
+            run.rows_pruned, run.blocks_pruned
+        );
+    }
+    Ok(())
+}
+
+/// Which workspace and which mode the argv asked for, plus whether `index` was told to rebuild.
+fn resolve_request(cli: &Cli) -> (Option<PathBuf>, Mode, bool) {
     let top = cli.workspace.clone();
     match &cli.command {
-        None => (top, Mode::Tui),
-        Some(Command::Tui(args)) => (pick(args.workspace.clone(), &top, "tui"), Mode::Tui),
+        None => (top, Mode::Tui, false),
+        Some(Command::Tui(args)) => (pick(args.workspace.clone(), &top, "tui"), Mode::Tui, false),
         Some(Command::Index(args)) => (
             pick(args.workspace.clone(), &top, "index"),
             if args.status {
@@ -313,8 +363,13 @@ fn resolve_request(cli: &Cli) -> (Option<PathBuf>, Mode) {
             } else {
                 Mode::Index
             },
+            args.rebuild,
         ),
-        Some(Command::Report(args)) => (pick(args.workspace.clone(), &top, "report"), Mode::Report),
+        Some(Command::Report(args)) => (
+            pick(args.workspace.clone(), &top, "report"),
+            Mode::Report,
+            false,
+        ),
     }
 }
 
@@ -344,6 +399,7 @@ fn print_status(boot: &Boot, config: &Config, common: &CommonArgs) {
         "window.to".to_owned(),
         common.to.clone().unwrap_or_else(|| "HEAD".to_owned()),
     ));
+    lines.extend(store_status(boot));
 
     // `stdout` is data: nothing else in this crate may write it, and nothing here logs to it
     // (ADR-0005 §6; `crates/fathom/tests/cli.rs` asserts the split for the other commands).
@@ -355,6 +411,50 @@ fn print_status(boot: &Boot, config: &Config, common: &CommonArgs) {
         out.push('\n');
     }
     print!("{out}");
+}
+
+/// The window `fathom.toml` describes with `--from`/`--to` applied on top (§11.1's flags).
+///
+/// `--from` and `--to` are the walk's window, not a filter applied afterwards: a `--from` older than
+/// `history.depth` widens the walk rather than being clipped to it, because a user naming a commit
+/// means that commit, and an index that silently started somewhere else would publish rows for a
+/// window nobody asked for.
+fn window(config: &Config, common: &CommonArgs) -> Query {
+    let mut query = Query::from_config(config);
+    if let Some(from) = &common.from {
+        query.from = Some(from.clone());
+        // An explicit floor is also the depth cap's replacement: naming both ends of a range and then
+        // being cut to 500 commits by a config default would be a surprise. The number is git's own
+        // `int` ceiling rather than `usize::MAX`, because it is handed to `--max-count=` verbatim.
+        query.depth = usize::try_from(i32::MAX).unwrap_or(usize::MAX);
+    }
+    if let Some(to) = &common.to {
+        query.to = to.clone();
+    }
+    query
+}
+
+/// What the store, if there is one, says about itself and about its last run (§6.2's "`last` plus the
+/// row and block counts").
+///
+/// A refusal to open the store is printed as a line rather than raised: `--status` is a reader, and its
+/// whole job is to tell you what is there — including "there is a store there and it is not mine".
+fn store_status(boot: &Boot) -> Vec<(String, String)> {
+    match Store::open(&boot.cache.path) {
+        Ok(Some(store)) => {
+            let book = Runbook::read(&store.index);
+            let run = book.map_or_else(store::Run::default, |book| book.last);
+            store.status_lines(&run)
+        }
+        Ok(None) => vec![("store".to_owned(), "absent".to_owned())],
+        Err(reason) => vec![
+            ("store".to_owned(), "refused".to_owned()),
+            (
+                "store.refusal".to_owned(),
+                reason.to_string().replace('\n', " "),
+            ),
+        ],
+    }
 }
 
 /// The `not yet wired` line: stderr, exit 3, and the ticket that owns the rest.

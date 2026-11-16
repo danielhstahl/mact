@@ -352,13 +352,32 @@ fn report_is_not_wired_and_leaves_stdout_empty_for_the_tsv_consumer() {
 }
 
 #[test]
-fn index_is_not_wired_and_index_status_is() {
+fn index_is_wired_and_a_work_tree_that_is_not_a_repository_is_a_typed_refusal() {
     let scratch = tempfile::tempdir().expect("scratch");
     let repo = workspace(scratch.path());
 
+    // mact-by1.10 wired `fathom index`: it is no longer a `not yet wired` stub. This workspace is a
+    // directory with a `.git` in it and nothing inside (the shape `fathom::boot` accepts and git does
+    // not), so the honest answer is a refusal that names git — exit 1, and exit 3 would mean the
+    // command still does not exist. `tests/index_store.rs` runs the same command against real
+    // repositories, including an empty one.
     let write = fathom(&["index", &repo.display().to_string()]);
-    write.assert_code(3).assert_not_panicked();
-    assert!(write.stderr.contains("mact-by1.10"), "{}", write.stderr);
+    write.assert_code(1).assert_not_panicked();
+    assert!(
+        !write.stderr.contains("not yet wired"),
+        "index is implemented now; it must not claim otherwise:\n{}",
+        write.stderr
+    );
+    assert!(
+        write.stderr.contains("git") || write.stderr.contains("repository"),
+        "the refusal should name what git could not answer:\n{}",
+        write.stderr
+    );
+    assert!(
+        write.stdout.is_empty(),
+        "a refused index writes nothing to stdout:\n{}",
+        write.stdout
+    );
 
     let status = fathom(&["index", "--status", &repo.display().to_string()]);
     status.assert_code(0);
@@ -384,9 +403,21 @@ fn index_is_not_wired_and_index_status_is() {
             status.stdout
         );
     }
+    // The flag list `fathom index` itself owns, asserted where it is printed: `--rebuild` is the
+    // store's own escape hatch (ADR-0006 §3.2), not a shared plumbing flag.
+    let index_help = fathom(&["index", "--help"]);
+    index_help.assert_code(0);
+    for flag in ["--status", "--rebuild"] {
+        assert!(
+            index_help.stdout.contains(flag),
+            "`fathom index --help` should list {flag}:\n{}",
+            index_help.stdout
+        );
+    }
+
     assert!(
         status.stdout.contains("store\tabsent"),
-        "there is no metric store until mact-by1.10:\n{}",
+        "a workspace nobody has indexed yet reports the store as absent, not as an error:\n{}",
         status.stdout
     );
     assert!(

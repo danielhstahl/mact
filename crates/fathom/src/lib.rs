@@ -75,6 +75,7 @@ pub mod history;
 pub mod log;
 pub mod metrics;
 pub mod mi;
+pub mod store;
 
 use thiserror::Error;
 
@@ -83,6 +84,7 @@ pub use cli::Cli;
 pub use config::{Config, ConfigError};
 pub use exit::Exit;
 pub use metrics::{CommitMetrics, Reader, Readset};
+pub use store::StoreError;
 
 /// The one error type `main` prints: the two refusal families, unchanged.
 ///
@@ -97,4 +99,9 @@ pub enum FathomError {
     /// The workspace, the evidence root or the cache root refused the command (see [`crate::boot`]).
     #[error(transparent)]
     Boot(#[from] BootError),
+
+    /// The metric store refused the command: a foreign fingerprint, a busy cache root, a publish that
+    /// failed (see [`crate::store`]). Each message is already one line plus a `fix:` (ADR-0006 §10).
+    #[error(transparent)]
+    Store(#[from] StoreError),
 }

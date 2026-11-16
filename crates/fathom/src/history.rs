@@ -117,16 +117,17 @@ pub const SUBJECT_MAX_BYTES: usize = 512;
 /// turn it, and dropping entries is reported by [`Diffstat::files_truncated`] either way.
 pub const DEFAULT_MAX_FILE_ENTRIES: usize = 4_096;
 
-/// `--format` for the commit-list call: ten `NUL`-separated fields, led by a `NUL` so each record
-/// starts with an empty token.
+/// `--format` for the commit-list call: eleven `NUL`-separated fields, led by a `NUL` so each
+/// record starts with an empty token.
 ///
 /// `NUL` is the only byte that cannot appear in a commit object, so no message, author name or email
 /// can shift this parse. `%x00` is git's own escape — a real `NUL` cannot be passed in an argv
 /// element, which is the one git-CLI detail that would otherwise be surprising here.
-const META_FORMAT: &str = "--format=%x00%H%x00%P%x00%at%x00%ct%x00%an%x00%ae%x00%cn%x00%ce%x00%s%x00%(trailers:only,unfold)";
+const META_FORMAT: &str =
+    "--format=%x00%H%x00%T%x00%P%x00%at%x00%ct%x00%an%x00%ae%x00%cn%x00%ce%x00%s%x00%(trailers:only,unfold)";
 
 /// The field count of [`META_FORMAT`].
-const META_FIELDS: usize = 10;
+const META_FIELDS: usize = 11;
 
 /// `--format` for the diffstat call: a record marker plus the SHA and nothing else.
 ///
@@ -440,6 +441,12 @@ impl Reader {
             "-z",
             "--raw",
             "--numstat",
+            // Full blob ids, always. git abbreviates `--raw`'s object ids by default (the length is
+            // `core.abbrev`'s, and `--command=` contexts change it), and an abbreviated id is not an
+            // identity: the metric cache keys on these OIDs (ADR-0006 §6.3), so a 7-hex prefix would
+            // silently turn every cache lookup into a miss and every equality test into a false
+            // "the content changed". `--no-abbrev` is what makes `blob_new`/`blob_old` keys.
+            "--no-abbrev",
             "--root",
             "--diff-merges=first-parent",
             DIFF_FORMAT,
@@ -518,6 +525,12 @@ impl History {
 pub struct Commit {
     /// The full 40-hex lowercase SHA (ADR-0008 §6.2: the key is never truncated).
     pub sha: String,
+    /// The commit's tree, as git's own 40-hex object id.
+    ///
+    /// Free from `git log` (`%T`), and the store keys its content-addressed analysis of a commit's
+    /// file set on it (ADR-0006 §6.3's `tree` input kind, §6.4's `sources.git.tree`): two commits with
+    /// the same tree have the same MI, and that is only knowable if the tree travelled with the commit.
+    pub tree: String,
     /// The parents, first-parent first.
     pub parents: Vec<String>,
     /// Author name, as written.
@@ -665,6 +678,18 @@ pub struct FileChange {
     /// Which of the three scopes this path is in — the classifier's answer, stored per file so a
     /// detail view can say why a file is not in the headline.
     pub scope: Scope,
+    /// The blob this commit moved the path *to*, as git's own object id; absent for a delete, whose
+    /// `--raw` field is the all-zeros placeholder. Free (it is field 4 of the `--raw` record this
+    /// reader already parsed), and the store leans on it: "did this path's content change?" is
+    /// answerable from a SHA comparison, so an incremental index reads a blob only when its content
+    /// actually moved (ADR-0006 §6.3's `blob` input kind is a content address, and git's oid is the
+    /// same fact about the same bytes, taken from the source that already named the path).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blob_new: Option<String>,
+    /// The blob the path was at before this commit; absent for an add, and for a change whose old
+    /// side git reported as the all-zeros placeholder.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blob_old: Option<String>,
 }
 
 /// What happened to one file.
@@ -763,6 +788,12 @@ impl MetaParser {
                 detail: format!("`{sha}` is not a 40-hex commit id"),
             });
         }
+        let tree = fields.next().unwrap_or_default();
+        if !git::is_sha(&tree) {
+            return Err(Error::Parse {
+                detail: format!("`{tree}` is not a 40-hex tree id"),
+            });
+        }
         let parents = fields.next().unwrap_or_default();
         let parents = if parents.trim().is_empty() {
             Vec::new()
@@ -773,6 +804,7 @@ impl MetaParser {
         let committer_utc = fields.next().unwrap_or_default();
         let mut commit = Commit {
             sha,
+            tree,
             parents,
             author_name: fields.next().unwrap_or_default(),
             author_email: fields.next().unwrap_or_default(),
@@ -852,11 +884,13 @@ pub fn truncate_bytes(text: &str, max: usize) -> (String, bool) {
 
 // ----------------------------------------------------------------------------- parse: diffs
 
-/// One raw `--raw` record: the modes, the status and the path(s).
+/// One raw `--raw` record: the modes, the two blob ids, the status and the path(s).
 #[derive(Debug, Clone)]
 struct RawEntry {
     mode_old: String,
     mode_new: String,
+    blob_old: Option<String>,
+    blob_new: Option<String>,
     status: char,
     old_path: Option<String>,
     path: String,
@@ -959,6 +993,8 @@ impl ParsedCommit {
                 },
                 mode_old: mode(&raw.mode_old),
                 mode_new: mode(&raw.mode_new),
+                blob_old: raw.blob_old.clone(),
+                blob_new: raw.blob_new.clone(),
                 add,
                 del,
                 binary,
@@ -971,6 +1007,29 @@ impl ParsedCommit {
 
 fn is_zero(value: &usize) -> bool {
     *value == 0
+}
+
+/// [`blob_oid`] as a refusal: the two blob fields of a `--raw` record, either of which may be the
+/// placeholder but neither of which may be anything else.
+fn raw_blobs(
+    old: &str,
+    new: &str,
+    record: &str,
+) -> Result<(Option<String>, Option<String>), Error> {
+    let side = |text: &str| -> Result<Option<String>, Error> {
+        if text.chars().all(|c| c == '0') {
+            return Ok(None);
+        }
+        if git::is_sha(text) {
+            return Ok(Some(text.to_owned()));
+        }
+        Err(Error::Parse {
+            detail: format!(
+                "`{record}` names blob `{text}`, which is not a 40-hex object id — git abbreviated it,                  or this is not a --raw record"
+            ),
+        })
+    };
+    Ok((side(old)?, side(new)?))
 }
 
 /// `000000` is git's "no blob here", not a mode.
@@ -992,6 +1051,8 @@ enum Pending {
     Raw {
         mode_old: String,
         mode_new: String,
+        blob_old: Option<String>,
+        blob_new: Option<String>,
         status: char,
         /// How many path tokens are still missing: 1 for an ordinary change, 2 for a rename or copy
         /// (old, then new). Every `--raw` record leaves its paths in the following tokens.
@@ -1121,7 +1182,7 @@ fn read_raw(
 ) -> Result<(), Error> {
     let text = String::from_utf8_lossy(token).into_owned();
     let mut fields = text[1..].split_ascii_whitespace();
-    let (Some(mode_old), Some(mode_new), Some(_), Some(_), Some(status)) = (
+    let (Some(mode_old), Some(mode_new), Some(blob_old), Some(blob_new), Some(status)) = (
         fields.next(),
         fields.next(),
         fields.next(),
@@ -1144,9 +1205,12 @@ fn read_raw(
     }
     // Every raw record names its paths in the tokens that follow it — one for an ordinary change,
     // two for a rename or a copy — so nothing here can read a path out of the header itself.
+    let (blob_old, blob_new) = raw_blobs(blob_old, blob_new, &text)?;
     *pending = Some(Pending::Raw {
         mode_old: mode_old.to_owned(),
         mode_new: mode_new.to_owned(),
+        blob_old,
+        blob_new,
         status: letter,
         want: usize::from(matches!(letter, 'R' | 'C')) + 1,
         old_path: None,
@@ -1212,12 +1276,16 @@ fn finish_pending(
         Pending::Raw {
             mode_old,
             mode_new,
+            blob_old,
+            blob_new,
             status,
             want: 1,
             old_path,
         } => current.raw.push(RawEntry {
             mode_old,
             mode_new,
+            blob_old,
+            blob_new,
             status,
             old_path,
             path,
@@ -1225,6 +1293,8 @@ fn finish_pending(
         Pending::Raw {
             mode_old,
             mode_new,
+            blob_old,
+            blob_new,
             status,
             want: 2,
             ..
@@ -1232,6 +1302,8 @@ fn finish_pending(
             *pending = Some(Pending::Raw {
                 mode_old,
                 mode_new,
+                blob_old,
+                blob_new,
                 status,
                 want: 1,
                 old_path: Some(path),
@@ -1311,7 +1383,7 @@ mod tests {
         let sha = "f".repeat(40);
         let stream = tokens(&[
             &format!("\x1e{sha}"),
-            "\n:000000 100644 0000000 e84fa9b A",
+            "\n:000000 100644 0000000 e84fa9b000000000000000000000000000000000 A",
             "notes.md",
             "3\t1\tnotes.md",
         ]);
@@ -1329,7 +1401,7 @@ mod tests {
         let sha = "e".repeat(40);
         let stream = tokens(&[
             &format!("\x1e{sha}"),
-            "\n:100644 100644 94954ab 94954ab R100",
+            "\n:100644 100644 94954ab000000000000000000000000000000000 94954ab000000000000000000000000000000000 R100",
             "src/old.rs",
             "src/new.rs",
             "0\t0\t",
@@ -1348,7 +1420,7 @@ mod tests {
         let sha = "d".repeat(40);
         let stream = tokens(&[
             &format!("\x1e{sha}"),
-            "\n:000000 100644 0000000 d023287 A",
+            "\n:000000 100644 0000000 d023287000000000000000000000000000000000 A",
             "blob.bin",
             "-\t-\tblob.bin",
         ]);
@@ -1362,7 +1434,7 @@ mod tests {
         let sha = "c".repeat(40);
         let stream = tokens(&[
             &format!("\x1e{sha}"),
-            "\n:000000 100644 0000000 8d331fb A",
+            "\n:000000 100644 0000000 8d331fb000000000000000000000000000000000 A",
             "tab\tname.txt",
             "1\t0\ttab\tname.txt",
         ]);
@@ -1376,7 +1448,7 @@ mod tests {
         let sha = "b".repeat(40);
         let stream = tokens(&[
             &format!("\x1e{sha}"),
-            "\n:100644 100644 94954ab 94954ab R100",
+            "\n:100644 100644 94954ab000000000000000000000000000000000 94954ab000000000000000000000000000000000 R100",
             "only-one-path",
             &format!("\x1e{}", "a".repeat(40)),
         ]);
@@ -1392,6 +1464,8 @@ mod tests {
             raw: vec![RawEntry {
                 mode_old: "100644".to_owned(),
                 mode_new: "100644".to_owned(),
+                blob_old: None,
+                blob_new: None,
                 status: 'M',
                 old_path: None,
                 path: "a.rs".to_owned(),
@@ -1426,6 +1500,8 @@ mod tests {
                 .map(|i| RawEntry {
                     mode_old: "100644".to_owned(),
                     mode_new: "100644".to_owned(),
+                    blob_old: None,
+                    blob_new: None,
                     status: 'M',
                     old_path: None,
                     path: format!("src/f{i}.rs"),
@@ -1465,6 +1541,8 @@ mod tests {
                 .map(|path| RawEntry {
                     mode_old: "100644".to_owned(),
                     mode_new: "100644".to_owned(),
+                    blob_old: None,
+                    blob_new: None,
                     status: 'M',
                     old_path: None,
                     path: (*path).to_owned(),

@@ -30,8 +30,11 @@
 //!   ones that could change a byte of the diffstat.
 //! * **Bounded memory.** [`Git::stream_tokens`] hands out one `NUL`-terminated token at a time
 //!   while `git` is still running, so a repository with a 200 000-file commit costs one entry, not
-//!   one transcript of the whole walk. Nothing here asks git for patch text: `--numstat` and
-//!   `--raw` are counts and modes, never content, so no file body ever enters this process.
+//!   one transcript of the whole walk. Nothing in the diffstat path asks git for patch text:
+//!   `--numstat` and `--raw` are counts and modes, never content. Content is a separate, named
+//!   surface — [`Git::blobs`] hands one blob at a time to the store's analyzer, which is the only
+//!   caller and is bounded the same way (one blob in memory, and only for blobs the metric cache
+//!   has never seen).
 //!
 //! ## Grammar note: why `NUL`
 //!
@@ -42,9 +45,9 @@
 //! `--format` and never inside user data.
 
 use std::{
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     thread,
 };
 
@@ -442,6 +445,107 @@ impl Git {
         Ok(stats)
     }
 
+    /// The tree object a revision points at (`git rev-parse <rev>^{tree}`).
+    ///
+    /// The store's content-addressed file-set analysis is keyed on this id (ADR-0006 §6.3's `tree`
+    /// input kind): two commits with one tree have one answer, and the id is what says so without
+    /// comparing 400 files. The commit-list stream already carries it (`%T`, see [`crate::history`]);
+    /// this is for the case the walk did not name — a window's oldest commit's parent, whose tree is
+    /// the compose base for the window's first row.
+    ///
+    /// # Errors
+    ///
+    /// [`GitError`] if git does not know the revision or it is not a commit.
+    pub fn tree_of(&self, revision: &str) -> Result<String, GitError> {
+        let out = self
+            .try_run(&[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "--end-of-options",
+                &format!("{revision}^{{tree}}"),
+            ])
+            .ok_or_else(|| GitError::UnknownRevision {
+                revision: revision.to_owned(),
+            })?;
+        let sha = String::from_utf8_lossy(out.trim_ascii()).into_owned();
+        if !is_sha(&sha) {
+            return Err(GitError::UnknownRevision {
+                revision: revision.to_owned(),
+            });
+        }
+        Ok(sha)
+    }
+
+    /// Every regular file in a tree, as `(mode, blob id, repo-relative path)`.
+    ///
+    /// `git ls-tree -r -z`, which is git's own inventory of one tree: no working tree is consulted,
+    /// so the answer describes the commit rather than the checkout (ADR-0006 §4.3). Symlinks and
+    /// gitlinks are returned with their modes and left to the caller, which classifies by path and
+    /// size like any other blob; `TypeChange`/submodule content is git's, not fathom's to reinterpret.
+    ///
+    /// The whole listing is returned in one vector: it is bounded by the tree's file count (424 in
+    /// this repository, and a pathological monorepo's few hundred thousand entries is tens of
+    /// megabytes of text), and the store's compose wants the whole inventory to diff against its
+    /// parent's. `--allow-empty` is not needed: an empty tree lists nothing, which is the answer.
+    ///
+    /// # Errors
+    ///
+    /// [`GitError`] if git refuses the tree.
+    pub fn ls_tree(&self, tree: &str) -> Result<Vec<TreeEntry>, GitError> {
+        let out = self.run(&["ls-tree", "-r", "-z", "--", tree])?;
+        let mut entries = Vec::new();
+        for record in out
+            .split(|byte| *byte == 0)
+            .filter(|record| !record.is_empty())
+        {
+            // `<mode> <type> <oid>\t<path>` — the tab is the only legal separator, because a path
+            // may contain a space (and with `-z`, may contain anything but a NUL).
+            let Some(split) = record.iter().position(|byte| *byte == b'\t') else {
+                return Err(GitError::Parse {
+                    detail: format!(
+                        "`{}` is not an ls-tree record",
+                        String::from_utf8_lossy(record)
+                    ),
+                });
+            };
+            let head = String::from_utf8_lossy(&record[..split]).into_owned();
+            let path = String::from_utf8_lossy(&record[split + 1..]).into_owned();
+            let mut fields = head.split_ascii_whitespace();
+            let (Some(mode), Some(kind), Some(blob)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                return Err(GitError::Parse {
+                    detail: format!("`{head}` is not an ls-tree header"),
+                });
+            };
+            if kind != "blob" {
+                // A tree entry for a submodule (`commit`) or a symlink (`link`): the metric model has
+                // no number for either, and inventing one is the zero ADR-0002 §2.1 refuses.
+                continue;
+            }
+            entries.push(TreeEntry {
+                mode: mode.to_owned(),
+                blob: blob.to_owned(),
+                path,
+            });
+        }
+        Ok(entries)
+    }
+
+    /// Open a batch blob reader: one `git cat-file --batch` child, asked for one object at a time.
+    ///
+    /// One process for a whole index run, and a request/response round trip per blob, is what keeps
+    /// reading 400 blobs cost 400 round trips instead of 400 process spawns — and it means the
+    /// request is only sent at all for a blob whose analysis is not already in the cache.
+    ///
+    /// # Errors
+    ///
+    /// [`GitError`] if git cannot be started.
+    pub fn blobs(&self) -> Result<BlobReader, GitError> {
+        BlobReader::open(self)
+    }
+
     /// Build the command: the `-c` overrides that make an answer independent of whose machine this
     /// is, and the environment every git child of this crate gets.
     fn command(&self, args: &[&str]) -> Command {
@@ -551,6 +655,179 @@ fn ellipsis(text: &str) -> String {
         String::new()
     } else {
         format!(": {kept}")
+    }
+}
+
+/// One regular file in one tree, from [`Git::ls_tree`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeEntry {
+    /// The mode, e.g. `100644` or `100755`.
+    pub mode: String,
+    /// The blob's git object id.
+    pub blob: String,
+    /// The repo-relative path, with forward slashes.
+    pub path: String,
+}
+
+/// A long-lived `git cat-file --batch` child, asked for one blob at a time.
+///
+/// Why a child and a `Drop`: the store reads a blob only when its analysis is not already cached, and
+/// a cold index of a real repository asks for hundreds of them. Spawning git per blob would dominate
+/// the run; spawning one per commit would still pay a process for every commit that touched a file.
+/// One child, one request/response round trip per blob, and the process is reaped on drop, which is
+/// the whole lifecycle — `--batch` is read-only plumbing and holds no repository lock (`git cat-file`
+/// takes none, and `GIT_OPTIONAL_LOCKS=0` is already in [`Git::command`]'s environment).
+///
+/// The request/response is deliberately synchronous — write one id, read one object — because that
+/// ordering cannot deadlock on a full pipe: git cannot fill its own stdout with an object this side
+/// has not asked for yet.
+#[derive(Debug)]
+pub struct BlobReader {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    /// Blobs served, and bytes read, for a `-v` line and a budget assertion.
+    stats: StreamStats,
+}
+
+impl BlobReader {
+    fn open(git: &Git) -> Result<Self, GitError> {
+        let mut command = git.command(&["cat-file", "--batch"]);
+        command.stdin(Stdio::piped()).stdout(Stdio::piped());
+        let mut child = command.spawn().map_err(|err| GitError::Unavailable {
+            reason: format!("git cat-file --batch: {err}"),
+        })?;
+        let stdin = child.stdin.take().ok_or_else(|| GitError::Unavailable {
+            reason: "git cat-file's stdin was not piped".to_owned(),
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| GitError::Unavailable {
+            reason: "git cat-file's stdout was not piped".to_owned(),
+        })?;
+        Ok(Self {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+            stats: StreamStats::default(),
+        })
+    }
+
+    /// What this reader has cost so far.
+    #[must_use]
+    pub const fn stats(&self) -> &StreamStats {
+        &self.stats
+    }
+
+    /// The bytes of one blob, or `None` when git says the object is not there.
+    ///
+    /// A missing object is an answer, not a fault: a tree can name a blob that a half-fetched
+    /// repository does not have, and the caller's job is to record the gap, not to abort the run over
+    /// one file.
+    ///
+    /// `cap` is the caller's ingest limit (`index.file_size_cap_mib`): a larger blob's body is *not*
+    /// allocated — it is streamed past, because the framing has to be consumed either way — and
+    /// `None` comes back for it. That is how "one blob in memory at a time" survives a repository that
+    /// keeps a 400 MB fixture in a tree: the size is known from the header, before the bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`GitError`] if the child dies or the framing does not parse.
+    pub fn blob(&mut self, oid: &str, cap: u64) -> Result<Option<Vec<u8>>, GitError> {
+        if !is_sha(oid) {
+            return Err(GitError::Parse {
+                detail: format!("`{oid}` is not a 40-hex object id"),
+            });
+        }
+        writeln!(self.stdin, "{oid}").map_err(|err| GitError::Io {
+            context: "git cat-file's stdin".to_owned(),
+            reason: err.to_string(),
+        })?;
+        self.stdin.flush().map_err(|err| GitError::Io {
+            context: "git cat-file's stdin".to_owned(),
+            reason: err.to_string(),
+        })?;
+
+        let mut header = Vec::new();
+        self.stdout
+            .read_until(b'\n', &mut header)
+            .map_err(|err| GitError::Io {
+                context: "git cat-file's output".to_owned(),
+                reason: err.to_string(),
+            })?;
+        if header.is_empty() {
+            return Err(GitError::Io {
+                context: "git cat-file's output".to_owned(),
+                reason: "the child closed its output".to_owned(),
+            });
+        }
+        self.stats.bytes += u64::try_from(header.len()).unwrap_or(u64::MAX);
+        let head = String::from_utf8_lossy(&header).trim_end().to_owned();
+        if head.ends_with(" missing") {
+            self.stats.tokens += 1;
+            return Ok(None);
+        }
+        let size: u64 = head
+            .rsplit(' ')
+            .next()
+            .and_then(|tail| tail.parse().ok())
+            .ok_or_else(|| GitError::Parse {
+                detail: format!("`{head}` is not a cat-file --batch header"),
+            })?;
+        // One blob in memory at a time, and the cap is the caller's (`index.file_size_cap_mib`), which
+        // is applied here — from the header, before the bytes are allocated — so an oversized blob
+        // costs the run nothing it did not already know.
+        if size > cap {
+            let mut discard = [0_u8; 65_536];
+            let mut left = size;
+            while left > 0 {
+                let take = usize::try_from(left.min(discard.len() as u64)).unwrap_or(discard.len());
+                self.stdout
+                    .read_exact(&mut discard[..take])
+                    .map_err(|err| GitError::Io {
+                        context: format!("git cat-file's output for {oid}"),
+                        reason: err.to_string(),
+                    })?;
+                left -= take as u64;
+            }
+            let mut newline = [0_u8; 1];
+            self.stdout
+                .read_exact(&mut newline)
+                .map_err(|err| GitError::Io {
+                    context: format!("git cat-file's output for {oid}"),
+                    reason: err.to_string(),
+                })?;
+            self.stats.tokens += 1;
+            return Ok(None);
+        }
+        let mut body = vec![0_u8; usize::try_from(size).unwrap_or(usize::MAX)];
+        self.stdout
+            .read_exact(&mut body)
+            .map_err(|err| GitError::Io {
+                context: format!("git cat-file's output for {oid}"),
+                reason: err.to_string(),
+            })?;
+        // git terminates each object with a single `\n`.
+        let mut newline = [0_u8; 1];
+        self.stdout
+            .read_exact(&mut newline)
+            .map_err(|err| GitError::Io {
+                context: format!("git cat-file's output for {oid}"),
+                reason: err.to_string(),
+            })?;
+        self.stats.bytes += size;
+        self.stats.bytes += 1;
+        self.stats.tokens += 1;
+        self.stats.max_token_bytes = self.stats.max_token_bytes.max(body.len());
+        Ok(Some(body))
+    }
+}
+
+impl Drop for BlobReader {
+    fn drop(&mut self) {
+        // `kill` is the one that guarantees no child outlives the run (a `--batch` child sits waiting
+        // for the next object id otherwise), and `wait` makes sure it does not become a zombie. The
+        // stdin handle goes with `self`, and git does not care which end closed first.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 

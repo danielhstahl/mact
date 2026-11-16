@@ -53,6 +53,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 thiserror = "2"
+# `fk1(…)` is sha256 (ADR-0006 §6.3), and the store's whole key scheme is one hash call. fathom's
+# manifest records that this dependency "arrives with the ticket that consumes it"; that ticket is
+# mact-by1.10, the incremental index. No HTTP client, no async, no C.
+sha2 = "0.11"
 # The `.evidence` contract's machine-readable half is `schema/evidence.schema.json`, and
 # `act-mcp validate-evidence` is the CI guard that checks real trees against it. Validating
 # against the *pinned schema file* rather than a hand-written lookalike is the whole anti-rot

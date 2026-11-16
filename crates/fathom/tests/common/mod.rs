@@ -210,6 +210,74 @@ impl Repo {
     /// Build `commits` commits in one `git fast-import` stream, each touching two files.
     /// Each file's body is `body_lines` lines long on purpose: a reader that asked git for patch
     /// text would show it in [`fathom::git::StreamStats`], and empty files could not tell.
+    /// A realistic 1 000-commit shape: a *fixed* set of files, each commit touching one of them,
+    /// instead of a new file per commit.
+    ///
+    /// [`Repo::fast_import`] grows the tree by two files per commit, which no real repository does
+    /// and which makes every per-tree table O(commits) — a fixture like that measures the tree, not
+    /// the indexer. The budget test wants "1 000 commits in a repo that looks like a repo", which is
+    /// what this builds: `files` files, `commits` commits, `commits / files` of them touching each
+    /// file, and one `git fast-import` stream so the fixture costs a second rather than a minute.
+    pub fn fast_import_fixed_set(&self, commits: usize, files: usize, body_lines: usize) {
+        let mut import = Command::new("git")
+            .arg("-C")
+            .arg(&self.path)
+            .args(["fast-import", "--quiet"])
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("LC_ALL", "C")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("start git fast-import");
+        let mut stdin = import.stdin.take().expect("fast-import's stdin");
+        let filler = "// filler line, so a blob has a body a reader could mistakenly read\n"
+            .repeat(body_lines.max(1));
+        // The first commit lays the whole tree down; every commit after it rewrites one file.
+        for index in 0..commits {
+            // Blobs first, always: fast-import will not read a `blob` command in the middle of a
+            // `commit`, and the "Unsupported command" it answers with is not a helpful symptom.
+            let laid = if index == 0 {
+                (0..files).collect::<Vec<usize>>()
+            } else {
+                vec![index % files]
+            };
+            let mut marks: Vec<(usize, usize)> = Vec::with_capacity(laid.len());
+            for slot in laid {
+                let blob = 10_000 + index * files + slot;
+                let body = if index == 0 {
+                    format!("// src/mod{slot}.py\n{filler}")
+                } else {
+                    format!("// src/mod{slot}.py, revision {index}\n{filler}")
+                };
+                write_blob(&mut stdin, blob, &body);
+                marks.push((slot, blob));
+            }
+            let mark = 900_000 + index;
+            let message =
+                format!("commit {index}\n\nBody line, so a head and a body both exist.\n");
+            write!(
+                stdin,
+                "commit refs/heads/main\nmark :{mark}\ncommitter Fathom Fixture <fixture@example.invalid> 1700000000 +0000\ndata {}\n",
+                message.len()
+            )
+            .expect("write the commit header");
+            stdin
+                .write_all(message.as_bytes())
+                .expect("write the message");
+            stdin.write_all(b"\n").expect("terminate the message");
+            if index > 0 {
+                writeln!(stdin, "from :{}", mark - 1).expect("write the parent");
+            }
+            for (slot, blob) in marks {
+                writeln!(stdin, "M 100644 :{blob} src/mod{slot}.py").expect("write the file");
+            }
+        }
+        stdin.flush().expect("flush fast-import");
+        drop(stdin);
+        let status = import.wait().expect("fast-import finished");
+        assert!(status.success(), "git fast-import failed");
+    }
+
     pub fn fast_import(&self, commits: usize, body_lines: usize) {
         let mut import = Command::new("git")
             .arg("-C")

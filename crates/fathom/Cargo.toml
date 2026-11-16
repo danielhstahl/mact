@@ -34,6 +34,13 @@ serde = { workspace = true }
 # how `schema/metric-model.json` is loaded instead of restated, and how a stored row's canonical JSON
 # (ADR-0006 §6.3) gets the one number spelling every consumer prints. Allowed by ADR-0005 §6.
 serde_json = { workspace = true }
+# `fk1(…)` is sha256 — ADR-0006 §6.3 spells every block key, section digest and evidence digest with
+# it, and §6.3's "keys sorted, floats at the schema's rounded spelling, no absolute paths, no clock" is
+# a *canonicalisation* problem, not a hash-algorithm one, so the hash has to be a real one for the keys
+# to be stable across machines. This is the dependency this manifest's closing note predicted: "new
+# dependencies for the store (`sha2`, …) arrive with the ticket that consumes them", and mact-by1.10 is
+# that ticket. Pure Rust, no C, no async, no transport.
+sha2 = { workspace = true }
 toml = { workspace = true }
 # `thiserror` is not on ADR-0005 §6's short list, and §6 says the list is a code-review question
 # rather than an ADR question as long as nothing on the forbidden side rides in with it: this is a
@@ -54,6 +61,12 @@ thiserror = { workspace = true }
 # for the store (`sha2`, and `globset` if the classifier in `src/classify.rs` ever wants gitignore's
 # dialect instead of the smaller one it implements) arrive with the ticket that consumes them.
 
+# ADR-0006 §9's single writer is `flock(2)` on `<cache>/.fathom.lock`, and `flock(2)`/`fcntl(2)`/
+# `gethostname(3)` have no `std` API. Same precedent, same reasoning, and the same one-audited-surface
+# shape as act-mcp's registry lock: `store::lock` is this crate's whole `unsafe` surface, and the
+# workspace lint still denies `unsafe_code` everywhere else.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 
