@@ -30,6 +30,10 @@ act-evidence = { workspace = true }
 
 clap = { workspace = true }
 serde = { workspace = true }
+# The row is JSON-shaped and the model is a JSON file, so `serde_json` is not a convenience: it is
+# how `schema/metric-model.json` is loaded instead of restated, and how a stored row's canonical JSON
+# (ADR-0006 §6.3) gets the one number spelling every consumer prints. Allowed by ADR-0005 §6.
+serde_json = { workspace = true }
 toml = { workspace = true }
 # `thiserror` is not on ADR-0005 §6's short list, and §6 says the list is a code-review question
 # rather than an ADR question as long as nothing on the forbidden side rides in with it: this is a

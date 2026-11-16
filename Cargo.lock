@@ -509,6 +509,7 @@ dependencies = [
  "act-evidence",
  "clap",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "toml",

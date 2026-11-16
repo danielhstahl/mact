@@ -17,14 +17,17 @@
 //!   it writable). Every refusal is one typed line plus a `fix:`.
 //! * [`config`] — `fathom.toml`: root-ward discovery, `deny_unknown_fields`, resolved defaults
 //!   (ADR-0006 §7).
+//! * [`metrics`] — ADR-0008 executed once: the evidence tree in, one [`metrics::CommitMetrics`] per
+//!   SHA out, with the drop log that explains every number (mact-by1.6).
 //! * [`log`] — stderr-only diagnostics behind a hand-rolled `RUST_LOG`-style filter, because this
 //!   crate may not own a subscriber (see rule 1 below).
 //! * [`exit`] — what each process status promises.
 //!
-//! The modules the epic adds live beside these: the git reader (mact-by1.8), the MI analyser
-//! (mact-by1.7), the store (mact-by1.10), the screens (mact-by1.9/.11/.12/.14), `report` and
-//! `doctor` (mact-by1.13). None of them exist yet, and the subcommands that will call them already
-//! parse and validate: they exit `3` with the ticket that owns them rather than pretending.
+//! The modules the epic adds live beside these: the evidence reader ([`metrics`], mact-by1.6 — the
+//! one that exists), the git reader (mact-by1.8), the MI analyser (mact-by1.7), the store
+//! (mact-by1.10), the screens (mact-by1.9/.11/.12/.14), `report` and `doctor` (mact-by1.13). The
+//! rest are absent on purpose, and the subcommands that will call them already parse and validate:
+//! they exit `3` with the ticket that owns them rather than pretending.
 //!
 //! ## Two rules this crate keeps
 //!
@@ -56,6 +59,7 @@ pub mod cli;
 pub mod config;
 pub mod exit;
 pub mod log;
+pub mod metrics;
 
 use thiserror::Error;
 
@@ -63,6 +67,7 @@ pub use boot::{Boot, BootError};
 pub use cli::Cli;
 pub use config::{Config, ConfigError};
 pub use exit::Exit;
+pub use metrics::{CommitMetrics, Reader, Readset};
 
 /// The one error type `main` prints: the two refusal families, unchanged.
 ///

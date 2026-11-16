@@ -62,6 +62,15 @@
 //! └── incoming/<run_id>/                          # per-run payload scratch (not written here)
 //! ```
 //!
+//! ## Reading a tree, once, for everyone
+//!
+//! [`read`] is the reader half of the contract: it walks the two contract directories and nothing
+//! else, hands back typed records, and names a reason for every line it refused (ADR-0002 §7's
+//! "permissive on values, strict on shape, skip and count" policy, applied by the only crate
+//! allowed to apply it). A consumer that wants to know *what a commit's coverage is* builds that
+//! on top of [`read`] — fathom does, in `crates/fathom/src/metrics/` — because "what is the
+//! number" is reader policy (ADR-0005 §10) and "what are the records" is not.
+//!
 //! The writer (`act_mcp::evidence::writer`) creates the root and the `benchmark/`, `coverage/`,
 //! `runs/` subtrees on demand; `runs/<run_id>/` and `incoming/` are the runner's and the
 //! supervisor's (mact-f1w.8, mact-f1w.11), and neither is part of the read contract.
@@ -73,6 +82,7 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod read;
 pub mod records;
 pub mod schema;
 pub mod shapes;
