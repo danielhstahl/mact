@@ -125,6 +125,16 @@ tempfile = "3"
 # `fathom.toml` (ADR-0006 §7) is parsed with serde and `deny_unknown_fields`, so an unknown key
 # is an error rather than a shrug. `toml` is the parser; the typed Config lives in fathom.
 toml = "0.9"
+# The two UI crates ADR-0005 §6 names for fathom's screens (mact-by1.9), and the pair is kept
+# together on purpose: `ratatui` re-exports the crossterm it is built against, so the version declared
+# here is the *same* crossterm the backend uses rather than a second copy in the tree. Default features
+# are off to drop `widget-calendar` (nothing here draws a calendar); `crossterm_0_29` pins the backend
+# to the crossterm line below. No async runtime rides in with either: the TUI's work is synchronous
+# file reads on a worker thread (§6), which is what the mact-by1.9 loop actually does.
+# One line, and not for style: TOML forbids a newline inside an inline table, and
+# `scripts/validate_crate_layout.py` reads this manifest with `tomllib`, which reads the spec.
+ratatui = { version = "0.30", default-features = false, features = ["std", "macros", "layout-cache", "underline-color", "crossterm_0_29"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
 
 # --- dev-only ---------------------------------------------------------------------------------
 # Raw JSON-RPC over plain HTTP for the cases a well-behaved client never sends (e.g. an

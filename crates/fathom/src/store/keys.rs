@@ -152,37 +152,37 @@ impl InputKind {
     }
 }
 
-/// `input_hash` for [`InputKind::Blob`]: `fk1(bytes)`, content only.
+/// `input_hash` for [`InputKind::BLOB`]: `fk1(bytes)`, content only.
 #[must_use]
 pub fn input_hash_blob(bytes: &[u8]) -> String {
     fk1(bytes)
 }
 
-/// `input_hash` for [`InputKind::BlobPath`]: `"bp:" || path || "\0" || fk1(bytes)`.
+/// `input_hash` for [`InputKind::BLOB_PATH`]: `"bp:" || path || "\0" || fk1(bytes)`.
 #[must_use]
 pub fn input_hash_blob_path(path: &str, bytes: &[u8]) -> String {
     format!("bp:{path}\0{}", fk1(bytes))
 }
 
-/// `input_hash` for [`InputKind::Path`]: `"p:" || repo-relative path`.
+/// `input_hash` for [`InputKind::PATH`]: `"p:" || repo-relative path`.
 #[must_use]
 pub fn input_hash_path(path: &str) -> String {
     format!("p:{path}")
 }
 
-/// `input_hash` for [`InputKind::Tree`]: `"t:" || tree oid`.
+/// `input_hash` for [`InputKind::TREE`]: `"t:" || tree oid`.
 #[must_use]
 pub fn input_hash_tree(tree: &str) -> String {
     format!("t:{tree}")
 }
 
-/// `input_hash` for [`InputKind::Commit`]: `"c:" || commit oid`.
+/// `input_hash` for [`InputKind::COMMIT`]: `"c:" || commit oid`.
 #[must_use]
 pub fn input_hash_commit(commit: &str) -> String {
     format!("c:{commit}")
 }
 
-/// `input_hash` for [`InputKind::Evidence`]: `fk1(canon(sorted(["path\0sha256", …])))`.
+/// `input_hash` for [`InputKind::EVIDENCE`]: `fk1(canon(sorted(["path\0sha256", …])))`.
 ///
 /// This is the one input that can change *under* a row, because `.evidence` is append-only while git
 /// is immutable: a re-run of act-mcp for an old commit adds a file, its sha256 enters this list, and

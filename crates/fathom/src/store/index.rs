@@ -208,6 +208,13 @@ pub struct Indexer<'boot> {
     /// Test seam: fail after the Nth publish, to exercise §10.2's "an interrupted index leaves the
     /// store usable" without killing a process. `None` in every command path.
     pub fail_publish_after: Option<u64>,
+    /// A cancellation handle raised by whoever started the run (the TUI's `Esc`, mact-by1.9).
+    ///
+    /// Checked between commits, never in the middle of one, so a cancelled run's last published row is
+    /// whole and its `run.json` still goes out with `interrupted: true` — §10.2's rule for a run that
+    /// stopped early is a rule about the store, not about how it stopped. `None` on every CLI path,
+    /// where the only way to stop a run is to stop the process.
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     definition: Definition,
     analyzer: mi::Analyzer,
     values: BTreeMap<String, Value>,
@@ -292,6 +299,7 @@ impl<'boot> Indexer<'boot> {
             trigger: trigger.to_owned(),
             prune: true,
             fail_publish_after: None,
+            cancel: None,
             publishes: 0,
         })
     }
@@ -532,6 +540,18 @@ impl<'boot> Indexer<'boot> {
         let mut referenced: BTreeSet<String> = BTreeSet::new();
         for (index, plan) in planned.iter().enumerate() {
             let done = index as u64;
+            // One atomic load per commit, at the same place the progress line is written: this is the
+            // commit boundary the cancel handle is defined against (mact-by1.9's Esc).
+            if self
+                .cancel
+                .as_ref()
+                .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+            {
+                return Err(StoreError::Cancelled {
+                    done,
+                    total: u64::try_from(total).unwrap_or(u64::MAX),
+                });
+            }
             if done.is_multiple_of(50) {
                 lock.set_progress(Phase::Rows, done);
                 crate::info!(

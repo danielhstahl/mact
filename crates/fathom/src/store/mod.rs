@@ -17,7 +17,7 @@
 //! ```
 //!
 //! A **row** is one commit's metrics (§6.4); a **block** is one analyzer result under one key (§6.3).
-//! Both are published atomically by [`publish`](self::publish) and never edited in place, so a half
+//! Both are published atomically by [`self::publish`] and never edited in place, so a half
 //! row is not a thing that exists and a reader takes no lock. Blocks are the metric cache the ticket
 //! asks for: keyed on `(analyzer id, analyzer version, dependency digest, config digest, input kind,
 //! input hash)`, so analysing a commit whose blobs mostly already exist is nearly free, and editing a
@@ -150,6 +150,14 @@ pub enum StoreError {
 
     #[error(transparent)]
     Lock(#[from] lock::LockError),
+
+    /// A run stopped on request, between two commits (the TUI's `Esc`, mact-by1.9).
+    ///
+    /// A refusal in shape only: nothing is broken, and every row the run had published is whole. It
+    /// travels as an error because the caller's job is to publish `run.json` with `interrupted: true`
+    /// and say so, which is the same path every other early exit takes (§10.2).
+    #[error("the index was cancelled after {done} of {total} commits\n  fix: nothing to fix — every row this run wrote is whole; `fathom index` again to finish the rest (ADR-0006 §10.2)")]
+    Cancelled { done: u64, total: u64 },
 
     #[error("{0}")]
     Io(String),

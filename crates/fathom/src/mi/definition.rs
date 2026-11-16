@@ -11,7 +11,7 @@
 //!
 //! Only the fields this analyzer executes are deserialized; the rest of the document is prose for
 //! humans and is ignored, which keeps an additive model edit from breaking a build. The one
-//! exception is [`Definition::raw`], kept as a parsed document so a dotted reference inside the
+//! exception is `Definition::raw`, kept as a parsed document so a dotted reference inside the
 //! model (`aggregation.sub_threshold_set.below` → `bands.names_by_threshold.red_below`) resolves
 //! through the same path the oracle walks instead of being a second copy of the edge.
 

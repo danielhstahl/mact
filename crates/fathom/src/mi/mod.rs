@@ -13,7 +13,7 @@
 //!   a C build dependency three times for five cross-compiled release targets).
 //! * [`score`] — the arithmetic, operation for operation with `scripts/mi_reference.py`, the oracle
 //!   this port is graded against: `V`, `G`, `MI_raw`, the clamp, the stored rounding, the band.
-//! * [`aggregate`] — the commit's number: the LOC-weighted mean, the delta against parent #1, the
+//! * [`mod@aggregate`] — the commit's number: the LOC-weighted mean, the delta against parent #1, the
 //!   watchlist transitions, the worst-N hotspots, and the count of paths that were not analysed.
 //!
 //! ## The two rules that decide most of the rest

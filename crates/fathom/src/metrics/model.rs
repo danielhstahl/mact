@@ -39,6 +39,12 @@ pub struct Model {
     pub gap_reasons: GapReasons,
     /// `caveat_codes.*`: the closed caveat lists, overall and per column.
     pub caveat_codes: CaveatCodes,
+    /// `display.*`: the glyph table the front end prints (ADR-0008 §6.1's pinned table, read rather
+    /// than re-typed). Added by mact-by1.9, additively: the derivation ignores it and only the
+    /// screens read it, which is why it has a `default` — a model copy predating the display table
+    /// still loads, and the screens then fall back to [`Glyphs`]' own written-out default.
+    #[serde(default)]
+    pub display: DisplayModel,
     /// `drop_reasons[]`: the closed 18, with the stage that owns each.
     pub drop_reasons: Vec<DropReasonDoc>,
 }
@@ -93,6 +99,127 @@ pub struct GapReasons {
 pub struct CaveatCodes {
     /// Every code a row's `caveats` may hold.
     pub all: Vec<String>,
+    /// The codes that qualify the `coverage` column (ADR-0008 §6.1's `column` column). Absent in a
+    /// model copy that predates them, which is why this is `default`.
+    #[serde(default)]
+    pub coverage: Vec<String>,
+    /// The codes that qualify the `benchmarks` column.
+    #[serde(default)]
+    pub benchmarks: Vec<String>,
+}
+
+/// `display.*`: the two glyph columns (ADR-0008 §6.1), so the screens print what the model says.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct DisplayModel {
+    /// The unicode column, used by a terminal that can render it.
+    #[serde(default)]
+    pub unicode: Glyphs,
+    /// The ascii column, used by `--plain`, by `report --format tsv` and by a `TERM=dumb` terminal.
+    #[serde(default)]
+    pub ascii: Glyphs,
+}
+
+/// One column of ADR-0008 §6.1's glyph table.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Glyphs {
+    /// The "no measurement exists" glyph, the same in every column.
+    #[serde(default = "defaults::unknown")]
+    pub unknown: String,
+    /// The caveat marker appended to the column it qualifies.
+    #[serde(default = "defaults::marker")]
+    pub caveat_marker: String,
+    /// The prefix on a context (run-derived, not code-derived) benchmark value.
+    #[serde(default = "defaults::context")]
+    pub context: String,
+    /// Delta up versus the first parent.
+    #[serde(default = "defaults::up")]
+    pub delta_up: String,
+    /// Delta down versus the first parent.
+    #[serde(default = "defaults::down")]
+    pub delta_down: String,
+    /// Delta exactly equal at the stored precision.
+    #[serde(default = "defaults::flat")]
+    pub delta_flat: String,
+    /// All action groups passed.
+    #[serde(default = "defaults::success")]
+    pub success: String,
+    /// No action group passed.
+    #[serde(default = "defaults::failed")]
+    pub failed: String,
+    /// Some passed and some did not.
+    #[serde(default = "defaults::mixed")]
+    pub mixed: String,
+    /// Nothing ran at this commit — unknown, and the same glyph as `unknown`.
+    #[serde(default = "defaults::unknown")]
+    pub no_evidence: String,
+}
+
+/// The spelled-out defaults, used only for a model copy that carries no `display` table at all.
+mod defaults {
+    /// `—`.
+    #[must_use]
+    pub fn unknown() -> String {
+        "\u{2014}".to_owned()
+    }
+    /// `*`.
+    #[must_use]
+    pub fn marker() -> String {
+        "*".to_owned()
+    }
+    /// `~`.
+    #[must_use]
+    pub fn context() -> String {
+        "~".to_owned()
+    }
+    /// `▲`.
+    #[must_use]
+    pub fn up() -> String {
+        "\u{25b2}".to_owned()
+    }
+    /// `▼`.
+    #[must_use]
+    pub fn down() -> String {
+        "\u{25bc}".to_owned()
+    }
+    /// `·`.
+    #[must_use]
+    pub fn flat() -> String {
+        "\u{b7}".to_owned()
+    }
+    /// `✓`.
+    #[must_use]
+    pub fn success() -> String {
+        "\u{2713}".to_owned()
+    }
+    /// `✗`.
+    #[must_use]
+    pub fn failed() -> String {
+        "\u{2717}".to_owned()
+    }
+    /// `◐`.
+    #[must_use]
+    pub fn mixed() -> String {
+        "\u{25d0}".to_owned()
+    }
+}
+
+impl Default for Glyphs {
+    /// The ADR-0008 §6.1 **unicode** column, spelled here so a model-less caller still draws
+    /// something honest. `Model::embedded()`'s `display.unicode` is the normative copy.
+    fn default() -> Self {
+        Self {
+            unknown: defaults::unknown(),
+            caveat_marker: defaults::marker(),
+            context: defaults::context(),
+            delta_up: defaults::up(),
+            delta_down: defaults::down(),
+            delta_flat: defaults::flat(),
+            success: defaults::success(),
+            failed: defaults::failed(),
+            mixed: defaults::mixed(),
+            no_evidence: defaults::unknown(),
+        }
+    }
 }
 
 /// One entry of `drop_reasons[]`.

@@ -676,7 +676,7 @@ pub struct TreeEntry {
 /// the run; spawning one per commit would still pay a process for every commit that touched a file.
 /// One child, one request/response round trip per blob, and the process is reaped on drop, which is
 /// the whole lifecycle — `--batch` is read-only plumbing and holds no repository lock (`git cat-file`
-/// takes none, and `GIT_OPTIONAL_LOCKS=0` is already in [`Git::command`]'s environment).
+/// takes none, and `GIT_OPTIONAL_LOCKS=0` is already in `Git::command`'s environment).
 ///
 /// The request/response is deliberately synchronous — write one id, read one object — because that
 /// ordering cannot deadlock on a full pipe: git cannot fill its own stdout with an object this side

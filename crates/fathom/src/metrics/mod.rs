@@ -58,7 +58,7 @@
 //! run; `crates/fathom/tests/metrics.rs` asserts this reader produces the same row.
 
 mod explain;
-mod model;
+pub mod model;
 mod pipeline;
 pub mod row;
 pub mod vocab;

@@ -28,6 +28,8 @@
 //! The modules the epic adds beside these:
 //!
 //! * [`metrics`] — the evidence reader (mact-by1.6): `.evidence` in, one typed row per SHA out.
+//! * [`tui`] — the timeline screen (mact-by1.9): the store in, one row per commit on the screen or on
+//!   stdout, with the index running on a worker thread.
 //! * [`git`] — the git CLI itself: opening a repository, the version floor, the streamed
 //!   `NUL`-separated calls, and the typed refusals. `git` is a subprocess here, never libgit2
 //!   (ADR-0005 §6, and the rationale is in `crates/fathom/Cargo.toml`).
@@ -36,9 +38,9 @@
 //! * [`classify`] — the one path classifier ADR-0007 §7.1 shares between the `+`/`−` column and the
 //!   MI column, so one row's two columns always describe the same file set.
 //!
-//! Still absent on purpose: the store (mact-by1.10), the screens (mact-by1.9/.11/.12/.14), `report`
-//! and `doctor` (mact-by1.13). The subcommands that will call them already parse and validate: they
-//! exit `3` with the ticket that owns them rather than pretending.
+//! Still absent on purpose: the screens above the timeline (mact-by1.11/.12/.14), `report` and
+//! `doctor` (mact-by1.13). The subcommands that will call them already parse and validate: they exit `3`
+//! with the ticket that owns them rather than pretending.
 //!
 //! ## Two rules this crate keeps
 //!
@@ -76,6 +78,7 @@ pub mod log;
 pub mod metrics;
 pub mod mi;
 pub mod store;
+pub mod tui;
 
 use thiserror::Error;
 
@@ -104,4 +107,10 @@ pub enum FathomError {
     /// failed (see [`crate::store`]). Each message is already one line plus a `fix:` (ADR-0006 §10).
     #[error(transparent)]
     Store(#[from] StoreError),
+
+    /// The screen could not be drawn: the terminal refused to be taken over, or would not give back what
+    /// it took (mact-by1.9). Carries its own `fix:` line, which is always `--plain`, because a broken
+    /// terminal is not a reason to lose the table.
+    #[error("{0}")]
+    Terminal(String),
 }

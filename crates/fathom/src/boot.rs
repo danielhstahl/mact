@@ -535,6 +535,9 @@ mod tests {
             to: None,
             first_parent: false,
             config: None,
+            plain: false,
+            no_color: false,
+            limit: None,
             verbose: 0,
         }
     }

@@ -131,6 +131,31 @@ pub struct CommonArgs {
     )]
     pub config: Option<PathBuf>,
 
+    /// Print the timeline as text instead of drawing a TUI (mact-by1.9's escape hatch).
+    #[arg(
+        long,
+        global = true,
+        help = "Print the timeline table to stdout instead of taking over the terminal; implied by a non-tty stdout or TERM=dumb (timeline screen only, mact-by1.9)"
+    )]
+    pub plain: bool,
+
+    /// Turn colour off while keeping the unicode glyphs; `$NO_COLOR` does the same.
+    #[arg(
+        long,
+        global = true,
+        help = "No colour, unicode glyphs kept (the no-color.org convention: any non-empty $NO_COLOR does the same). The glyphs always carry every state, so nothing is lost (ADR-0008 §6.1)"
+    )]
+    pub no_color: bool,
+
+    /// Cap how many commits the timeline shows, newest first.
+    #[arg(
+        long,
+        value_name = "N",
+        global = true,
+        help = "Show at most N commits, newest first; a view choice, so it changes nothing about what is cached (ADR-0006 §7.4)"
+    )]
+    pub limit: Option<std::num::NonZeroUsize>,
+
     /// `-v` for info, `-vv` for trace; overridden by $RUST_LOG when that is set.
     #[arg(
         short = 'v',
@@ -199,7 +224,7 @@ pub struct ReportArgs {
 /// What the argv asked for, after the default subcommand is filled in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// Draw the timeline. This ticket cannot: no frame is drawn before mact-by1.9.
+    /// Draw the timeline — the default mode, and the one `fathom` with no subcommand means (mact-by1.9).
     Tui,
     /// Write the store: the walk, the derive, the metric cache (mact-by1.10).
     Index,
@@ -300,7 +325,8 @@ pub fn run(cli: &Cli) -> Result<Exit, FathomError> {
             Ok(Exit::Success)
         }
         Mode::Index => index(&boot, &config, &cli.common, rebuild).map(|()| Exit::Success),
-        Mode::Tui | Mode::Report => {
+        Mode::Tui => crate::tui::run(&boot, &config, &cli.common),
+        Mode::Report => {
             not_yet_wired(mode);
             Ok(Exit::NotImplemented)
         }
@@ -419,7 +445,7 @@ fn print_status(boot: &Boot, config: &Config, common: &CommonArgs) {
 /// `history.depth` widens the walk rather than being clipped to it, because a user naming a commit
 /// means that commit, and an index that silently started somewhere else would publish rows for a
 /// window nobody asked for.
-fn window(config: &Config, common: &CommonArgs) -> Query {
+pub fn window(config: &Config, common: &CommonArgs) -> Query {
     let mut query = Query::from_config(config);
     if let Some(from) = &common.from {
         query.from = Some(from.clone());

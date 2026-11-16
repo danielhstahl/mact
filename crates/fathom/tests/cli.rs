@@ -24,6 +24,26 @@ use std::process::{Command, Output};
 /// The binary under test, from the same build as this test binary.
 const FATHOM: &str = env!("CARGO_BIN_EXE_fathom");
 
+/// One run with extra environment, for the `TERM`/`NO_COLOR` cases the plain fork reads.
+fn fathom_with(
+    arguments: &[&str],
+    extra: impl IntoIterator<Item = (&'static str, &'static str)>,
+) -> Run {
+    let mut command = Command::new(FATHOM);
+    for key in [
+        "RUST_LOG",
+        "EVIDENCE_DIR",
+        "FATHOM_DIR",
+        "FATHOM_CONFIG",
+        "TERM",
+        "NO_COLOR",
+    ] {
+        command.env_remove(key);
+    }
+    command.args(arguments).envs(extra);
+    exec(command)
+}
+
 /// One run of the binary, with the three things a caller asks about.
 struct Run {
     code: Option<i32>,
@@ -62,7 +82,16 @@ impl Run {
 /// cannot change what these tests observe.
 fn fathom(args: &[&str]) -> Run {
     let mut command = Command::new(FATHOM);
-    for key in ["RUST_LOG", "EVIDENCE_DIR", "FATHOM_DIR", "FATHOM_CONFIG"] {
+    for key in [
+        "RUST_LOG",
+        "EVIDENCE_DIR",
+        "FATHOM_DIR",
+        "FATHOM_CONFIG",
+        // The two the plain fork reads: a suite must not change shape with whoever's shell ran it, and
+        // `fathom_with` puts back whatever a test actually wants.
+        "TERM",
+        "NO_COLOR",
+    ] {
         command.env_remove(key);
     }
     command.args(args);
@@ -107,6 +136,9 @@ fn help_names_every_subcommand_and_every_shared_flag() {
         "--to",
         "--first-parent",
         "--config",
+        "--plain",
+        "--no-color",
+        "--limit",
         "--verbose",
         "--version",
     ] {
@@ -317,23 +349,107 @@ fn the_default_mode_and_explicit_tui_agree() {
     let bare = fathom(&[&repo.display().to_string()]);
     let explicit = fathom(&["tui", &repo.display().to_string()]);
 
-    bare.assert_code(3).assert_not_panicked();
-    explicit.assert_code(3).assert_not_panicked();
-    assert!(bare.stderr.contains("not yet wired"), "{}", bare.stderr);
+    // The timeline is wired (mact-by1.9), so this is no longer a `not yet wired` test: it is the test
+    // that bare `fathom` *is* `fathom tui`, down to the byte. Neither spelling gets a TTY here — the
+    // harness runs the binary with its stdout on a pipe — which is exactly the case the plain fork
+    // exists for, so what comes out is the table and the reason on stderr.
+    bare.assert_code(0).assert_not_panicked();
+    explicit.assert_code(0).assert_not_panicked();
     assert!(
-        bare.stderr.contains("mact-by1.9"),
-        "the line should name the ticket that owns the screen:\n{}",
-        bare.stderr
+        bare.stdout.contains("FATHOM"),
+        "the table should be on stdout:\n{}",
+        bare.stdout
     );
     assert!(
-        bare.stdout.is_empty(),
-        "a stub must not write stdout: {}",
+        bare.stdout.contains("this repository has no commits yet"),
+        "an unborn workspace should say what to do next:\n{}",
         bare.stdout
+    );
+    assert!(
+        bare.stderr.contains("not drawing a TUI"),
+        "a plain run that was not asked for should say why on stderr:\n{}",
+        bare.stderr
+    );
+    assert_eq!(
+        bare.stdout, explicit.stdout,
+        "bare `fathom` *is* `fathom tui`"
     );
     assert_eq!(
         bare.stderr, explicit.stderr,
         "bare `fathom` *is* `fathom tui`"
     );
+}
+
+#[test]
+fn plain_is_the_same_table_and_says_nothing_about_the_terminal() {
+    let scratch = tempfile::tempdir().expect("scratch");
+    let repo = workspace(scratch.path());
+    let asked = fathom(&["tui", "--plain", &repo.display().to_string()]);
+    let implied = fathom(&["tui", &repo.display().to_string()]);
+
+    asked.assert_code(0).assert_not_panicked();
+    // Same table, because `--plain` only chooses the surface; the reason line is what differs, and an
+    // explicit `--plain` has no reason to explain.
+    assert_eq!(asked.stdout, implied.stdout);
+    assert!(
+        !asked.stderr.contains("not drawing a TUI"),
+        "`--plain` was asked for and should not be apologised for:\n{}",
+        asked.stderr
+    );
+}
+
+/// `--limit` is a view flag (ADR-0006 §7.4): it parses, it caps the table, and `0` is refused by clap
+/// rather than by a hand-written check that would have to invent its own exit code.
+#[test]
+fn limit_is_accepted_everywhere_the_timeline_is_and_zero_is_claps_refusal() {
+    let scratch = tempfile::tempdir().expect("scratch");
+    let repo = workspace(scratch.path());
+    let path = repo.display().to_string();
+    for arguments in [
+        vec!["tui", "--plain", "--limit", "3"],
+        vec!["--plain", "--limit", "3"],
+    ] {
+        let mut argv: Vec<&str> = arguments;
+        argv.push(&path);
+        let run = fathom(&argv);
+        run.assert_code(0).assert_not_panicked();
+    }
+
+    let zero = fathom(&[
+        "tui",
+        "--plain",
+        "--limit",
+        "0",
+        &repo.display().to_string(),
+    ]);
+    zero.assert_code(2);
+    assert!(
+        zero.stderr.contains("invalid value '0'"),
+        "expected clap's own message, got:\n{}",
+        zero.stderr
+    );
+    assert!(
+        zero.stdout.is_empty(),
+        "stdout must stay empty: {}",
+        zero.stdout
+    );
+}
+
+#[test]
+fn a_dumb_terminal_is_the_plain_table_too() {
+    let scratch = tempfile::tempdir().expect("scratch");
+    let repo = workspace(scratch.path());
+    let dumb = fathom_with(&["tui", &repo.display().to_string()], [("TERM", "dumb")]);
+    let unset = fathom_with(&["tui", &repo.display().to_string()], []);
+    let explicit = fathom(&["tui", "--plain", &repo.display().to_string()]);
+
+    for run in [&dumb, &unset] {
+        run.assert_code(0).assert_not_panicked();
+        assert_eq!(
+            run.stdout, explicit.stdout,
+            "TERM=dumb (and no TERM at all) is the ascii table"
+        );
+    }
 }
 
 #[test]

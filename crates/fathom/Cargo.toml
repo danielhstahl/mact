@@ -29,6 +29,11 @@ path = "src/main.rs"
 act-evidence = { workspace = true }
 
 clap = { workspace = true }
+crossterm = { workspace = true }
+# The screens (mact-by1.9). ADR-0005 §6 names these two and nothing else, and the forbidden side of
+# that table — `rmcp`, `axum`, `tower`, `tokio`, an HTTP client — is what `cargo tree -p fathom`
+# is checked for; neither of these brings one of them along.
+ratatui = { workspace = true }
 serde = { workspace = true }
 # The row is JSON-shaped and the model is a JSON file, so `serde_json` is not a convenience: it is
 # how `schema/metric-model.json` is loaded instead of restated, and how a stored row's canonical JSON
