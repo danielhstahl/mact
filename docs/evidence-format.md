@@ -8,6 +8,17 @@ page and the ADR disagree, the ADR wins. The machine-readable form is
 [`schema/evidence.schema.json`](../schema/evidence.schema.json), and
 `act-mcp validate-evidence` enforces both.
 
+**Consumers of `act-evidence`.** These records now have two consumers in this repo and they share one
+implementation: `crates/act-evidence` — which is what `src/evidence/{records,shapes,schema,validate}.rs`
+become, see [ADR-0005](adr/0005-fathom-crate-layout-and-dependencies.md) — holds the strict record
+types, the strict deserializer and the tree validator, and depends on none of the server's transport.
+`act-mcp` is the **writer** and the `validate-evidence` checker; **fathom** — the scanner this page is
+written for, now a program in its own right rather than a hypothetical one — is the **reader**. Two
+consequences for whoever reads this page next: code that parses `.evidence` with its own structs is
+not a shortcut, it is the second implementation ADR-0002 §7 forbids, so depend on `act-evidence`; and
+fathom is a reader of these files, never a client of the server — no new MCP tool, no MCP client, and
+nothing in it that can start a run (ADR-0005 §7).
+
 Assumed versions, restated so a recipe's output can be reproduced: `schema_version` **1**,
 `act-mcp` **0.1.0**, act **≥ 0.2.62** (the fixture records were captured against
 `0.2.68`, which is what `tool.act_version` says in them), `jq` **1.7.1**.

@@ -56,11 +56,14 @@ that needs a container daemon belongs behind `#[ignore]` with the reason in its
    (`jsonschema-rs`, `include_str!` of the same bytes) compiles the schema *files* and
    validates the committed evidence tree. This is the hard one: it fails if the schema stops
    compiling or a record stops satisfying it, with no python involved.
-2. `scripts/validate_tool_contract.py`, `scripts/validate_run_lifecycle.py` and
-   `scripts/validate_isolation.py` — the three ADR↔schema checkers docs/testing.md calls CI's:
-   ADR-0001's tool contract, ADR-0004's run lifecycle and ADR-0003's isolation protocol, each
-   checked against the schema that implements it. (ADR-0002's checker is
-   `validate_evidence.py`, which is check (1) above and check (3) below.) Of the three,
+2. `scripts/validate_tool_contract.py`, `scripts/validate_run_lifecycle.py`,
+   `scripts/validate_isolation.py` and `scripts/validate_crate_layout.py` — the four
+   ADR↔contract checkers docs/testing.md calls CI's: ADR-0001's tool contract, ADR-0004's run
+   lifecycle, ADR-0003's isolation protocol and ADR-0005's crate layout, each checked against the
+   artifact that implements it (a `schema/*.json` for the first three, `Cargo.toml`/`Cargo.lock` for
+   the last — ADR-0005's load-bearing form *is* the manifests, so that checker reads them instead of
+   a fourth schema). (ADR-0002's checker is
+   `validate_evidence.py`, which is check (1) above and check (3) below.) Of these,
    `validate_tool_contract.py` is the one that keeps ADR-0001's error-code table, the run
    status vocabulary and the fixture index in
    [`tests/e2e/testdata/README.md`](../tests/e2e/testdata/README.md) in step with

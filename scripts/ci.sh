@@ -26,11 +26,13 @@
 #                `schema/evidence.schema.json` has to compile in the engine the binary
 #                embeds, and the committed e2e evidence tree has to validate against it (the
 #                e2e suite re-validates the *trees it generates*; this validates the ones in
-#                the repo, so the check runs without running the suite). Then the three
-#                ADR↔schema checkers docs/testing.md calls CI's — ADR-0001's tool contract
+#                the repo, so the check runs without running the suite). Then the four
+#                ADR↔contract checkers docs/testing.md calls CI's — ADR-0001's tool contract
 #                (`validate_tool_contract.py`), ADR-0004's run lifecycle
 #                (`validate_run_lifecycle.py`), ADR-0003's isolation protocol
-#                (`validate_isolation.py`) — and python's own jsonschema over the same
+#                (`validate_isolation.py`) and ADR-0005's crate layout
+#                (`validate_crate_layout.py`, which reads Cargo.toml rather than a schema) —
+#                and python's own jsonschema over the same
 #                evidence tree as a second, independent implementation.
 #   supply-chain cargo-deny: licences, duplicate/wildcard policy and sources always, RUSTSEC
 #                advisories when the network is allowed (`--offline` skips exactly that
@@ -236,17 +238,21 @@ step_schema() {
 
     local py=${PYTHON:-python3}
 
-    # 2. the ADR↔schema checkers docs/testing.md names as CI's: no python packages needed,
-    #    milliseconds each, and they fail when an accepted ADR and the schema implementing it
+    # 2. the ADR↔contract checkers docs/testing.md names as CI's: no python packages needed,
+    #    milliseconds each, and they fail when an accepted ADR and the artifact implementing it
     #    stop agreeing with one another. validate_tool_contract.py belongs here rather than
     #    with the jsonschema checks below because the half of it that matters most — ADR-0001's
     #    error-code and status tables, the schema, and the fixture index in
     #    tests/e2e/testdata/README.md — needs no package at all; it skips its own
     #    fixture-validating half, and says so, when jsonschema is absent.
+    #    validate_crate_layout.py is the odd one out and belongs here anyway: it reads
+    #    Cargo.toml/Cargo.lock instead of schema/*.json, because ADR-0005's artifacts *are*
+    #    manifests, and it is what stops the act-mcp ↔ fathom dependency edge from creeping in.
     echo "--- ADR <-> schema checkers ($py)"
     "$py" scripts/validate_tool_contract.py
     "$py" scripts/validate_run_lifecycle.py
     "$py" scripts/validate_isolation.py
+    "$py" scripts/validate_crate_layout.py
 
     # 3. python's jsonschema as a second, independent implementation of the same contract
     #    (ADR-0002 §7 wants a disagreement between two engines to show up here rather than
