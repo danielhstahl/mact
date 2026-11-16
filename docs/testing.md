@@ -54,9 +54,11 @@ A few environment quirks worth knowing before the first red build:
   `cargo run -- validate-evidence <workspace>`.
 
 The shell checkers under `scripts/` (`validate_tool_contract.py`, `validate_run_lifecycle.py`,
-`validate_isolation.py`, `validate_crate_layout.py`) are CI's, and each one's Rust counterpart is
-named in the file it guards. The first three read `schema/*.json` against the ADR that wrote it; the
-fourth reads `Cargo.toml`, because what ADR-0005 pins is which crate may depend on which.
+`validate_isolation.py`, `validate_crate_layout.py`, `validate_fathom_layout.py`) are CI's, and each
+one's Rust counterpart is named in the file it guards. The first three read `schema/*.json` against
+the ADR that wrote it; the fourth reads `Cargo.toml`, because what ADR-0005 pins is which crate may
+depend on which; the fifth reads `.gitignore` and `.fathom/LAYOUT.md`, because what ADR-0006 pins is
+which paths inside the cache root exist, which are ignored, and which belong to somebody else's tool.
 
 | suite | what it pins |
 |---|---|

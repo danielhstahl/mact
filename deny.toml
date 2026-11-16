@@ -84,6 +84,20 @@ multiple-versions-include-dev = true
 name = "serde_yaml"
 reason = "unmaintained upstream (RUSTSEC-2024-0320); this repo reads YAML with yaml-rust2 — see Cargo.toml"
 
+# ADR-0006 §5 decides the `.fathom` metric cache is plain files: atomically-published JSON, one row
+# per commit, plus a content-addressed block directory. The reason is the toolchain, not the licence:
+# `rusqlite` + `bundled` puts ~25k lines of C into `crates/fathom`, on all five cd.yml targets (two
+# of them musl, so a musl cross-compiler becomes a build requirement), to answer point lookups by a
+# digest that `git log` already ordered. Both are listed because `rusqlite` needs `libsqlite3-sys`
+# either way and banning the carrier alone still lets the front end be added first.
+[[bans.deny]]
+name = "rusqlite"
+reason = "ADR-0006 §5: the .fathom store is plain JSON files; sqlite would add a C toolchain to the fathom tree for a workload with no queries"
+
+[[bans.deny]]
+name = "libsqlite3-sys"
+reason = "ADR-0006 §5: same decision as rusqlite — this repo has no C build dependency and keeps none (see ADR-0003's refusal of libgit2)"
+
 # ---------------------------------------------------------------------------
 # Where dependencies may come from
 # ---------------------------------------------------------------------------

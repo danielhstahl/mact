@@ -57,12 +57,16 @@ that needs a container daemon belongs behind `#[ignore]` with the reason in its
    validates the committed evidence tree. This is the hard one: it fails if the schema stops
    compiling or a record stops satisfying it, with no python involved.
 2. `scripts/validate_tool_contract.py`, `scripts/validate_run_lifecycle.py`,
-   `scripts/validate_isolation.py` and `scripts/validate_crate_layout.py` — the four
+   `scripts/validate_isolation.py`, `scripts/validate_crate_layout.py` and
+   `scripts/validate_fathom_layout.py` — the five
    ADR↔contract checkers docs/testing.md calls CI's: ADR-0001's tool contract, ADR-0004's run
-   lifecycle, ADR-0003's isolation protocol and ADR-0005's crate layout, each checked against the
+   lifecycle, ADR-0003's isolation protocol, ADR-0005's crate layout and ADR-0006's `.fathom`
+   workspace layout, each checked against the
    artifact that implements it (a `schema/*.json` for the first three, `Cargo.toml`/`Cargo.lock` for
-   the last — ADR-0005's load-bearing form *is* the manifests, so that checker reads them instead of
-   a fourth schema). (ADR-0002's checker is
+   the fourth — ADR-0005's load-bearing form *is* the manifests, so that checker reads them instead of
+   a fourth schema — and `.gitignore` plus `.fathom/LAYOUT.md` for the last, because ADR-0006's
+   artifacts are a directory contract and the ignore rules that grant it visibility; it is what makes
+   an orphaned `.fathom` whitelist entry a build failure instead of a mystery). (ADR-0002's checker is
    `validate_evidence.py`, which is check (1) above and check (3) below.) Of these,
    `validate_tool_contract.py` is the one that keeps ADR-0001's error-code table, the run
    status vocabulary and the fixture index in

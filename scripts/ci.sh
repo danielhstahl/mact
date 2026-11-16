@@ -26,13 +26,14 @@
 #                `schema/evidence.schema.json` has to compile in the engine the binary
 #                embeds, and the committed e2e evidence tree has to validate against it (the
 #                e2e suite re-validates the *trees it generates*; this validates the ones in
-#                the repo, so the check runs without running the suite). Then the four
+#                the repo, so the check runs without running the suite). Then the five
 #                ADR↔contract checkers docs/testing.md calls CI's — ADR-0001's tool contract
 #                (`validate_tool_contract.py`), ADR-0004's run lifecycle
 #                (`validate_run_lifecycle.py`), ADR-0003's isolation protocol
-#                (`validate_isolation.py`) and ADR-0005's crate layout
-#                (`validate_crate_layout.py`, which reads Cargo.toml rather than a schema) —
-#                and python's own jsonschema over the same
+#                (`validate_isolation.py`), ADR-0005's crate layout
+#                (`validate_crate_layout.py`, which reads Cargo.toml rather than a schema) and
+#                ADR-0006's `.fathom` layout (`validate_fathom_layout.py`, which reads
+#                .gitignore and .fathom/LAYOUT.md) — and python's own jsonschema over the same
 #                evidence tree as a second, independent implementation.
 #   supply-chain cargo-deny: licences, duplicate/wildcard policy and sources always, RUSTSEC
 #                advisories when the network is allowed (`--offline` skips exactly that
@@ -248,11 +249,15 @@ step_schema() {
     #    validate_crate_layout.py is the odd one out and belongs here anyway: it reads
     #    Cargo.toml/Cargo.lock instead of schema/*.json, because ADR-0005's artifacts *are*
     #    manifests, and it is what stops the act-mcp ↔ fathom dependency edge from creeping in.
+    #    validate_fathom_layout.py is the other one: ADR-0006's artifacts are a directory contract
+    #    and an ignore file, so it diffs .gitignore, .fathom/LAYOUT.md and the ADR against each other
+    #    and fails on an orphaned whitelist entry (the state this repo was in when ADR-0006 was written).
     echo "--- ADR <-> schema checkers ($py)"
     "$py" scripts/validate_tool_contract.py
     "$py" scripts/validate_run_lifecycle.py
     "$py" scripts/validate_isolation.py
     "$py" scripts/validate_crate_layout.py
+    "$py" scripts/validate_fathom_layout.py
 
     # 3. python's jsonschema as a second, independent implementation of the same contract
     #    (ADR-0002 §7 wants a disagreement between two engines to show up here rather than
