@@ -19,9 +19,18 @@
 
 use crate::metrics::Model;
 
+use super::diff_view::{DiffView, Screen};
 use super::engine::Event;
 use super::entry::Entry;
 use super::store_view::{is_stale, Reading, StoreState};
+
+/// How many commits' diff views are kept open at once.
+///
+/// A screen you back out of and into again should remember where you were, and a cache of every commit
+/// ever looked at in a 40 000-commit repository is a megabyte heap with no ceiling. Twelve is "the
+/// commits you are comparing", which is what anyone is actually doing, and the least recently opened
+/// one goes when the thirteenth arrives.
+const DIFF_CACHE: usize = 12;
 
 /// A key, already reduced to what the timeline means by it.
 ///
@@ -57,6 +66,12 @@ pub enum Key {
     Detail,
     /// `b`.
     Bench,
+    /// `n` or `Tab`: the next file in the diff view.
+    NextFile,
+    /// `p` or `Shift-Tab`: the previous file in the diff view.
+    PrevFile,
+    /// `t`: show the files the path filters hide, and the totals that go with them.
+    ToggleFiles,
     /// `backspace`, which means "delete a filter character" while the filter is open.
     Backspace,
     /// A printable character, which means "append to the filter" while the filter is open.
@@ -66,7 +81,7 @@ pub enum Key {
 }
 
 /// What the loop is told to do next. The state machine never does these itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// Read the store again (the first frame, and after an index).
     Read,
@@ -74,6 +89,8 @@ pub enum Command {
     Index,
     /// Ask a running index to stop.
     Cancel,
+    /// Read one commit's patch ([`crate::diff`]) — the `d` key, and nothing else asks for it.
+    Diff(String),
     /// Leave the alternate screen.
     Quit,
 }
@@ -147,6 +164,13 @@ pub struct App {
     pub now: i64,
     /// Whether the loop should stop.
     pub quit: bool,
+    /// Which screen is up: the timeline, or the diff of one named commit.
+    pub screen: Screen,
+    /// Every diff view this run has opened, by full SHA, so backing out and in keeps the reader's place.
+    pub diffs: std::collections::BTreeMap<String, DiffView>,
+    /// A counter, not a clock: it orders the diff views for eviction without reading time (rule: nothing
+    /// in here can block, and nothing here tells the time).
+    touches: u64,
     /// The metric model, parsed once per screen rather than once per status line: the caveat line
     /// needs the per-column code lists, and re-parsing `schema/metric-model.json` to explain a `*`
     /// would be the same mistake [`super::palette`] names for the glyphs.
@@ -171,6 +195,9 @@ impl App {
             width: 80,
             now,
             quit: false,
+            screen: Screen::Timeline,
+            diffs: std::collections::BTreeMap::new(),
+            touches: 0,
             model: Model::embedded(),
             visible: Vec::new(),
         };
@@ -183,6 +210,89 @@ impl App {
         self.width = width;
         self.height = height;
         self.clamp_view();
+        // An open diff view has its own pane to fit; the scroll offsets clamp against it.
+        if let Some(view) = self.diff_view_mut() {
+            let pane = super::diff_view::pane_height(height);
+            view.set_height(pane);
+        }
+    }
+
+    /// The open diff view, if the diff screen is up.
+    #[must_use]
+    pub fn diff_view(&self) -> Option<&DiffView> {
+        match &self.screen {
+            Screen::Timeline => None,
+            Screen::Diff(sha) => self.diffs.get(sha),
+        }
+    }
+
+    /// The open diff view, mutably.
+    pub fn diff_view_mut(&mut self) -> Option<&mut DiffView> {
+        match &self.screen {
+            Screen::Timeline => None,
+            Screen::Diff(sha) => self.diffs.get_mut(sha),
+        }
+    }
+
+    /// Open the diff of one commit. Returns the commands the loop must run — one [`Command::Diff`] the
+    /// first time a commit is opened and nothing at all after that, because the view is cached.
+    ///
+    /// The timeline's selection is not touched, in either direction: `d` out of a diff lands on the row
+    /// `d` left from, which is what makes "peek at the diff" a safe thing to press.
+    pub fn open_diff(&mut self, sha: &str) -> Vec<Command> {
+        self.touches += 1;
+        let touch = self.touches;
+        let mut commands = Vec::new();
+        if let Some(view) = self.diffs.get_mut(sha) {
+            view.touched = touch;
+        } else {
+            let mut view = DiffView::open(sha);
+            view.set_height(super::diff_view::pane_height(self.height));
+            self.diffs.insert(sha.to_owned(), view);
+            commands.push(Command::Diff(sha.to_owned()));
+            self.evict_diffs(sha);
+        }
+        self.screen = Screen::Diff(sha.to_owned());
+        commands
+    }
+
+    /// Leave the diff view. The view stays cached, which is the whole point of the cache.
+    pub fn close_diff(&mut self) {
+        self.screen = Screen::Timeline;
+    }
+
+    /// Show a diff view that has already been read — `--diff REV` on the command line, which opens the
+    /// same screen `d` opens without the read `d` would have asked the engine for.
+    pub fn show_diff(&mut self, mut view: DiffView) {
+        self.touches += 1;
+        view.touched = self.touches;
+        view.set_height(super::diff_view::pane_height(self.height));
+        let sha = view.sha.clone();
+        self.diffs.insert(sha.clone(), view);
+        self.evict_diffs(&sha);
+        self.screen = Screen::Diff(sha);
+    }
+
+    /// Forget the least recently opened diff views once the cache is over its bound.
+    fn evict_diffs(&mut self, keep: &str) {
+        if self.diffs.len() <= DIFF_CACHE {
+            return;
+        }
+        let mut oldest: Option<(u64, String)> = None;
+        for (sha, view) in &self.diffs {
+            if sha == keep {
+                continue;
+            }
+            if oldest
+                .as_ref()
+                .is_none_or(|(touch, _)| view.touched < *touch)
+            {
+                oldest = Some((view.touched, sha.clone()));
+            }
+        }
+        if let Some((_, sha)) = oldest {
+            self.diffs.remove(&sha);
+        }
     }
 
     /// The rows on show: the filter's answer over `reading.entries`, in the reading's order.
@@ -281,16 +391,31 @@ impl App {
         // A message is a one-key press: it explains the key that caused it and then gets out of the
         // way, so the status line never shows a stale answer to an earlier question.
         self.message = None;
-        let mut commands = Vec::new();
 
-        // The help overlay swallows Esc; every other key still works, because a reader who left `?`
-        // up and wants to scroll should be allowed to.
+        // The help overlay swallows Esc on either screen; every other key still works, because a reader
+        // who left `?` up and wants to scroll should be allowed to.
         if self.help && key == Key::Escape {
             self.help = false;
-            return commands;
+            return Vec::new();
         }
 
-        // The filter prompt owns text keys and Backspace, and Esc/Enter close it.
+        let open = match &self.screen {
+            Screen::Timeline => None,
+            Screen::Diff(sha) => Some(sha.clone()),
+        };
+        match open {
+            None => self.on_timeline_key(key),
+            Some(sha) => self.on_diff_key(&sha, key),
+        }
+    }
+
+    /// The timeline's answer to a key, including the `/` prompt that owns printable keys first.
+    fn on_timeline_key(&mut self, key: Key) -> Vec<Command> {
+        let mut commands = Vec::new();
+
+        // The filter prompt owns text keys and Backspace, and Esc/Enter close it. A letter that means
+        // something else on this screen is, while the prompt is open, a needle character: `/registry`
+        // has to be typeable.
         if self.filter_prompt.is_some() {
             match key {
                 Key::Text(character) => {
@@ -323,7 +448,7 @@ impl App {
             }
         }
 
-        match key {
+        match timeline_letter(key) {
             Key::Down => self.move_selection(1),
             Key::Up => self.move_selection(-1),
             Key::PageDown => {
@@ -363,12 +488,107 @@ impl App {
                     self.recompute();
                 }
             }
-            Key::Diff => self.message = Some(sibling("diff", "mact-by1.11")),
+            // The ticket's one named interaction. The read is not done here: `Command::Diff` goes to the
+            // engine, so pressing `d` on a commit whose patch takes a moment still cannot delay a key.
+            Key::Diff => {
+                let selected = self.selected().map(|entry| entry.sha.clone());
+                match selected {
+                    Some(sha) => commands.extend(self.open_diff(&sha)),
+                    None => {
+                        self.message =
+                            Some("nothing is selected, so there is nothing to diff".to_owned());
+                    }
+                }
+            }
             Key::Detail => self.message = Some(sibling("detail", "mact-by1.14")),
             Key::Bench => self.message = Some(sibling("bench", "mact-by1.12")),
+            // `n`/`p`/`t` are the diff view's keys. On the timeline they are not nothing, exactly: they
+            // are keys the reader pressed a screen too early, and the answer says which screen wants them.
+            Key::NextFile | Key::PrevFile => {
+                self.message =
+                    Some("n/p choose a file inside a diff \u{b7} d opens one".to_owned());
+            }
+            Key::ToggleFiles => {
+                self.message =
+                    Some("t shows the files a diff is hiding \u{b7} d opens one first".to_owned());
+            }
             Key::Backspace | Key::Text(_) | Key::Ignored => {}
         }
         commands
+    }
+
+    /// The diff view's answer to a key. `d` and `Esc` both leave; nothing here can move the timeline's
+    /// selection, which is the promise the round trip is judged on.
+    fn on_diff_key(&mut self, sha: &str, key: Key) -> Vec<Command> {
+        let mut commands = Vec::new();
+        if let Some(view) = self.diffs.get_mut(sha) {
+            self.touches += 1;
+            view.touched = self.touches;
+        }
+        // A page on this screen is a pane-full of patch text, not a screen-full: the frame's other four
+        // rows are the heading, the status line, the key line and the pane borders, and paging by the
+        // frame's height would skip the lines that fell off the bottom of the pane.
+        let page =
+            isize::try_from(usize::from(super::diff_view::pane_height(self.height))).unwrap_or(1);
+        match diff_letter(key) {
+            Key::Quit => {
+                self.quit = true;
+                commands.push(Command::Quit);
+            }
+            Key::Escape | Key::Diff => self.close_diff(),
+            Key::Help => self.help = !self.help,
+            Key::Down => self.scroll_diff(1),
+            Key::Up => self.scroll_diff(-1),
+            Key::PageDown => self.scroll_diff(page),
+            Key::PageUp => self.scroll_diff(-page),
+            Key::Top => {
+                if let Some(view) = self.diff_view_mut() {
+                    view.scroll_top();
+                }
+            }
+            Key::Bottom => {
+                if let Some(view) = self.diff_view_mut() {
+                    view.scroll_bottom();
+                }
+            }
+            Key::NextFile => self.cycle_diff_file(1),
+            Key::PrevFile => self.cycle_diff_file(-1),
+            Key::ToggleFiles => {
+                if let Some(view) = self.diff_view_mut() {
+                    view.set_show_all(!view.show_all);
+                }
+            }
+            // The mock's own words: `/ search (later)`. The honest answer is that it is not here yet,
+            // and the ticket that says so is named so the key does not read as broken.
+            Key::Filter => {
+                self.message = Some(
+                    "search inside a diff is a later ticket \u{b7} / filters the timeline"
+                        .to_owned(),
+                );
+            }
+            Key::Detail => self.message = Some(sibling("detail", "mact-by1.14")),
+            Key::Bench => self.message = Some(sibling("bench", "mact-by1.12")),
+            Key::Reindex => {
+                self.message =
+                    Some("re-index is the timeline's key \u{b7} Esc goes back to it".to_owned());
+            }
+            Key::Backspace | Key::Text(_) | Key::Ignored => {}
+        }
+        commands
+    }
+
+    /// Scroll the open diff view, if one is open.
+    fn scroll_diff(&mut self, delta: isize) {
+        if let Some(view) = self.diff_view_mut() {
+            view.scroll_by(delta);
+        }
+    }
+
+    /// Move to the next or previous file in the open diff view.
+    fn cycle_diff_file(&mut self, step: isize) {
+        if let Some(view) = self.diff_view_mut() {
+            view.cycle_file(step);
+        }
     }
 
     /// Apply an event from the engine. Returns commands the loop must act on.
@@ -438,6 +658,22 @@ impl App {
             }
             Event::Notice(line) => {
                 self.message = Some(line);
+                Vec::new()
+            }
+            Event::Diff { sha, outcome } => {
+                // The view may have been evicted while the read was running (twelve is the bound); then
+                // the answer is simply no longer anyone's question, and the text is dropped.
+                let Some(view) = self.diffs.get_mut(&sha) else {
+                    return Vec::new();
+                };
+                view.loading = false;
+                match outcome {
+                    Ok(diff) => {
+                        view.diff = Some(*diff);
+                        view.settle();
+                    }
+                    Err(reason) => view.error = Some(reason),
+                }
                 Vec::new()
             }
         }
@@ -539,11 +775,23 @@ impl App {
 
     /// The line under the table: a message wins, then the live filter prompt, then the selected row's
     /// caveats, then the epic-wide hint ("nothing here has evidence"), then nothing.
+    ///
+    /// On the diff screen the view's own status line answers instead — the caps, the hidden files, the
+    /// refusal — because "why is this pane empty" is the question under a diff.
     #[must_use]
     pub fn status_line(&self) -> String {
         if let Some(message) = &self.message {
             return message.clone();
         }
+        match &self.screen {
+            Screen::Timeline => self.timeline_status(),
+            Screen::Diff(_) => self.diff_view().map_or_else(String::new, DiffView::status),
+        }
+    }
+
+    /// The timeline's own status line, once the diff view's is not in the way.
+    #[must_use]
+    fn timeline_status(&self) -> String {
         if let Some(prompt) = &self.filter_prompt {
             return format!("filter: /{prompt}  enter accepts \u{b7} esc discards");
         }
@@ -641,6 +889,54 @@ impl App {
 
 fn sibling(view: &str, ticket: &str) -> String {
     format!("the {view} view is {ticket} — same epic, not wired yet; it is not lost, it is next")
+}
+
+/// What the timeline means by a typed character ([`Key::Text`]), and what it leaves alone.
+///
+/// This is the second half of [`super::keys::classify`]'s job, and it lives with the screen that has the
+/// other half: the `/` prompt has already had its chance at the character by the time this runs, so a
+/// filter can contain every letter this screen also uses as a command.
+fn timeline_letter(key: Key) -> Key {
+    match key {
+        Key::Text(character) => match character {
+            'j' => Key::Down,
+            'k' => Key::Up,
+            'g' => Key::Top,
+            // `G` is shift+g: `g` alone jumps to the top, which is the vim pair the ticket names.
+            'G' => Key::Bottom,
+            'q' => Key::Quit,
+            '?' => Key::Help,
+            '/' => Key::Filter,
+            'R' => Key::Reindex,
+            'd' => Key::Diff,
+            'b' => Key::Bench,
+            other => Key::Text(other),
+        },
+        other => other,
+    }
+}
+
+/// What the diff view means by a typed character. `d` is the way out, which is why it is here at all.
+fn diff_letter(key: Key) -> Key {
+    match key {
+        Key::Text(character) => match character {
+            'j' => Key::Down,
+            'k' => Key::Up,
+            'g' => Key::Top,
+            'G' => Key::Bottom,
+            'q' => Key::Quit,
+            '?' => Key::Help,
+            '/' => Key::Filter,
+            'd' => Key::Diff,
+            'n' => Key::NextFile,
+            'p' => Key::PrevFile,
+            't' => Key::ToggleFiles,
+            'b' => Key::Bench,
+            'R' => Key::Reindex,
+            other => Key::Text(other),
+        },
+        other => other,
+    }
 }
 
 fn duration(millis: u64) -> String {

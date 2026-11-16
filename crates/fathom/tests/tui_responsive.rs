@@ -67,6 +67,9 @@ struct SlowWork {
     read: Duration,
     /// How long a stub index run lasts if nothing cancels it.
     index: Duration,
+    /// How long a stub diff read takes. Same promise as `read`, different code path: a huge commit's
+    /// `git show` is the slowest thing the loop can be asked to wait for, and it is not allowed to.
+    diff: Duration,
     /// What `progress` reports while an index is running, so the header's counter has a source.
     ticks: std::sync::Mutex<u32>,
 }
@@ -76,6 +79,7 @@ impl SlowWork {
         Self {
             read: SLOW_READ,
             index: Duration::from_secs(5),
+            diff: SLOW_READ,
             ticks: std::sync::Mutex::new(0),
         }
     }
@@ -89,6 +93,15 @@ impl Work for SlowWork {
             branch: "master".to_owned(),
             ..Reading::default()
         }
+    }
+
+    fn diff(&self, sha: &str) -> Result<fathom::diff::CommitDiff, String> {
+        // A refusal rather than a patch, on purpose: the claim under test is about *when the loop got
+        // back to the keyboard*, not about what the read produced, and a stub that slept and then
+        // answered is the same shape either way.
+        std::thread::sleep(self.diff);
+        let _ = sha;
+        Err("the stub's diff read sleeps on purpose".to_owned())
     }
 
     fn progress(&self) -> Option<(String, u64, u64)> {
@@ -205,6 +218,7 @@ impl Driver for Scripted {
                 Command::Read => engine.request_read(),
                 Command::Index => engine.request_index(),
                 Command::Cancel => engine.cancel(),
+                Command::Diff(sha) => engine.request_diff(sha),
                 Command::Quit => {}
             }
         }
@@ -260,6 +274,59 @@ fn a_keypress_is_answered_while_the_slow_source_is_still_reading() {
         std::thread::sleep(Duration::from_millis(10));
     }
     panic!("the read never arrived: {} events", waited.len());
+}
+
+#[test]
+fn a_slow_diff_read_does_not_delay_a_single_keypress() {
+    // The `d` key is the ticket's whole reason for existing, and the ticket's other half is that opening
+    // a diff must not make the interface wait: the read goes to the worker, and everything pressed
+    // while it runs is handled at once.
+    let engine = Engine::start(Arc::new(SlowWork::new()));
+    let keys = std::iter::once(Key::Diff)
+        .chain(std::iter::repeat_n(Key::Down, 30))
+        .chain(std::iter::once(Key::Quit))
+        .collect();
+    let mut driver = Scripted::new(keys).with_engine(engine);
+    let mut app = App::new(reading_with(20), 0);
+
+    let started = Instant::now();
+    let paints = run_loop(&mut app, &mut driver).expect("the scripted driver cannot fail to paint");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < SLOW_READ / 4,
+        "30 keys after `d` took {elapsed:?} while the diff read was still sleeping {SLOW_READ:?}          (last key answered at {:?})",
+        driver.answered.last()
+    );
+    assert!(paints > 0, "and the screen was painted anyway");
+    assert_eq!(
+        app.selection, 0,
+        "and none of them leaked into the timeline: they belong to the diff screen now"
+    );
+    let sha = app.reading.entries[0].sha.clone();
+    assert!(
+        app.diffs.contains_key(&sha),
+        "`d` opened the view that the read was for"
+    );
+
+    // The read itself was not dropped: it lands, and the view takes the answer.
+    let mut waited = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        waited.extend(driver.events());
+        if let Some(Event::Diff { outcome, .. }) = waited
+            .iter()
+            .find(|event| matches!(event, Event::Diff { .. }))
+        {
+            assert!(
+                outcome.is_err(),
+                "the stub refuses, and the view will say so"
+            );
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("the diff read never arrived: {} events", waited.len());
 }
 
 #[test]

@@ -344,6 +344,138 @@ impl Git {
     where
         E: From<GitError>,
     {
+        self.stream_pipe(args, &mut |mut reader, stats| {
+            let mut token: Vec<u8> = Vec::new();
+            loop {
+                token.clear();
+                match reader.read_until(0, &mut token) {
+                    Ok(0) => return None,
+                    Ok(_) => {}
+                    Err(err) => {
+                        return Some(E::from(GitError::Io {
+                            context: "git's output".to_owned(),
+                            reason: err.to_string(),
+                        }))
+                    }
+                }
+                stats.bytes += u64::try_from(token.len()).unwrap_or(u64::MAX);
+                if token.last() == Some(&0) {
+                    token.pop();
+                }
+                stats.max_token_bytes = stats.max_token_bytes.max(token.len());
+                stats.tokens += 1;
+                if let Err(err) = on_token(&token) {
+                    return Some(err);
+                }
+            }
+        })
+    }
+
+    /// Run git and hand each **line** of stdout to `on_line` while git still runs.
+    ///
+    /// Patch text is line-oriented (`NUL` does not separate it the way `--raw -z` separates a
+    /// diffstat), so the diff reader needs a line reader and the diffstat path needs the token one;
+    /// both are the same promise about memory, which is why both are `stream_pipe` over a
+    /// different delimiter. `on_line` gets the line without its `\n`, and `true` for its second
+    /// argument when the line was longer than `max_line_bytes` and had to be cut.
+    ///
+    /// The scan is chunk-at-a-time rather than `read_until(b'\n')` on purpose: `read_until` collects
+    /// the whole line before it returns, so one 40 000-column minified line would be one allocation as
+    /// big as the file it came from. Here the ceiling is `max_line_bytes` plus one 8 KiB chunk, whatever
+    /// the file contains.
+    ///
+    /// As with [`Git::stream_tokens`], an `Err` from the callback kills the child and travels out
+    /// unchanged; that is how a byte cap stops `git show` in the middle of a 40 000-line reformat
+    /// instead of after it.
+    ///
+    /// # Errors
+    ///
+    /// [`GitError`] from git, from the spawn, or from the callback.
+    pub fn stream_lines<E>(
+        &self,
+        args: &[&str],
+        max_line_bytes: usize,
+        on_line: &mut impl FnMut(&[u8], bool) -> Result<(), E>,
+    ) -> Result<StreamStats, E>
+    where
+        E: From<GitError>,
+    {
+        let cap = max_line_bytes.max(1);
+        self.stream_pipe(args, &mut |mut reader, stats| {
+            let mut pending: Vec<u8> = Vec::new();
+            let mut cut = false;
+            let mut chunk = [0_u8; 8 * 1024];
+            // `None` here means "the callback said stop", which `stream_pipe` turns into the error the
+            // caller handed back after killing git.
+            let mut emit =
+                |pending: &mut Vec<u8>, cut: bool, stats: &mut StreamStats| -> Option<E> {
+                    stats.bytes += u64::try_from(pending.len() + 1).unwrap_or(u64::MAX);
+                    stats.max_token_bytes = stats.max_token_bytes.max(pending.len());
+                    stats.tokens += 1;
+                    on_line(pending, cut).err()
+                };
+            loop {
+                let read = match reader.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(read) => read,
+                    Err(err) => {
+                        return Some(E::from(GitError::Io {
+                            context: "git's output".to_owned(),
+                            reason: err.to_string(),
+                        }))
+                    }
+                };
+                let mut index = 0;
+                while index < read {
+                    let end = chunk[index..read]
+                        .iter()
+                        .position(|byte| *byte == b'\n')
+                        .map_or(read, |offset| index + offset);
+                    let piece = &chunk[index..end];
+                    if pending.len() < cap {
+                        let take = piece.len().min(cap - pending.len());
+                        pending.extend_from_slice(&piece[..take]);
+                        if take < piece.len() {
+                            cut = true;
+                        }
+                    } else if !piece.is_empty() {
+                        cut = true;
+                    }
+                    let complete = end < read;
+                    if complete {
+                        if let Some(err) = emit(&mut pending, cut, stats) {
+                            return Some(err);
+                        }
+                        pending.clear();
+                        pending.reserve(64);
+                        cut = false;
+                    }
+                    // `end == read` means the chunk ran out mid-line: keep scanning the next one.
+                    index = if complete { end + 1 } else { end };
+                }
+            }
+            if !pending.is_empty() || cut {
+                return emit(&mut pending, cut, stats);
+            }
+            None
+        })
+    }
+
+    /// The one place a `git` child is spawned for a stream: spawn, drain stderr, run `on_stream`,
+    /// wait, and turn a non-zero exit into [`GitError::Failed`].
+    ///
+    /// `on_stream` returns `Some(err)` to stop the run (the callback said so) and `None` on an
+    /// ordinary EOF. Both paths wait for the child, because an unwaited child is a zombie and a
+    /// killed one whose output this thread never drained would leave the stderr thread holding a
+    /// pipe nobody reads.
+    fn stream_pipe<E>(
+        &self,
+        args: &[&str],
+        on_stream: &mut impl FnMut(BufReader<ChildStdout>, &mut StreamStats) -> Option<E>,
+    ) -> Result<StreamStats, E>
+    where
+        E: From<GitError>,
+    {
         let mut command = self.command(args);
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = command.spawn().map_err(|err| {
@@ -390,36 +522,8 @@ impl Git {
         });
 
         let mut stats = StreamStats::default();
-        let mut reader = BufReader::new(stdout);
-        let mut token: Vec<u8> = Vec::new();
-        let mut failure: Option<E> = None;
-        loop {
-            token.clear();
-            match reader.read_until(0, &mut token) {
-                Ok(0) => break,
-                Ok(_) => {}
-                Err(err) => {
-                    failure = Some(E::from(GitError::Io {
-                        context: "git's output".to_owned(),
-                        reason: err.to_string(),
-                    }));
-                    break;
-                }
-            }
-            stats.bytes += u64::try_from(token.len()).unwrap_or(u64::MAX);
-            if token.last() == Some(&0) {
-                token.pop();
-            }
-            stats.max_token_bytes = stats.max_token_bytes.max(token.len());
-            stats.tokens += 1;
-            if let Err(err) = on_token(&token) {
-                failure = Some(err);
-                break;
-            }
-        }
+        let failure = on_stream(BufReader::new(stdout), &mut stats);
 
-        // Every exit path waits for the child: an unwaited child is a zombie, and a killed one whose
-        // output this thread never drained would have left the stderr thread holding the pipe.
         let status = child.wait().map_err(|err| {
             E::from(GitError::Unavailable {
                 reason: format!("waiting for git: {err}"),

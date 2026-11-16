@@ -15,10 +15,14 @@
 //! `--first-parent`, `-v`/`-vv`) accepted on the bare command *and* on every subcommand, because
 //! `--cache-dir` is the same question whichever command asks it (ADR-0006 §3.1).
 //!
-//! What is not here yet, and where it comes from: the frames (mact-by1.9, by1.11, by1.12, by1.14),
-//! the report and `doctor` (mact-by1.13), the git reader (mact-by1.8). Those subcommands are wired
-//! to `not_yet_wired` — they parse, they validate the workspace, and they exit `3` naming the ticket
+//! What is not here yet, and where it comes from: the benchmark panel (mact-by1.12) and the commit
+//! detail frame (mact-by1.14), the report and `doctor` (mact-by1.13). Those subcommands are wired to
+//! `not_yet_wired` — they parse, they validate the workspace, and they exit `3` naming the ticket
 //! instead of panicking or pretending to have produced a report ([`crate::exit`]).
+//!
+//! `fathom tui` is wired for real (mact-by1.9), including the diff view (mact-by1.11): `d` on a row
+//! inside the screen, or `--diff REV` on the command line, which is also what `--plain --diff REV`
+//! prints to a pipe.
 //!
 //! `fathom index` is wired for real (mact-by1.10): it takes the cache lock, builds or updates
 //! `index/`, and publishes its own counters. It is the only command in this crate that writes.
@@ -155,6 +159,33 @@ pub struct CommonArgs {
         help = "Show at most N commits, newest first; a view choice, so it changes nothing about what is cached (ADR-0006 §7.4)"
     )]
     pub limit: Option<std::num::NonZeroUsize>,
+
+    /// Open one commit's diff instead of the timeline (mact-by1.11's key, spelled on the command line).
+    #[arg(
+        long,
+        value_name = "REV",
+        global = true,
+        help = "Open this commit's diff instead of the timeline: a SHA, HEAD, a branch, or a form like HEAD~3. With --plain it prints that diff as text"
+    )]
+    pub diff: Option<String>,
+
+    /// The whole-commit patch cap, in bytes.
+    #[arg(
+        long,
+        value_name = "BYTES",
+        global = true,
+        help = "Stop reading a commit's patch after this many bytes (default 1048576). When it bites the view says so and names this flag, because a silently cut diff reads as a smaller commit"
+    )]
+    pub max_diff_bytes: Option<std::num::NonZeroUsize>,
+
+    /// The per-file patch cap, in bytes.
+    #[arg(
+        long,
+        value_name = "BYTES",
+        global = true,
+        help = "Stop reading one file's patch after this many bytes (default 131072), so one generated file cannot eat the whole commit budget and hide the other files"
+    )]
+    pub max_diff_bytes_per_file: Option<std::num::NonZeroUsize>,
 
     /// `-v` for info, `-vv` for trace; overridden by $RUST_LOG when that is set.
     #[arg(
@@ -437,6 +468,22 @@ fn print_status(boot: &Boot, config: &Config, common: &CommonArgs) {
         out.push('\n');
     }
     print!("{out}");
+}
+
+/// The diff view's byte caps, from the two flags (mact-by1.11).
+///
+/// A view limit rather than a `fathom.toml` key, for the reason every view limit in this crate has:
+/// ADR-0006 §7.2 declares the config keys a reader may read, and a value that changes what a screen shows
+/// without changing any digest belongs on the command line, where the person looking at the screen can see
+/// that they set it.
+#[must_use]
+pub fn diff_limits(common: &CommonArgs) -> crate::diff::Limits {
+    crate::diff::Limits::from_args(
+        common.max_diff_bytes.map(std::num::NonZeroUsize::get),
+        common
+            .max_diff_bytes_per_file
+            .map(std::num::NonZeroUsize::get),
+    )
 }
 
 /// The window `fathom.toml` describes with `--from`/`--to` applied on top (§11.1's flags).

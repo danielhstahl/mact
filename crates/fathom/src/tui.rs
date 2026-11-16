@@ -5,6 +5,7 @@
 //! ```text
 //! tui.rs        the loop, the terminal's lifecycle, the --plain fork, the driver contract
 //!   state.rs    what the screen knows and what the keys do to it — pure, testable on its own
+//!   diff_view   the diff screen's own state: per-commit view state, the file filter, and what the caps say
 //!   cells.rs    values → text: ADR-0008 §6.1's glyphs, §4.5's one bench group, the width budget
 //!   entry.rs    a commit reduced to what the timeline can say: unknown is `None`, never 0
 //!   store_view  the only reader of `.fathom` and of `git`, and the only place either is touched
@@ -38,6 +39,7 @@
 //!   never re-implements either half.
 
 pub mod cells;
+pub mod diff_view;
 pub mod engine;
 pub mod entry;
 pub mod keys;
@@ -57,10 +59,13 @@ use ratatui::DefaultTerminal;
 use crate::boot::Boot;
 use crate::cli::CommonArgs;
 use crate::config::Config;
+use crate::diff as patch;
 use crate::exit::Exit;
+use crate::git::Git;
 use crate::store::{self, now_utc};
 use crate::{info, warn};
 
+use self::diff_view::DiffView;
 use self::engine::{Engine, Event, StoreWork};
 use self::palette::Palette;
 use self::state::{App, Command, Key};
@@ -203,6 +208,7 @@ impl Driver for TerminalDriver {
                 Command::Read => self.engine.request_read(),
                 Command::Index => self.engine.request_index(),
                 Command::Cancel => self.engine.cancel(),
+                Command::Diff(sha) => self.engine.request_diff(sha),
                 Command::Quit => {}
             }
         }
@@ -280,10 +286,19 @@ pub fn run(
     }
 
     let query = crate::cli::window(config, arguments);
+    let limits = crate::cli::diff_limits(arguments);
     let now = now_utc();
 
     if plain {
         let palette = Palette::resolve(term.as_deref(), no_color, true, arguments.no_color);
+        // `--diff REV` is the same key, asked on the command line: with no terminal to press `d` in, the
+        // commit has to be named instead, and the diff it prints is the same rendering, header and caps
+        // and all (mact-by1.11's no-TTY fallback).
+        if let Some(rev) = &arguments.diff {
+            let view = requested_diff(boot, config, rev, limits)?;
+            print!("{}", plain::diff(&view, &palette, plain::WIDTH));
+            return Ok(Exit::Success);
+        }
         let reading = store_view::read(boot, arguments.limit);
         let app = App::new(reading, now);
         print!("{}", plain::table(&app, &palette, plain::WIDTH));
@@ -297,6 +312,12 @@ pub fn run(
     let mut app = App::new(reading, now);
     if let Some(notice) = app.reading.notice.take() {
         app.message = Some(notice);
+    }
+    // `--diff REV` on an interactive run opens the diff view on that commit, read here for the same
+    // reason the rows are read here: the first frame should already be the answer.
+    if let Some(rev) = &arguments.diff {
+        let view = requested_diff(boot, config, rev, limits)?;
+        app.show_diff(view);
     }
     info!(
         "drawing {} rows for {}",
@@ -317,6 +338,7 @@ pub fn run(
         config.clone(),
         query,
         arguments.limit,
+        limits,
     )));
     let mut driver = TerminalDriver::new(terminal, engine, palette);
     let outcome = run_loop(&mut app, &mut driver);
@@ -341,4 +363,31 @@ pub fn now() -> i64 {
 #[must_use]
 pub fn index_in_progress(boot: &Boot) -> Option<store::lock::LockBody> {
     store::lock::read_body(&boot.cache.path)
+}
+
+/// Resolve `--diff REV` to a commit and read its patch before the screen exists.
+///
+/// Three `git` calls, bounded by the byte caps, and the same refusal lines every other git-facing door in
+/// this crate prints: `fathom tui --diff nosuchrev` is a typed refusal with a `fix:`, not a screen with
+/// an empty pane on it.
+fn requested_diff(
+    boot: &Boot,
+    config: &Config,
+    rev: &str,
+    limits: patch::Limits,
+) -> Result<DiffView, crate::FathomError> {
+    let git = Git::open(&boot.workspace).map_err(patch::Error::Git)?;
+    let sha = git.resolve(rev).map_err(patch::Error::Git)?;
+    let mut view = DiffView::open(&sha);
+    view.loading = false;
+    match store_view::diff(boot, config, &sha, limits) {
+        Ok(read) => {
+            view.diff = Some(read);
+            view.settle();
+        }
+        // One line: the status line is one line, and a `fix:` on a second row is a row of the screen
+        // painted over with a sentence.
+        Err(reason) => view.error = Some(reason.to_string().replace('\n', " ")),
+    }
+    Ok(view)
 }

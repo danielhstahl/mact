@@ -73,8 +73,8 @@ pub fn table(app: &App, palette: &Palette, width: usize) -> String {
         prose(
             palette,
             &format!(
-                "{} of {} commits shown \u{b7} d diff, enter detail, b bench are siblings of this \
-                 ticket \u{b7} q quits",
+                "{} of {} commits shown \u{b7} d opens a commit's diff \u{b7} enter detail and b \
+                 bench are siblings of this ticket \u{b7} q quits",
                 app.visible().len(),
                 app.reading.entries.len()
             )
@@ -94,6 +94,64 @@ fn prose(palette: &Palette, line: &str) -> String {
     } else {
         super::state::ascii_line(line)
     }
+}
+
+/// The diff view, as text: the same commit, the same file list, every file's patch, and the same words
+/// about what the caps cut.
+///
+/// `fathom tui --plain --diff <rev>` is the no-TTY answer to the same key, and it differs from the
+/// screen in exactly two ways, both forced by the surface:
+///
+/// * **every file's patch is printed, not just the selected one** — there is no selection without a key
+///   press, and a diff you can only see one file at a time in a pipe is not a diff;
+/// * **git's own bytes go to stdout verbatim** — control characters are marked on the screen, where a
+///   stray escape could repaint the terminal, and left alone here, where the output is a file.
+///
+/// What is *not* different: the header, the file list with its `+`/`−`, the truncation banner, and the
+/// refusal lines all come from [`super::diff_view::DiffView`], the same code the screen renders.
+pub fn diff(view: &super::diff_view::DiffView, palette: &Palette, width: usize) -> String {
+    let mut out = String::new();
+    // A text dump has no cursor and no `t`, so the dump is the *whole* commit: every file in it, and the
+    // header's totals widened to match, which is the same agreement between the list and the `+`/`-` that
+    // the screen keeps by the filter and the key.
+    let mut view = view.clone();
+    view.show_all = true;
+    let (left, right) = view.header(palette);
+    let _ = writeln!(out, "{}", prose(palette, &format!("{left}  {right}")));
+    if let Some(notice) = view.notice() {
+        let _ = writeln!(out, "{}", prose(palette, &notice));
+    }
+
+    let files = view.all_files();
+    if files.is_empty() {
+        return out;
+    }
+    let _ = writeln!(out, "files");
+    for row in view.rows(width.saturating_sub(4), palette, false) {
+        let _ = writeln!(out, "{row}");
+    }
+
+    for (index, file) in files.iter().enumerate() {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "--- {}/{} {}", index + 1, files.len(), file.label());
+        for line in &file.lines {
+            // Verbatim, including the sign character git printed. A `LineKind` is a *styling* decision
+            // for the screen; on stdout the text is the patch.
+            let _ = writeln!(out, "{}", line.text);
+        }
+        for note in file.no_text().into_iter() {
+            let _ = writeln!(out, "{note}");
+        }
+        if file.dropped > 0 {
+            let _ = writeln!(
+                out,
+                "\u{2026} and {} more bytes of this file not kept \u{b7} raise {}",
+                crate::diff::bytes(file.dropped),
+                crate::diff::MAX_DIFF_BYTES_PER_FILE_FLAG
+            );
+        }
+    }
+    out
 }
 
 /// Join one row's cells at their slot offsets, truncating to the slot width and padding to its

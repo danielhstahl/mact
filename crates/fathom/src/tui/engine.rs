@@ -39,6 +39,7 @@ use std::time::Duration;
 
 use crate::boot::Boot;
 use crate::config::Config;
+use crate::diff::{self, CommitDiff};
 use crate::history::Query;
 use crate::store::{self, Run};
 
@@ -79,15 +80,30 @@ pub enum Event {
     IndexCancelled,
     /// A one-line note for the status line.
     Notice(String),
+    /// One commit's patch is here, or the reason it is not.
+    ///
+    /// Boxed for the same reason [`Event::Read`] is: a commit's diff is capped at a megabyte and a
+    /// progress tick is a dozen bytes, and the channel must not price the two the same.
+    Diff {
+        /// Which commit this answers, so a view that has moved on can ignore it.
+        sha: String,
+        /// The patch, or the refusal line to print.
+        outcome: Result<Box<CommitDiff>, String>,
+    },
 }
 
 /// What the worker was asked to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Job {
     /// Read the store and the git identity again.
     Read,
     /// Index, then read.
     Index,
+    /// Read one commit's patch (`d` on the timeline).
+    Diff {
+        /// The commit, as a full SHA.
+        sha: String,
+    },
 }
 
 /// Why an index run did not produce a `Run`.
@@ -121,6 +137,17 @@ pub trait Work: Send + Sync + 'static {
 
     /// Build or refresh the store, checking `cancel` at safe points.
     fn index(&self, cancel: Arc<AtomicBool>) -> Result<Run, WorkError>;
+
+    /// One commit's patch, for the diff view.
+    ///
+    /// Allowed to take a moment — it is three `git` calls on a big repository — and never allowed to
+    /// block the loop, which is what the `d`→`Esc` round trip depends on. The default says "this source
+    /// has no diffs", which is what a stub wants and is a refusal the view prints rather than a blank
+    /// pane.
+    fn diff(&self, sha: &str) -> Result<CommitDiff, String> {
+        let _ = sha;
+        Err("this workspace source cannot read a diff".to_owned())
+    }
 }
 
 /// The real [`Work`]: the boot-validated workspace, the resolved config, and the walk's window.
@@ -133,6 +160,8 @@ pub struct StoreWork {
     query: Query,
     /// `--limit`: how many of the window's commits the screen shows.
     limit: store_view::Limit,
+    /// The diff view's byte caps (`--max-diff-bytes`, `--max-diff-bytes-per-file`).
+    diff_limits: diff::Limits,
     /// The last full reading, so a poll can keep the git identity it already had.
     last: std::sync::Mutex<Option<Reading>>,
 }
@@ -140,12 +169,19 @@ pub struct StoreWork {
 impl StoreWork {
     /// A work handle for one booted workspace.
     #[must_use]
-    pub fn new(boot: Boot, config: Config, query: Query, limit: store_view::Limit) -> Self {
+    pub fn new(
+        boot: Boot,
+        config: Config,
+        query: Query,
+        limit: store_view::Limit,
+        diff_limits: diff::Limits,
+    ) -> Self {
         Self {
             boot,
             config,
             query,
             limit,
+            diff_limits,
             last: std::sync::Mutex::new(None),
         }
     }
@@ -216,6 +252,13 @@ impl Work for StoreWork {
                 WorkError::Failed(reason.to_string())
             }
         })
+    }
+
+    fn diff(&self, sha: &str) -> Result<CommitDiff, String> {
+        store_view::diff(&self.boot, &self.config, sha, self.diff_limits)
+            // One line, with the `fix:` kept: a refusal the user cannot act on is a bug report, not a
+            // status line.
+            .map_err(|reason| reason.to_string())
     }
 }
 
@@ -318,6 +361,13 @@ impl Engine {
                         // if the final poll raced ahead of the last publish.
                         let _ = event_tx.send(Event::Read(Box::new(work.read())));
                     }
+                    Job::Diff { sha } => {
+                        // A patch read is small and bounded (that is what the caps are for), so it runs
+                        // inline on the worker rather than in a thread of its own like an index does.
+                        // Three `git` calls, one answer, and the loop never waited.
+                        let outcome = work.diff(&sha).map(Box::new);
+                        let _ = event_tx.send(Event::Diff { sha, outcome });
+                    }
                 }
             }
         });
@@ -342,6 +392,14 @@ impl Engine {
     pub fn request_index(&self) {
         self.cancel.store(false, Ordering::Relaxed);
         let _ = self.jobs.send(Job::Index);
+    }
+
+    /// Ask for one commit's patch. Idempotent in the sense that matters: a second read of the same
+    /// commit is a second answer to the same question, and the view takes whichever arrives.
+    pub fn request_diff(&self, sha: &str) {
+        let _ = self.jobs.send(Job::Diff {
+            sha: sha.to_owned(),
+        });
     }
 
     /// Ask a running index to stop at its next commit boundary.

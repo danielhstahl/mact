@@ -27,6 +27,9 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::boot::Boot;
+use crate::classify::Classifier;
+use crate::config::Config;
+use crate::diff::{self, CommitDiff};
 use crate::git::Git;
 use crate::metrics::vocab::{ActionState, Column};
 use crate::metrics::Model;
@@ -629,3 +632,25 @@ pub fn is_stale(reading: &Reading) -> bool {
 /// The `fathom index` this screen starts, as `fathom index` would have run it — the same trigger
 /// spelling `run.json` already reserves for the TUI (ADR-0006 §6.2's `trigger` field).
 pub const TRIGGER: &str = "tui";
+
+/// One commit's patch, for the diff view — the second and last place this front end touches `git`.
+///
+/// It belongs here rather than in [`crate::diff`] because `crate::diff` is a reader that knows nothing
+/// about a workspace: this is where the workspace's `git`, the resolved `fathom.toml` and the same
+/// classifier that produced the timeline row's `+`/`−` column are put together and handed to it. That
+/// is what makes the two panes agree: the file list the diff view shows is the history reader's answer
+/// with the same configuration the index used.
+///
+/// # Errors
+///
+/// [`crate::diff::Error`] — the same refusals the reader makes, plus a broken `paths.*` glob.
+pub fn diff(
+    boot: &Boot,
+    config: &Config,
+    sha: &str,
+    limits: diff::Limits,
+) -> Result<CommitDiff, diff::Error> {
+    let git = Git::open(&boot.workspace)?;
+    let classifier = Classifier::try_from_config(config)?;
+    diff::commit(&git, &classifier, sha, limits)
+}

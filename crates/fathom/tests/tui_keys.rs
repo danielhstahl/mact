@@ -32,11 +32,16 @@ fn press_with(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Vec<Comm
     app.on_key(classify(key_with(code, modifiers)))
 }
 
-/// Type a filter, one character at a time, as `App` would have received it.
+/// Type a filter, one character at a time, from the bytes a terminal would have sent.
+///
+/// Every character goes through [`classify`] rather than straight in as [`Key::Text`], because that is
+/// the difference between testing the filter and testing that the filter can be typed at all: `registry`
+/// contains `g` and `t`, which are commands on this screen, and a mapping that ate them would make the
+/// word untypeable — which is exactly the bug the two-layer key model exists to avoid.
 fn type_filter(app: &mut App, text: &str) {
     press(app, KeyCode::Char('/'));
     for character in text.chars() {
-        app.on_key(Key::Text(character));
+        press(app, KeyCode::Char(character));
     }
 }
 
@@ -84,34 +89,28 @@ fn app_with(count: usize) -> App {
 
 #[test]
 fn every_documented_key_is_mapped_and_nothing_else_is() {
+    // The structural half: the keys with no character to misread. A printable character is *not* here,
+    // because a letter means different things on the two screens and only the screen decides (see
+    // `letters_are_the_screens_to_decide`, and `keys.rs` for why that split is not tidiness).
     for (code, expected) in [
-        (KeyCode::Char('j'), Key::Down),
         (KeyCode::Down, Key::Down),
-        (KeyCode::Char('k'), Key::Up),
         (KeyCode::Up, Key::Up),
         (KeyCode::PageDown, Key::PageDown),
         (KeyCode::PageUp, Key::PageUp),
-        (KeyCode::Char('g'), Key::Top),
         (KeyCode::Home, Key::Top),
-        (KeyCode::Char('G'), Key::Bottom),
         (KeyCode::End, Key::Bottom),
-        (KeyCode::Char('q'), Key::Quit),
-        (KeyCode::Char('?'), Key::Help),
-        (KeyCode::Char('/'), Key::Filter),
-        (KeyCode::Char('R'), Key::Reindex),
         (KeyCode::Esc, Key::Escape),
-        (KeyCode::Char('d'), Key::Diff),
         (KeyCode::Enter, Key::Detail),
-        (KeyCode::Char('b'), Key::Bench),
         (KeyCode::Backspace, Key::Backspace),
-        (KeyCode::Tab, Key::Ignored),
+        // Tab and Shift-Tab are the diff view's next/previous file, and no filter can contain them.
+        (KeyCode::Tab, Key::NextFile),
+        (KeyCode::BackTab, Key::PrevFile),
         (KeyCode::F(1), Key::Ignored),
     ] {
         assert_eq!(classify(key(code)), expected, "{code:?}");
     }
-    // A printable character with the filter closed is `Text` — which is what `App` ignores until `/`
-    // is open, and what makes it a needle the moment it is.
     assert_eq!(classify(key(KeyCode::Char('x'))), Key::Text('x'));
+    assert_eq!(classify(key(KeyCode::Char('d'))), Key::Text('d'));
     // Ctrl-C is a key in raw mode, not a signal: quitting cleanly is the normal path.
     assert_eq!(
         classify(key_with(KeyCode::Char('c'), KeyModifiers::CONTROL)),
@@ -121,6 +120,53 @@ fn every_documented_key_is_mapped_and_nothing_else_is() {
     let mut release = key(KeyCode::Char('j'));
     release.kind = KeyEventKind::Release;
     assert_eq!(classify(release), Key::Ignored);
+}
+
+#[test]
+fn letters_are_the_screens_to_decide() {
+    // The same byte, two answers, and the `App` in front of each screen is what picks. This is the whole
+    // reason the mapping has two halves: `/registry` has to be typeable, and `t` has to be a command in
+    // the view it belongs to.
+    let mut timeline = app_with(3);
+    press(&mut timeline, KeyCode::Char('j'));
+    assert_eq!(timeline.selection, 1, "j moves on the timeline");
+    // The letters that mean something in the diff view do nothing here, exactly like `x` does: they are
+    // needle characters first, which is what lets `/registry` be typed at all.
+    for code in [KeyCode::Char('n'), KeyCode::Char('p'), KeyCode::Char('t')] {
+        press(&mut timeline, code);
+        assert_eq!(
+            timeline.selection, 1,
+            "{code:?} moves nothing on the timeline"
+        );
+        assert!(timeline.message.is_none(), "{code:?} says nothing here");
+    }
+    // `Tab` cannot be a needle, so it is a command already at the structural layer, and on this screen
+    // it answers by saying which screen wants it.
+    press(&mut timeline, KeyCode::Tab);
+    assert!(timeline
+        .message
+        .clone()
+        .is_some_and(|line| line.contains("d opens one")));
+    // `d` is the one of them that does have a meaning here, and it opens a diff rather than scrolling
+    // one: the ticket's named interaction, and the only new key the timeline had to give up.
+    assert_eq!(press(&mut timeline, KeyCode::Char('d')).len(), 1);
+    assert!(matches!(
+        timeline.screen,
+        fathom::tui::diff_view::Screen::Diff(_)
+    ));
+
+    let mut with_diff = app_with(3);
+    press(&mut with_diff, KeyCode::Char('d'));
+    assert!(matches!(
+        with_diff.screen,
+        fathom::tui::diff_view::Screen::Diff(_)
+    ));
+    press(&mut with_diff, KeyCode::Char('j'));
+    press(&mut with_diff, KeyCode::Char('t'));
+    assert!(
+        with_diff.diff_view().is_some_and(|view| view.show_all),
+        "t is the diff view's noise toggle"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -226,12 +272,12 @@ fn help_opens_on_the_same_key_it_closes_and_esc_also_closes_it() {
     assert!(!app.help, "and the key that opened it closes it");
 }
 
-/// `d`, `enter` and `b` belong to the sibling tickets. They are wired to an answer, not to nothing: the
-/// line names the ticket, so "it did not respond" is never the impression.
+/// `enter` and `b` belong to the sibling tickets (`d` is this epic's own, and mact-by1.11 wired it).
+/// They are wired to an answer, not to nothing: the line names the ticket, so "it did not respond" is
+/// never the impression.
 #[test]
 fn the_sibling_keys_answer_with_the_ticket_that_owns_them() {
     for (code, needle) in [
-        (KeyCode::Char('d'), "mact-by1.11"),
         (KeyCode::Enter, "mact-by1.14"),
         (KeyCode::Char('b'), "mact-by1.12"),
     ] {
@@ -246,13 +292,13 @@ fn the_sibling_keys_answer_with_the_ticket_that_owns_them() {
     }
     // The message is one keypress's worth of life: the next key clears it.
     let mut app = app_with(3);
-    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Char('b'));
     press(&mut app, KeyCode::Char('j'));
     assert!(
         !app.message
             .clone()
             .unwrap_or_default()
-            .contains("mact-by1.11"),
+            .contains("mact-by1.12"),
         "a stale explanation of an earlier key is noise: {:?}",
         app.message
     );
@@ -269,7 +315,6 @@ fn an_undocumented_key_does_nothing_at_all() {
         app.message.clone(),
     );
     assert!(press(&mut app, KeyCode::Char('x')).is_empty());
-    assert!(press(&mut app, KeyCode::Tab).is_empty());
     assert_eq!(
         (
             app.selection,
@@ -278,8 +323,20 @@ fn an_undocumented_key_does_nothing_at_all() {
             app.quit,
             app.message.clone()
         ),
-        before
+        before,
+        "a letter with no meaning here changes nothing at all"
     );
+    // `Tab` is not undocumented any more — it is the diff view's next file — so on the timeline it
+    // answers with where it belongs rather than with silence. Nothing moves either way.
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(
+        (app.selection, app.offset, app.help, app.quit),
+        (before.0, before.1, before.2, before.3)
+    );
+    assert!(app
+        .message
+        .clone()
+        .is_some_and(|line| line.contains("d opens one")));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -316,6 +373,11 @@ fn the_filter_is_live_while_it_is_being_typed_and_committed_by_enter() {
         press(&mut app, KeyCode::Backspace);
     }
     assert_eq!(app.visible().len(), 3, "an empty needle is no needle");
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(
+        app.filter_prompt, None,
+        "the prompt is closed, so the next `/` opens a fresh one"
+    );
     // A SHA works, a full SHA works, an author works, all case-insensitively.
     type_filter(&mut app, "ZEPHYRINE");
     assert_eq!(app.visible().len(), 1);

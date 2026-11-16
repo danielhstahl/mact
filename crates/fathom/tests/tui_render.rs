@@ -350,7 +350,7 @@ fn the_help_overlay_lists_the_key_surface_and_the_glyphs() {
         "PgDn / PgUp",
         "R",
         "re-index",
-        "mact-by1.11",
+        "the selected commit's diff",
         "unknown: nothing was measured here",
         "versus the first parent",
     ] {
@@ -359,6 +359,11 @@ fn the_help_overlay_lists_the_key_surface_and_the_glyphs() {
             "the help should say {needle:?}:\n{screen}"
         );
     }
+    assert!(
+        !screen.contains("mact-by1.11"),
+        "`d` is wired now, so the help must not still be promising that it is somebody else's ticket:\n\
+         {screen}"
+    );
     assert!(app.help);
     app.on_key(Key::Escape);
     assert!(!app.help, "esc closes the overlay");

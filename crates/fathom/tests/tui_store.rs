@@ -306,7 +306,13 @@ fn a_cancelled_index_leaves_a_usable_store_and_says_so() {
     let rows_before = fixture.read().store;
 
     let cancel = Arc::new(AtomicBool::new(true));
-    let work = StoreWork::new(fixture.boot(), Config::default(), Query::new(), None);
+    let work = StoreWork::new(
+        fixture.boot(),
+        Config::default(),
+        Query::new(),
+        None,
+        fathom::diff::Limits::default(),
+    );
     let outcome = work.index(Arc::clone(&cancel));
     let Err(WorkError::Cancelled) = outcome else {
         panic!("a flag raised before the run started must cancel it, not be ignored: {outcome:?}");

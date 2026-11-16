@@ -25,6 +25,7 @@ use ratatui::Frame;
 use crate::mi::score::Band;
 
 use super::cells::{self, Align, ColumnKind, Slot};
+use super::diff_view::{DiffView, Screen};
 use super::entry::Entry;
 use super::palette::Palette;
 use super::state::App;
@@ -60,13 +61,29 @@ pub fn draw(app: &App, frame: &mut Frame, palette: &Palette) {
     ])
     .areas(area);
 
-    draw_header(app, frame, header, palette);
-    draw_table(app, frame, body, palette);
+    // Both screens spend the same four rows — heading, body, status, keys — so a resize behaves the same
+    // way whichever one is up, and the diff view's pane height is derived from the same arithmetic the
+    // scroll clamp uses.
+    match &app.screen {
+        Screen::Timeline => {
+            draw_header(app, frame, header, palette);
+            draw_table(app, frame, body, palette);
+        }
+        Screen::Diff(_) => {
+            let view = app.diff_view();
+            let (left, right) = view.map_or_else(
+                || ("DIFF".to_owned(), String::new()),
+                |view| view.header(palette),
+            );
+            draw_heading(&left, &right, frame, header, palette);
+            draw_panes(view, frame, body, palette);
+        }
+    }
     draw_status(app, frame, status, palette);
     draw_keys(app, frame, keys, palette);
 
     if app.help {
-        draw_help(frame, palette, area);
+        draw_help(app, frame, palette, area);
     }
 }
 
@@ -76,25 +93,64 @@ pub fn draw(app: &App, frame: &mut Frame, palette: &Palette) {
 /// put; if the terminal is too narrow for both, each is clipped in its own cell rather than one pushing
 /// the other off screen.
 fn draw_header(app: &App, frame: &mut Frame, area: Rect, palette: &Palette) {
-    let headline = app.headline();
-    let facts = app.facts();
-    let wanted = Span::raw(&headline).width();
-    // One cell of gutter between the two halves, and the gutter is the first thing to go when the
-    // terminal cannot afford both: a fact squashed to one character is worse than no fact.
-    let head_width = u16::try_from((wanted + 1).min(usize::from(area.width))).unwrap_or(u16::MAX);
-    let [left, right] =
+    draw_heading(&app.headline(), &app.facts(), frame, area, palette);
+}
+
+/// One heading row: bold text on the left, the facts right-aligned on the right.
+fn draw_heading(left: &str, right: &str, frame: &mut Frame, area: Rect, palette: &Palette) {
+    let wanted = Span::raw(left).width();
+    let right_wanted = Span::raw(right).width();
+    // The right half is the one that gets cut first, and the reason is the shape of both headers: on the
+    // timeline the left is `FATHOM act-mcp master@9f31a2c` and on the diff screen it is a whole commit
+    // subject, while the right is a list of facts a reader's eye returns to the same place for. So the
+    // facts keep their room and the subject is what gives way — with a floor, because a heading that has
+    // vanished entirely tells you you are in a very narrow terminal and nothing else.
+    let floor = 12.min(usize::from(area.width));
+    let room = usize::from(area.width);
+    let gutter = if right_wanted == 0 {
+        0
+    } else {
+        right_wanted + 1
+    };
+    let head_width = u16::try_from(
+        (wanted + 1)
+            .min(room.saturating_sub(gutter).max(floor).min(room))
+            .min(room),
+    )
+    .unwrap_or(u16::MAX);
+    let [l, r] =
         Layout::horizontal([Constraint::Length(head_width), Constraint::Min(0)]).areas(area);
 
+    let left = if wanted > usize::from(head_width) {
+        super::plain::fit(
+            left,
+            usize::from(head_width),
+            Align::Left,
+            palette.ellipsis(),
+        )
+    } else {
+        left.to_owned()
+    };
     Paragraph::new(Line::from(Span::styled(
-        headline,
+        left,
         Style::default().add_modifier(Modifier::BOLD),
     )))
-    .render(left, frame.buffer_mut());
+    .render(l, frame.buffer_mut());
     // Right-aligned, as the mock draws it: the repository's identity is a label and the facts are the
     // answer, and an answer that ends at the right edge is one eye can find again on every frame. A
     // fact list too long for what is left loses its tail, which is the least important half.
+    let right = if right_wanted > usize::from(area.width) - usize::from(head_width) {
+        super::plain::fit(
+            right,
+            usize::from(area.width) - usize::from(head_width),
+            Align::Left,
+            palette.ellipsis(),
+        )
+    } else {
+        right.to_owned()
+    };
     Paragraph::new(Line::from(Span::styled(
-        facts,
+        right,
         Style::default().add_modifier(if palette.colour {
             Modifier::ITALIC
         } else {
@@ -102,7 +158,164 @@ fn draw_header(app: &App, frame: &mut Frame, area: Rect, palette: &Palette) {
         }),
     )))
     .alignment(Alignment::Right)
-    .render(right, frame.buffer_mut());
+    .render(r, frame.buffer_mut());
+}
+
+/// The diff screen's two panes: the file list on the left, the patch on the right, in one bordered box
+/// with a shared divider — the mock's shape, drawn as one box rather than two so the border columns line
+/// up at every width.
+fn draw_panes(view: Option<&DiffView>, frame: &mut Frame, area: Rect, palette: &Palette) {
+    let block = Block::default().borders(Borders::ALL);
+    let inner = block.inner(area);
+    block.render(area, frame.buffer_mut());
+    if inner.width < 4 || inner.height < 1 {
+        return;
+    }
+    let total = usize::from(inner.width);
+    // The files pane is a third of the screen, clamped: narrower than that and a path never fits, wider
+    // and the patch is the thing being squeezed out. Below `FILES_MIN + 20` cells there is no honest
+    // two-pane drawing, so the files pane goes away and the patch takes the row.
+    let wanted = (total / 3).clamp(super::diff_view::FILES_MIN, 34);
+    let show_files = total >= super::diff_view::FILES_MIN + 20 && total - wanted >= 20;
+    let divider = if show_files {
+        let x = usize::from(inner.x) + wanted;
+        let buffer = frame.buffer_mut();
+        for row in 0..inner.height {
+            buffer.set_string(
+                u16::try_from(x).unwrap_or(u16::MAX),
+                inner.y.saturating_add(row),
+                "\u{2502}",
+                Style::default().add_modifier(Modifier::DIM),
+            );
+        }
+        buffer.set_string(
+            u16::try_from(x).unwrap_or(u16::MAX),
+            area.y,
+            "\u{252c}",
+            Style::default().add_modifier(Modifier::DIM),
+        );
+        buffer.set_string(
+            u16::try_from(x).unwrap_or(u16::MAX),
+            area.y.saturating_add(area.height.saturating_sub(1)),
+            "\u{2534}",
+            Style::default().add_modifier(Modifier::DIM),
+        );
+        let style = Style::default().add_modifier(Modifier::BOLD);
+        buffer.set_stringn(
+            area.x + 2,
+            area.y,
+            " files ",
+            usize::from(wanted.saturating_sub(2) as u16),
+            style,
+        );
+        buffer.set_stringn(
+            u16::try_from(x + 2).unwrap_or(u16::MAX),
+            area.y,
+            " diff ",
+            usize::MAX,
+            style,
+        );
+        Some(x)
+    } else {
+        let style = Style::default().add_modifier(Modifier::BOLD);
+        frame
+            .buffer_mut()
+            .set_stringn(area.x + 2, area.y, " diff ", usize::MAX, style);
+        None
+    };
+
+    let Some(view) = view else {
+        return;
+    };
+    let buffer = frame.buffer_mut();
+
+    // --- the file pane ---------------------------------------------------------------------------
+    let files_width = divider.map_or(total, |x| x - usize::from(inner.x));
+    if show_files {
+        let rows = view.rows(files_width, palette, true);
+        for (row, text) in rows.into_iter().enumerate().take(usize::from(inner.height)) {
+            let selected = view
+                .shown()
+                .get(row)
+                .is_some_and(|index| *index == view.file);
+            let mut style = Style::default();
+            if selected {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            if !palette.colour && !selected {
+                style = style.add_modifier(Modifier::DIM);
+            }
+            buffer.set_stringn(
+                inner.x,
+                inner
+                    .y
+                    .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
+                text,
+                files_width,
+                style,
+            );
+        }
+    }
+
+    // --- the patch -------------------------------------------------------------------------------
+    let patch_x = divider.map_or(usize::from(inner.x), |x| x + 1);
+    let patch_width = total
+        .saturating_sub(patch_x - usize::from(inner.x) + 1)
+        .max(1);
+    let lines = view.pane_lines();
+    let scroll = view.scroll();
+    if lines.is_empty() && view.loading {
+        // Where the patch will go, not where the pane begins: the file list is the one thing that can
+        // already be answered while `git show` is running, and this is not it.
+        buffer.set_stringn(
+            u16::try_from(patch_x).unwrap_or(u16::MAX),
+            inner.y,
+            format!("reading {} \u{2026}", super::diff_view::short(&view.sha)),
+            patch_width,
+            Style::default().add_modifier(Modifier::DIM),
+        );
+        return;
+    }
+    for row in 0..usize::from(inner.height) {
+        let Some(index) = scroll.checked_add(row) else {
+            break;
+        };
+        let Some((kind, text)) = lines.get(index) else {
+            break;
+        };
+        let painted = super::diff_view::pane_text(text, patch_width, palette);
+        buffer.set_stringn(
+            u16::try_from(patch_x).unwrap_or(u16::MAX),
+            inner
+                .y
+                .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
+            painted,
+            patch_width,
+            line_style(*kind, palette),
+        );
+    }
+}
+
+/// A patch line's style. Colour repeats what the sign character already says (ADR-0008 §6.1's rule, the
+/// diff's own version of it): `+` is green *and* a `+`, so a terminal with colour off still reads the
+/// diff correctly and there is no syntax highlighting pretending to understand the code.
+fn line_style(kind: crate::diff::LineKind, palette: &Palette) -> Style {
+    use crate::diff::LineKind;
+    let style = Style::default();
+    if !palette.colour {
+        return match kind {
+            LineKind::Hunk => style.add_modifier(Modifier::BOLD),
+            LineKind::Meta | LineKind::Context => style.add_modifier(Modifier::DIM),
+            LineKind::Add | LineKind::Delete => style,
+        };
+    }
+    match kind {
+        LineKind::Add => style.fg(Color::Green),
+        LineKind::Delete => style.fg(Color::Red),
+        LineKind::Hunk => style.fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        LineKind::Meta => style.add_modifier(Modifier::DIM),
+        LineKind::Context => style,
+    }
 }
 
 /// The bordered table: one header line of column names and the visible window of rows.
@@ -328,22 +541,37 @@ fn draw_status(app: &App, frame: &mut Frame, area: Rect, palette: &Palette) {
     Paragraph::new(Line::from(Span::styled(line, style))).render(area, frame.buffer_mut());
 }
 
-/// The key line, always visible: the ticket's tight surface and nothing else.
+/// The key line, always visible: the keys of whichever screen is up, and nothing else.
 fn draw_keys(app: &App, frame: &mut Frame, area: Rect, palette: &Palette) {
-    // `3/412`: where the cursor is and how deep the window is. Not the scroll offset — a reader who
-    // wants to know "am I near the top" asks the row number, and one number per screen is one number.
-    let position = if app.visible().is_empty() {
-        String::new()
-    } else {
-        format!("{}/{}  ", app.selection + 1, app.visible().len())
-    };
-    let text = format!(
-        "{position}d diff   enter detail   b bench   / filter   R re-index   ? help   q quit"
-    );
     let style = if palette.colour {
         Style::default().add_modifier(Modifier::BOLD)
     } else {
         Style::default()
+    };
+    let text = match &app.screen {
+        Screen::Timeline => {
+            // `3/412`: where the cursor is and how deep the window is. Not the scroll offset — a reader
+            // who wants to know "am I near the top" asks the row number, and one number per screen is one
+            // number.
+            let position = if app.visible().is_empty() {
+                String::new()
+            } else {
+                format!("{}/{}  ", app.selection + 1, app.visible().len())
+            };
+            format!(
+                "{position}d diff   enter detail   b bench   / filter   R re-index   ? help   q quit"
+            )
+        }
+        Screen::Diff(_) => {
+            // The diff view's own keys, in the order a reader uses them: read, move, change file, leave.
+            let position = app
+                .diff_view()
+                .and_then(DiffView::shown_position)
+                .map_or_else(String::new, |index| format!("{}  ", index + 1));
+            format!(
+                "{position}j/k scroll   n/p file   t all files   g/G ends   d/Esc back   ? help   q quit"
+            )
+        }
     };
     Paragraph::new(Line::from(Span::styled(text, style))).render(area, frame.buffer_mut());
 }
@@ -351,14 +579,62 @@ fn draw_keys(app: &App, frame: &mut Frame, area: Rect, palette: &Palette) {
 /// The `?` overlay: every key this screen answers, and what the glyphs mean.
 ///
 /// The legend is here because ADR-0008 §6.1 pins four action glyphs, three arrows and a caveat marker,
-/// and a reader who meets `◐` for the first time has nowhere else to ask.
-fn draw_help(frame: &mut Frame, palette: &Palette, area: Rect) {
+/// and a reader who meets `◐` for the first time has nowhere else to ask. Which keys are listed depends
+/// on which screen is up: a legend for the screen you are not on is noise, and the diff view's own notes
+/// (first parent, no syntax highlighting in v1, wide lines cut not wrapped) are the things a reader asks
+/// about a diff and has no other place to ask.
+fn draw_help(app: &App, frame: &mut Frame, palette: &Palette, area: Rect) {
     let glyphs = &palette.glyphs;
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
         "keys",
         Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
     )));
+    if matches!(app.screen, Screen::Diff(_)) {
+        for (key, what) in [
+            ("j / k, PgDn / PgUp", "scroll this file's patch"),
+            ("g / G", "top / bottom of this file"),
+            (
+                "n / p, Tab / Shift-Tab",
+                "next / previous file; the list wraps",
+            ),
+            (
+                "t",
+                "show the files the path filters hide, and the totals that go with them",
+            ),
+            ("d / Esc", "back to the timeline, on the row you left"),
+            ("/", "search inside a diff: a later ticket"),
+            ("?", "this help"),
+            ("q / Ctrl-C", "quit"),
+        ] {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{key:<20}"),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(what),
+            ]));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "the diff",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )));
+        for note in [
+            "the patch is git show against the commit's first parent; a root commit diffs against the empty tree",
+            "no syntax highlighting in v1: hunk header, add, delete, context and file header are distinguished and nothing else",
+            "long lines are cut with a marker, never wrapped, so a wrapped line is never mistaken for two",
+            "tabs, carriage returns and control bytes are shown as marks, so what you read is what the file holds",
+            "the +/- column and this file list count the same files; t widens both",
+        ] {
+            lines.push(Line::from(Span::styled(
+                format!("  {note}"),
+                Style::default().add_modifier(Modifier::DIM),
+            )));
+        }
+        draw_help_box(frame, palette, area, lines);
+        return;
+    }
     for (key, what) in [
         ("j / k, up / down", "one commit newer / older"),
         ("PgDn / PgUp", "one screen"),
@@ -368,10 +644,7 @@ fn draw_help(frame: &mut Frame, palette: &Palette, area: Rect) {
             "filter by sha, author or message; enter applies, esc clears",
         ),
         ("R", "re-index now; esc cancels a running index"),
-        (
-            "d",
-            "diff of the selected commit (mact-by1.11, not wired yet)",
-        ),
+        ("d", "the selected commit's diff; d or esc comes back"),
         ("enter", "commit detail (mact-by1.14, not wired yet)"),
         ("b", "benchmark panel (mact-by1.12, not wired yet)"),
         ("?", "this help"),
@@ -436,11 +709,19 @@ fn draw_help(frame: &mut Frame, palette: &Palette, area: Rect) {
         Style::default().add_modifier(Modifier::DIM),
     )));
 
+    draw_help_box(frame, palette, area, lines);
+}
+
+/// The help overlay's box: centred, as large as the screen allows and as small as the text needs, and
+/// gone entirely on a screen too small to read it in. Shared by both screens' legends so `?` looks the
+/// same whichever key line it came from.
+fn draw_help_box(frame: &mut Frame, palette: &Palette, area: Rect, lines: Vec<Line>) {
+    let _ = palette;
     let block = Block::default().borders(Borders::ALL).title(Span::styled(
         " help ( ? or esc ) ",
         Style::default().add_modifier(Modifier::BOLD),
     ));
-    let width = area.width.saturating_sub(2).min(84);
+    let width = area.width.saturating_sub(2).min(100);
     let height = area
         .height
         .saturating_sub(2)
@@ -457,6 +738,7 @@ fn draw_help(frame: &mut Frame, palette: &Palette, area: Rect) {
     Clear.render(popup, frame.buffer_mut());
     Paragraph::new(lines)
         .block(block)
+        .scroll((0, 0))
         .render(popup, frame.buffer_mut());
 }
 

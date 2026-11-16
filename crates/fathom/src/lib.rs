@@ -35,12 +35,18 @@
 //!   (ADR-0005 §6, and the rationale is in `crates/fathom/Cargo.toml`).
 //! * [`history`] — the git reader (mact-by1.8): a rev range in, one entry per commit out with its
 //!   per-file change list, `+`/`−` totals and modes.
+//! * [`diff`] — one commit's patch (mact-by1.11): `git show` for a single commit, streamed and capped,
+//!   with the file list read from [`history`] so the two panes of the diff view cannot disagree.
 //! * [`classify`] — the one path classifier ADR-0007 §7.1 shares between the `+`/`−` column and the
 //!   MI column, so one row's two columns always describe the same file set.
 //!
-//! Still absent on purpose: the screens above the timeline (mact-by1.11/.12/.14), `report` and
-//! `doctor` (mact-by1.13). The subcommands that will call them already parse and validate: they exit `3`
-//! with the ticket that owns them rather than pretending.
+//! The diff view (mact-by1.11) is the second screen: `d` on a row, or `--diff REV`, and [`diff`]'s
+//! answer goes into a two-pane view whose state machine is [`tui::diff_view`] — the same shape as the
+//! timeline's, with its own keys, its own filter and its own honesty about what the byte caps cut.
+//!
+//! Still absent on purpose: the screens above the timeline (mact-by1.12's benchmark panel,
+//! mact-by1.14's commit detail), `report` and `doctor` (mact-by1.13). The subcommands that will call
+//! them already parse and validate: they exit `3` with the ticket that owns them rather than pretending.
 //!
 //! ## Two rules this crate keeps
 //!
@@ -71,6 +77,7 @@ pub mod boot;
 pub mod classify;
 pub mod cli;
 pub mod config;
+pub mod diff;
 pub mod exit;
 pub mod git;
 pub mod history;
@@ -113,4 +120,10 @@ pub enum FathomError {
     /// terminal is not a reason to lose the table.
     #[error("{0}")]
     Terminal(String),
+
+    /// A commit's diff could not be read (see [`crate::diff`], mact-by1.11): git does not know the
+    /// revision, the repository is unreadable, or a `paths.*` glob will not compile. Every variant
+    /// already carries its `fix:` line.
+    #[error(transparent)]
+    Diff(#[from] crate::diff::Error),
 }
