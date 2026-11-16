@@ -41,6 +41,19 @@ toml = { workspace = true }
 # ticket asks fathom's refusals to mirror `act_mcp::config`'s style, and that style is thiserror.
 thiserror = { workspace = true }
 
+# No git library, on purpose, and this is the same refusal act-mcp's manifest records (ADR-0003) and
+# ADR-0005 §6 turns into a rule: `git2`/`libgit2-sys` are on the forbidden list for this crate.
+# Fathom reads history through the `git` CLI with `std::process::Command` (`src/git.rs`) — act shells
+# out to git anyway, every gate fathom needs (`rev-parse`, `log --raw --numstat -z`, `diff-tree`) is a
+# CLI subcommand, the ADR's numbers are *defined* against `git diff --numstat` so reading git's own
+# bytes is the reference rather than an approximation of one, and libgit2 would put a C build
+# dependency into five release targets (two musl) to save nothing. ADR-0006 §5 refuses sqlite with the
+# same argument, so the reader stays as C-free as the server.
+#
+# The deferred list from act-mcp's manifest still applies: no `uuid`, no `reqwest`. New dependencies
+# for the store (`sha2`, and `globset` if the classifier in `src/classify.rs` ever wants gitignore's
+# dialect instead of the smaller one it implements) arrive with the ticket that consumes them.
+
 [dev-dependencies]
 tempfile = { workspace = true }
 

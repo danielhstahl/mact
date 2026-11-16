@@ -23,11 +23,21 @@
 //!   crate may not own a subscriber (see rule 1 below).
 //! * [`exit`] — what each process status promises.
 //!
-//! The modules the epic adds live beside these: the evidence reader ([`metrics`], mact-by1.6 — the
-//! one that exists), the git reader (mact-by1.8), the MI analyser (mact-by1.7), the store
-//! (mact-by1.10), the screens (mact-by1.9/.11/.12/.14), `report` and `doctor` (mact-by1.13). The
-//! rest are absent on purpose, and the subcommands that will call them already parse and validate:
-//! they exit `3` with the ticket that owns them rather than pretending.
+//! The modules the epic adds beside these:
+//!
+//! * [`metrics`] — the evidence reader (mact-by1.6): `.evidence` in, one typed row per SHA out.
+//! * [`git`] — the git CLI itself: opening a repository, the version floor, the streamed
+//!   `NUL`-separated calls, and the typed refusals. `git` is a subprocess here, never libgit2
+//!   (ADR-0005 §6, and the rationale is in `crates/fathom/Cargo.toml`).
+//! * [`history`] — the git reader (mact-by1.8): a rev range in, one entry per commit out with its
+//!   per-file change list, `+`/`−` totals and modes.
+//! * [`classify`] — the one path classifier ADR-0007 §7.1 shares between the `+`/`−` column and the
+//!   MI column, so one row's two columns always describe the same file set.
+//!
+//! Still absent on purpose: the MI analyser (mact-by1.7), the store (mact-by1.10), the screens
+//! (mact-by1.9/.11/.12/.14), `report` and `doctor` (mact-by1.13). The subcommands that will call
+//! them already parse and validate: they exit `3` with the ticket that owns them rather than
+//! pretending.
 //!
 //! ## Two rules this crate keeps
 //!
@@ -55,9 +65,12 @@
 #![warn(missing_docs)]
 
 pub mod boot;
+pub mod classify;
 pub mod cli;
 pub mod config;
 pub mod exit;
+pub mod git;
+pub mod history;
 pub mod log;
 pub mod metrics;
 
