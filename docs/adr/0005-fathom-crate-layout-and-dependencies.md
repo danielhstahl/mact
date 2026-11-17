@@ -544,7 +544,20 @@ the letter of this ADR, and why — read this section as an amendment, not a foo
   `crates/**` because `src/**` and `tests/**` would have matched nothing and silently stopped running
   CI at all. `cd.yml` no longer installs `cargo-edit`: with inherited versions there is one line to
   set, and `scripts/set_version.py` sets it *and* checks that every member still inherits (C7's rule)
-  and that `cargo metadata` agrees. The separate `fathom` release job is still mact-by1.16's.
+  and that `cargo metadata` agrees.
+* **mact-by1.16 closed §3's and §11's release debts, and the open question about fathom's artefacts.**
+  `scripts/ci.sh` gained a workspace `build` step (both binaries, named), the three fathom steps
+  (`tui-snapshot`, `fathom-report`, `fathom-doctor`), a `release-workspace` step, and a `release`
+  step that takes `--artefact act-mcp|fathom` and builds one artefact at a time; `cd.yml` now builds,
+  smokes and uploads `mact-<target>.tar.gz` and `fathom-<target>.tar.gz` as separate steps, which
+  answers §Open questions' "own release artefacts, or ride the server's tarball" in favour of its own
+  and keeps §3's rule intact — a `fathom` that will not link cannot hold up a server that already
+  built. §11's "`schemars` stays out of a standalone fathom build" row is no longer a command in a
+  table: `scripts/check_dependency_firewalls.sh` runs `cargo tree` for exactly that (and for every
+  other §6 forbidden name, transitively) inside `scripts/ci.sh supply-chain`, and
+  `scripts/ci_drill.sh`'s `supply-chain-fathom-firewall-crossed` drill breaks it on purpose to prove
+  the check fires. The same script is where §11's "no C dependency anywhere" promise is now checked per
+  shipped target rather than asserted in prose.
 
 Not done here, because they are later tickets and this ADR says so: the ratatui front end (by1.6), the
 evidence scanner (by1.7), git history and `history.jsonl` (by1.8), MI and Halstead (by1.9), the store

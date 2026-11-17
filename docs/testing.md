@@ -32,10 +32,12 @@ What each of those covers, and the order to run them in when something is red, i
 page; the crate boundaries themselves are [ADR-0005](adr/0005-fathom-crate-layout-and-dependencies.md).
 
 `scripts/ci.sh` is the one command CI runs, and it is this section as a script: fmt, clippy
-`-D warnings`, rustdoc, `cargo test --all-features`, the schema checkers, `cargo deny`, and
-a release build that is then run to prove it works. `scripts/ci.sh --help` lists the steps;
-[docs/ci.md](ci.md) documents them, including the `rust-toolchain.toml` pin that makes a
-local run and a CI run the same claim.
+`-D warnings`, a workspace build of both binaries, rustdoc, `cargo test --all-features`, the
+fathom steps (the drawn-screen snapshots, the `report` envelope goldens, and a `report`/`doctor`
+exit-code smoke run against the built binary), the schema checkers, `cargo deny` plus the
+dependency firewalls, and a release build per artefact that is then run to prove it works.
+`scripts/ci.sh --help` lists the steps; [docs/ci.md](ci.md) documents them, including the
+`rust-toolchain.toml` pin that makes a local run and a CI run the same claim.
 
 A few environment quirks worth knowing before the first red build:
 

@@ -76,6 +76,7 @@ jobs:
         run: scripts/install_ci_tools.sh
 
       # The check itself. Everything except the release build, and `--keep-going` so one
-      # red step reports the others instead of hiding them.
+      # red step reports the others instead of hiding them. Same list as ci.yml's check job: this
+      # workflow differs in what it *feeds* the tool (a real dogfood run), not in what it checks.
       - name: ci
-        run: scripts/ci.sh --keep-going fmt clippy doc test schema supply-chain
+        run: scripts/ci.sh --keep-going fmt clippy build doc test tui-snapshot fathom-report fathom-doctor schema supply-chain

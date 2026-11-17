@@ -7,11 +7,14 @@
 # docs/ci.md says which step and why.
 #
 # Two jobs:
-#   check   — the whole suite: fmt, clippy -D warnings, rustdoc, cargo test, schema
-#             validation, cargo deny. No docker and no act on the runner, and none needed:
-#             tests/e2e is the pipeline proof (docs/testing.md §1).
-#   release — the release build for every platform this project ships, from the commit
-#             `check` approved, smoke-tested by scripts/smoke_binary.sh and uploaded.
+#   check   — the whole suite: fmt, clippy -D warnings, the workspace build, rustdoc, cargo test,
+#             the fathom snapshot and headless steps, schema validation, cargo deny and the
+#             dependency firewalls. No docker and no act on the runner, and none needed: tests/e2e
+#             is the pipeline proof (docs/testing.md §1).
+#   release — the release build for every platform this project ships, from the commit `check`
+#             approved: cargo deny again (the same gate, beside the binaries it now governs), the
+#             workspace release build, then the two artefacts — `act-mcp` and `fathom` — each
+#             smoke-tested by its own script and uploaded under its own name.
 
 name: CI
 
@@ -101,7 +104,7 @@ jobs:
       # The check itself. Everything except the release build, and `--keep-going` so one
       # red step reports the others instead of hiding them.
       - name: ci
-        run: scripts/ci.sh --keep-going fmt clippy doc test schema supply-chain
+        run: scripts/ci.sh --keep-going fmt clippy build doc test tui-snapshot fathom-report fathom-doctor schema supply-chain
 
   release:
     name: release build (${{ matrix.target }})
@@ -145,17 +148,46 @@ jobs:
       - name: target
         run: rustup target add "${{ matrix.target }}"
 
+      - name: tools
+        # cargo-deny only: this job's gate is the supply-chain step, and it runs none of the python
+        # second opinions. Pinned version, pinned sha256, same script the check job uses.
+        run: scripts/install_ci_tools.sh --deny-only
+
+      # The supply-chain gate again, in the job that builds the artefacts and not only in the job that
+      # ran the tests: an artefact is shippable because of the graph it was built from, and this matrix
+      # is the only place the musl and macOS triples are ever resolved. `--keep-going` because a
+      # deny.toml failure and a release-profile compile failure are two different questions and a
+      # build should answer both. `release-workspace` is the release profile over all three crates, so
+      # a failure that only appears unoptimised is red before anything is packaged.
+      - name: supply-chain gate and workspace release build
+        run: scripts/ci.sh --keep-going supply-chain release-workspace
+
+      # Both artefacts here, in one step: CI's job is to say "this commit ships neither", whereas
+      # cd.yml — the one that actually publishes — builds, smokes and uploads each in its own step so
+      # a fathom that will not link cannot hold up the server (ADR-0005 §3).
       - name: release build and smoke test
         run: scripts/ci.sh release
 
-      # The binary, its `--version` output and its sha256, exactly as smoke_binary.sh
-      # produced them. (`download-artifact` drops the exec bit; re-chmod after download.)
-      - name: upload
+      # The binaries, their `--version` output and their sha256, exactly as the smoke scripts produced
+      # them. (`download-artifact` drops the exec bit; re-chmod after download.) Two names, and one
+      # `dist/<binary>/` directory each: the two binaries share one `release/` directory, and one
+      # artefact's digest must not quietly overwrite the other's.
+      - name: upload act-mcp
         uses: actions/upload-artifact@v4
         with:
           name: act-mcp-${{ matrix.target }}
           path: |
             target/${{ matrix.target }}/release/act-mcp
-            target/${{ matrix.target }}/release/dist/version.txt
-            target/${{ matrix.target }}/release/dist/sha256.txt
+            target/${{ matrix.target }}/release/dist/act-mcp/version.txt
+            target/${{ matrix.target }}/release/dist/act-mcp/sha256.txt
+          if-no-files-found: error
+
+      - name: upload fathom
+        uses: actions/upload-artifact@v4
+        with:
+          name: fathom-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/fathom
+            target/${{ matrix.target }}/release/dist/fathom/version.txt
+            target/${{ matrix.target }}/release/dist/fathom/sha256.txt
           if-no-files-found: error

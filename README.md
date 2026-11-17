@@ -991,16 +991,19 @@ scripts/ci.sh --keep-going          # what CI's check job runs
 scripts/install_ci_tools.sh         # cargo-deny + python jsonschema, pinned
 ```
 
-`fmt`, `clippy -D warnings`, `rustdoc` (broken intra-doc links are errors), `cargo test
---all-features`, schema validation of `schema/*.json` and the evidence tree, `cargo deny`,
-and a release build that is smoke-tested by running it.
+`fmt`, `clippy -D warnings`, a workspace `build` (both binaries), `rustdoc` (broken intra-doc links
+are errors), `cargo test --all-features`, the fathom steps (drawn-screen snapshots, the `report`
+envelope goldens and a `report`/`doctor` exit-code smoke over a sample evidence tree), schema
+validation of `schema/*.json` and the evidence tree, `cargo deny` plus the dependency firewalls,
+and a release build per artefact that is smoke-tested by running it.
 [docs/ci.md](docs/ci.md) documents each step, the pipeline, the supply-chain policy, and
 `scripts/ci_drill.sh`, which proves every one of those checks can actually fail.
 
 The GitHub workflow is `.github/workflows/ci.yml`: a `check` job that calls
-`scripts/ci.sh --keep-going …` and a `release` job that builds and smoke-tests the binary
-for `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`. It contains no check logic —
-logic lives in `scripts/`, which is also what makes it runnable before you push.
+`scripts/ci.sh --keep-going …` and a `release` job that gates on `cargo deny`, builds the workspace
+in release, and smoke-tests and uploads both artefacts — `act-mcp-<target>` and `fathom-<target>` —
+for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and `aarch64-apple-darwin`. It contains no
+check logic — logic lives in `scripts/`, which is also what makes it runnable before you push.
 
 Everything above runs with no docker and no `act`. The one check that needs the real thing is
 a manual/nightly step, because a stub can never contradict an assumption about the tool it

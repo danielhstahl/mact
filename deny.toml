@@ -1,7 +1,11 @@
-# cargo-deny configuration for act-mcp — the supply-chain half of `scripts/ci.sh`.
+# cargo-deny configuration for the act-mcp workspace — the supply-chain half of `scripts/ci.sh`.
 #
 # Checked by `scripts/ci.sh supply-chain` (and by nothing else, so this file is the whole
-# policy). The four checks cargo-deny runs are all on, and each has a different job here:
+# policy). Since ADR-0005 there is one lockfile and one policy for three crates, which means this
+# file is also fathom's supply-chain gate: `cargo deny` reads the workspace, so `ratatui`,
+# `crossterm`, `rustix`, `toml`, `sha2` and everything they bring are checked by the four rules
+# below and not by a second, easier one. The four checks cargo-deny runs are all on, and each has
+# a different job here:
 #
 #   licenses    — every dependency ships a licence this project may ship. New crates mean a
 #                 new line in `[licenses] allow`: an explicit, reviewable act.
@@ -13,6 +17,11 @@
 #                 others do not, which is why `scripts/ci.sh --offline` runs the three
 #                 that work without it and says which one it skipped.
 #
+# Two things this file cannot say, said by `scripts/check_dependency_firewalls.sh` beside it: the
+# *shape* of the graph (fathom must not carry the server's crates transitively, the server must not
+# carry the TUI's) and the absence of a C toolchain from the build graph. Both are read from
+# `cargo tree`, not from a lockfile filter.
+#
 # `cargo audit` is not configured: cargo-deny's advisories check reads the same database
 # and also covers licences, bans and sources.
 
@@ -21,13 +30,21 @@
 # ---------------------------------------------------------------------------
 [graph]
 # The platforms `scripts/ci.sh release` builds and the release job publishes: linux on
-# x86_64 and aarch64. Naming them is not a speed tweak — the default is *every* target,
-# and every target pulls in the uefi/windows-only corner of the ecosystem (r-efi, the
-# winapi family) whose licences and advisories this project cannot exercise and does not
-# ship. Anything that shows up on a linux build is checked; anything that can only show up
-# on a platform we do not ship is not this file's problem, and a build for a new platform
-# starts by adding its triple here.
-targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+# x86_64 and aarch64, and `aarch64-apple-darwin`, which `cd.yml` has always shipped and which was
+# missing from this list until mact-by1.16 — the gap mattered exactly when fathom landed, because
+# the resolved graph is not the same on every shipped platform (crossterm's input layer pulls
+# rustix and `linux-raw-sys` on linux, chrono's `iana-time-zone` pulls `core-foundation-sys` on
+# macOS) and a target nobody names is a target whose crates nobody checks. Naming them is not a
+# speed tweak — the default is *every* target, and every target pulls in the uefi/windows-only
+# corner of the ecosystem (r-efi, the winapi family) whose licences and advisories this project
+# cannot exercise and does not ship. Anything that shows up on a shipped build is checked; anything
+# that can only show up on a platform we do not ship is not this file's problem, and a build for a
+# new platform starts by adding its triple here.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+]
 # The same graph `cargo build --all-features` resolves, so a feature-gated dependency is
 # checked even though the default build does not link it.
 all-features = true
@@ -43,6 +60,15 @@ private = { ignore = true }
 # Permissive, OSI-disclosed licences only. The list is exactly the set the current graph
 # needs — the day a new one shows up, the build says so and someone decides whether it is
 # acceptable rather than a script shrugging.
+#
+# What fathom's tree needed added here: nothing (checked for mact-by1.16). The whole TUI stack —
+# `ratatui`, its `ratatui-core`/`-widgets`/`-crossterm`/`-macros` parts, `crossterm`, `mio`, `lru`,
+# `compact_str`, `strum`, `instability` — is MIT or MIT/Apache-2.0, and so are `toml`, `sha2`,
+# `yaml-rust2` and macOS's `core-foundation-sys`. One spelling is worth naming because it looks like
+# a gap and is not: `rustix` and `linux-raw-sys` (crossterm's linux input layer) declare
+# "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT", which this list satisfies through plain
+# Apache-2.0/MIT, so `Apache-2.0 WITH LLVM-exception` stays out — it would only be needed by a crate
+# whose *only* licence is the exception, and that is a decision with a name on it, not a reformat.
 allow = [
     "Apache-2.0",
     "BSD-2-Clause",
@@ -70,9 +96,28 @@ confidence-threshold = 0.8
 # crate is visible instead of folklore.
 multiple-versions = "warn"
 highlight = "all"
+# The duplicates that warning names today, so "is this new one ours?" is a lookup rather than an
+# argument: `getrandom` 0.3/0.4 (two generations of the ecosystem), `syn` 2/3 (two generations of
+# proc-macro infrastructure, both in use at once across the graph) and `winnow` 0.7/1.0 (both
+# inside `toml` 0.9, which pins one parser per sub-crate). None of the three is needless in a way
+# this workspace can fix from a manifest, and a check that is red on day one is a check nobody
+# reads. `scripts/ci.sh` prints `cargo tree -d` beside them so a *new* duplicate of a big crate is
+# visible instead of folklore.
 # A wildcard requirement (`dependency = "*"`) resolves to whatever is newest, which is the
 # opposite of a pinned lockfile. This crate declares versions; keep it that way.
 wildcards = "deny"
+# …with one exception, and it is the workspace's own edge. `act-evidence` is a path dependency of
+# both of its siblings and carries no version requirement: the version is *inherited* from
+# `[workspace.package]` (ADR-0005 §8 — one version for one repo, which `scripts/set_version.py`
+# writes once per release), so `crates/act-mcp/Cargo.toml` and `crates/fathom/Cargo.toml` each say
+# `act-evidence = { workspace = true }`, and cargo-deny reads an absent requirement as `*`. That
+# wildcard can never be a lie — the path *is* the source, and a release train that bumped the
+# version would have to bump this requirement in step or `cargo` itself refuses the build — while a
+# third-party `"*"` is exactly the drift this rule exists to catch. `allow-wildcard-paths` is the
+# narrow answer: cargo-deny exempts path and git dependencies only in *private* packages, and all
+# three members are `publish = false` (C4/C7), so nothing publishable gets a wildcard through. A
+# wildcard on a crates.io dependency still fails the check.
+allow-wildcard-paths = true
 # Dev-dependencies are part of the graph cargo-deny sees, and this repo's dev-dependencies
 # (`reqwest`, a second `rmcp` feature set) are the ones most likely to drift.
 multiple-versions-include-dev = true
@@ -121,6 +166,22 @@ reason = "ADR-0007 §6: the Rust grammar for the rejected front end"
 name = "tree-sitter-python"
 reason = "ADR-0007 §6: the Python grammar for the rejected front end"
 
+# The third refusal of the same shape, written down for the first time in this file by mact-by1.16
+# while confirming that nothing in the workspace needs a C compiler (see
+# `scripts/check_dependency_firewalls.sh --check no-C`). ADR-0003 refused `libgit2` for the server and
+# ADR-0005 §6 put `git2`/`libgit2-sys` on fathom's forbidden list — fathom reads history through the
+# `git` CLI precisely so that `git log --raw --numstat -z`, which is what ADR-0008's numbers are
+# *defined* against, stays the reference rather than an approximation of one — but a forbidden name in
+# a manifest checker is not a ban in the graph. Banning both here is what makes the refusal survive a
+# transitive edge.
+[[bans.deny]]
+name = "git2"
+reason = "ADR-0003 and ADR-0005 §6: history is read with the git CLI, not libgit2; a C build dependency would be a release blocker on the musl and macOS cross targets for no measured gain"
+
+[[bans.deny]]
+name = "libgit2-sys"
+reason = "ADR-0003: the C library behind git2 — banned with its front end so the refusal cannot be reversed from the far side of a dependency edge"
+
 # ---------------------------------------------------------------------------
 # Where dependencies may come from
 # ---------------------------------------------------------------------------
@@ -141,9 +202,33 @@ version = 2
 # and `reqwest`/`tempfile` are as much part of this build as `axum` is).
 # A yanked release is one the author withdrew after shipping; depending on it is a bug.
 yanked = "deny"
-# Empty on purpose. An ignored advisory needs its id, the reason, and the version that
+# Empty but for one entry, and that entry needs its id, the reason, and the version that
 # makes it moot — e.g.
 #
 #   [[advisories.ignore]]
 #   id = "RUSTSEC-0000-0000"
 #   reason = "the vulnerable function is never called: <where>, and the upgrade is blocked by <what>"
+
+# `chrono` is `unmaintained` (RUSTSEC-2026-0543: "all versions are affected", recommended
+# replacements `jiff` or `time`), so there is no version that makes it moot and pretending otherwise
+# would be the rot this whole file exists to prevent. What the waiver actually says:
+#
+# * it is an `unmaintained` advisory, not a vulnerability: nothing is disclosed, nothing is exploitable,
+#   and cargo-deny's own classification is "the maintainer stopped". A *vulnerability* advisory on
+#   `chrono` would be a different id, would not be ignored by this entry, and would fail the build.
+# * the surface this repo uses is four things — `DateTime<Utc>`, `Utc::now()`, RFC 3339
+#   parse/`to_rfc3339_opts(SecondsFormat::Millis, true)`, and `Duration::from_std` for run retention
+#   (`act-evidence/src/records.rs`, `act-mcp/src/registry/{lock,task,state}.rs`, `runner/run.rs`,
+#   `evidence/benchmark/act_log.rs`) — and the envelope field it produces, `started_at`, is frozen by
+#   ADR-0002 §2's envelope table (UTC, always `Z`, canonicalised to milliseconds), so the spelling
+#   cannot drift either.
+# * it is not free to leave: `chrono` is `act-evidence`'s dependency (so both binaries and the
+#   contract crate carry it) and `rmcp` 3.9's, which is pinned (see Cargo.toml); the lockfile is
+#   committed, so "upgrade" here is a migration of the envelope's time type across all three crates,
+#   not a `cargo update`. That is a ticket with a design question in it — which of `jiff`/`time`
+#   spells ADR-0002's timestamps — and it is not a CI waiver's to answer silently.
+# * it reached fathom's tree with this epic (`act-evidence` is fathom's one shared dependency), which
+#   is why the waiver is recorded now rather than left for the next release to discover.
+[[advisories.ignore]]
+id = "RUSTSEC-2026-0543"
+reason = "chrono is unmaintained with no fixed version (informational advisory, not a vulnerability); the surface used is DateTime<Utc>/Utc::now()/RFC3339 parse+format in act-evidence::records and act-mcp's registry and runner, and the field it writes (`started_at`, ADR-0002 §2) is frozen to one UTC spelling. Removing it is a migration of ADR-0002's envelope time type to jiff or time across three crates plus rmcp 3.9's own dependency — a ticket of its own, re-checked when any chrono *vulnerability* advisory appears (different id, still fatal) or when the envelope's schema_version goes to 2 (the only revision allowed to change the type)"
