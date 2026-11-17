@@ -403,6 +403,28 @@ fn a_store_behind_the_checkout_says_which_commit_it_is_missing() {
     fx.cleanup();
 }
 
+/// The digest a reader is told has to match `fathom index --status`'s has to be the whole thing: seven
+/// characters of a `fk1:` digest is the scheme and three hex, which matches nothing — and it is the
+/// number the "the config digests keep moving" fix asks someone to compare.
+#[test]
+fn the_cache_check_prints_the_config_digest_the_store_actually_carries() {
+    let fx = workspace("digest");
+    fx.index();
+    let digest = fx.store().meta.config.digest.as_str().to_owned();
+    assert!(
+        digest.starts_with("fk1:") && digest.chars().count() > 10,
+        "the store's own digest: {digest}"
+    );
+    let report = fx.doctor();
+    let check = report.check("cache").expect("the check ran");
+    assert!(
+        check.details.iter().any(|detail| detail.contains(&digest)),
+        "the cache check carries the store's config digest in full ({digest}):\n{:?}",
+        check.details
+    );
+    fx.cleanup();
+}
+
 #[test]
 fn a_row_that_will_not_parse_is_counted_and_named() {
     let fx = workspace("damaged");

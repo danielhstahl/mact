@@ -931,7 +931,7 @@ fn store_notes(mut check: Check, store: &Store, head: Option<&str>) -> Check {
                 store.meta.schema_version,
                 store.meta.writer.name,
                 store.meta.writer.version,
-                short(store.meta.config.digest.as_str())
+                store.meta.config.digest.as_str()
             ),
         )
         .note(
@@ -1305,7 +1305,11 @@ fn one_line(text: &str) -> String {
     text.lines().next().unwrap_or(text).trim().to_owned()
 }
 
-/// Seven hex, for a digest or a SHA inside a sentence.
+/// Seven hex, for a SHA inside a sentence (ADR-0008 §6.2's display form).
+///
+/// SHAs only. A `fk1:` digest is not a SHA: seven characters of one is `fk1:42e` — the prefix and three
+/// hex, which matches nothing a reader can compare it against, including `fathom index --status`, which
+/// prints the whole value.
 fn short(text: &str) -> String {
     text.chars().take(7).collect()
 }
