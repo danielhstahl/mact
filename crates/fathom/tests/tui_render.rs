@@ -25,6 +25,7 @@ use fathom::tui::state::{App, IndexState, Key};
 use fathom::tui::store_view::{Reading, StoreState};
 use ratatui::backend::TestBackend;
 use ratatui::layout::Position;
+use ratatui::text::Span;
 use ratatui::Terminal;
 
 /// The instant every fixture row is aged from, so `age` is a constant rather than a clock.
@@ -389,6 +390,83 @@ fn the_plain_table_is_the_same_table_in_ascii() {
     }
     for sha in ["9f31a2c", "71cd0ae", "3b8e9f1"] {
         assert!(table.contains(sha), "{sha} missing from:\n{table}");
+    }
+}
+
+/// The plain surface builds a row as one string, so a wide-character subject moves every column after it
+/// when the fitter pads by characters. The screen hides that mistake by drawing each cell at its own x;
+/// a pipe has no such mercy, and `fathom --plain | cut` is a thing people do.
+#[test]
+fn the_plain_table_pads_by_cells_not_characters() {
+    let data_rows = |table: &str| -> Vec<String> {
+        table
+            .lines()
+            .filter(|line| {
+                // A row starts with the seven-hex display SHA and a space — which is not the same as
+                // "starts with hex characters", since `bench*` and `3 of 3 commits` both do.
+                line.chars().take(7).all(|c| c.is_ascii_hexdigit())
+                    && line.chars().nth(7) == Some(' ')
+            })
+            .map(str::to_owned)
+            .collect()
+    };
+    let ascii = plain::table(&App::new(populated(), NOW), &Palette::plain(), plain::WIDTH);
+    let mut wide = populated();
+    wide.entries[0].subject = "修复: 缓存目录的解析".to_owned();
+    let table = plain::table(&App::new(wide, NOW), &Palette::plain(), plain::WIDTH);
+
+    let rows = data_rows(&table);
+    assert_eq!(rows.len(), 3, "the fixture's three commits:\n{table}");
+    for row in &rows {
+        assert_eq!(
+            Span::raw(row).width(),
+            plain::WIDTH,
+            "a data row is the table's width whatever its subject is wide:\n{row}"
+        );
+    }
+
+    // And the columns are not merely inside the width: the same cell of the same commit sits in the same
+    // cells whether or not its subject needed double-wide characters.
+    let column_of = |row: &str, needle: &str| -> usize {
+        let start = row
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} missing from {row:?}"));
+        Span::raw(&row[..start]).width()
+    };
+    let first = data_rows(&ascii).into_iter().next().expect("ascii twin");
+    for needle in ["87.4%^", "+412 -98", "82.1"] {
+        assert_eq!(
+            column_of(&rows[0], needle),
+            column_of(&first, needle),
+            "{needle:?} did not move when the subject went wide:\nwide: {}\nascii: {first}",
+            rows[0]
+        );
+    }
+}
+
+/// [`plain::fit`] is the one fitter both surfaces use, so its arithmetic is worth pinning directly: `{width}`
+/// in a format string counts characters, and cells are not characters.
+#[test]
+fn the_column_fitter_counts_cells() {
+    use fathom::tui::cells::Align;
+    use fathom::tui::plain::fit;
+    assert_eq!(fit("ab", 5, Align::Left, '…'), "ab   ");
+    assert_eq!(fit("ab", 5, Align::Right, '…'), "   ab");
+    assert_eq!(fit("日本", 5, Align::Left, '…'), "日本 ");
+    assert_eq!(fit("日本", 5, Align::Right, '…'), " 日本");
+    // Too wide: cut on a character boundary, one marker's width short, and the row is still `width`.
+    assert_eq!(fit("日本語", 5, Align::Left, '…'), "日本…");
+    for text in ["ab", "日本", "日本語", "🎯 notes"] {
+        for width in [1, 2, 3, 7, 40] {
+            for align in [Align::Left, Align::Right] {
+                let fitted = fit(text, width, align, '…');
+                assert_eq!(
+                    Span::raw(&fitted).width(),
+                    width,
+                    "fit({text:?}, {width}, {align:?}) is exactly the column: {fitted:?}"
+                );
+            }
+        }
     }
 }
 

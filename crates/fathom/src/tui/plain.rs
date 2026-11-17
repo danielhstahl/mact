@@ -300,26 +300,34 @@ pub fn fit(text: &str, width: usize, align: Align, ellipsis: char) -> String {
         return String::new();
     }
     if Span::raw(text).width() <= width {
-        return match align {
-            Align::Left => format!("{text:<width$}"),
-            Align::Right => format!("{text:>width$}"),
-        };
+        return pad(text, width, align);
     }
-    // Truncate on character boundaries by display width, one cell short of the column to make room for
-    // the marker, then pad the short side back out.
+    // Truncate on character boundaries by display width, one marker's width short of the column to make
+    // room for it, then pad the short side back out.
+    let marker = Span::raw(ellipsis.to_string()).width();
     let mut kept = String::new();
     let mut used = 0;
     for character in text.chars() {
         let step = Span::raw(character.to_string()).width();
-        if used + step > width.saturating_sub(1) {
+        if used + step + marker > width {
             break;
         }
         kept.push(character);
         used += step;
     }
     kept.push(ellipsis);
+    pad(&kept, width, align)
+}
+
+/// Pad `text` to `width` *cells*. `format!("{text:<width$}")` is not this: `{width}` counts characters,
+/// so a CJK subject padded that way arrives three cells wider than the column it was fitted to — invisible
+/// where a cell is drawn at its own x (the screen truncates it there) and a shifted table everywhere a
+/// row is one concatenated string (the plain surface, and every pipe it is redirected into).
+#[must_use]
+fn pad(text: &str, width: usize, align: Align) -> String {
+    let gap = " ".repeat(width.saturating_sub(Span::raw(text).width()));
     match align {
-        Align::Left => format!("{kept:<width$}"),
-        Align::Right => format!("{kept:>width$}"),
+        Align::Left => format!("{text}{gap}"),
+        Align::Right => format!("{gap}{text}"),
     }
 }
