@@ -20,6 +20,7 @@
 use crate::metrics::Model;
 
 use super::bench::{self, Commit, Evidence, Panel};
+use super::detail::{self, Detail, Snapshot};
 use super::diff_view::{DiffView, Screen};
 use super::engine::Event;
 use super::entry::Entry;
@@ -33,6 +34,9 @@ use super::store_view::{is_stale, Reading, StoreState};
 /// commits you are comparing", which is what anyone is actually doing, and the least recently opened
 /// one goes when the thirteenth arrives.
 const DIFF_CACHE: usize = 12;
+
+/// How many detail snapshots are kept, for the same reason and the same bound as [`DIFF_CACHE`].
+const DETAIL_CACHE: usize = 6;
 
 /// A key, already reduced to what the timeline means by it.
 ///
@@ -66,6 +70,8 @@ pub enum Key {
     Diff,
     /// `enter`.
     Detail,
+    /// `s` in the detail view: the focused pane's next sort order.
+    SortCycle,
     /// `b`.
     Bench,
     /// `f`: show the runs retention excluded, and the reason each one was.
@@ -95,6 +101,8 @@ pub enum Command {
     Cancel,
     /// Read one commit's patch ([`crate::diff`]) — the `d` key, and nothing else asks for it.
     Diff(String),
+    /// Read one commit's detail snapshot ([`super::store_view::detail`]) — the `enter` key.
+    Detail(String),
     /// Leave the alternate screen.
     Quit,
 }
@@ -185,6 +193,12 @@ pub struct App {
     pub bench_band: f64,
     /// Every diff view this run has opened, by full SHA, so backing out and in keeps the reader's place.
     pub diffs: std::collections::BTreeMap<String, DiffView>,
+    /// Every detail view this run has opened, by full SHA (mact-by1.14).
+    ///
+    /// Cached like the diff views because a snapshot costs a row read, a parent read and one block
+    /// read per touched file: cheap once, pointless twice, and a screen that re-reads on every `enter`
+    /// loses the reader's place in the panes for no reason.
+    pub details: std::collections::BTreeMap<String, Detail>,
     /// A counter, not a clock: it orders the diff views for eviction without reading time (rule: nothing
     /// in here can block, and nothing here tells the time).
     touches: u64,
@@ -216,6 +230,7 @@ impl App {
             bench: None,
             bench_band: bench::DEFAULT_BAND_PERCENT,
             diffs: std::collections::BTreeMap::new(),
+            details: std::collections::BTreeMap::new(),
             touches: 0,
             model: Model::embedded(),
             visible: Vec::new(),
@@ -236,6 +251,9 @@ impl App {
         }
         if let Some(panel) = self.bench.as_mut() {
             panel.set_height(bench::pane_height(height));
+        }
+        for detail in self.details.values_mut() {
+            detail.set_height(detail::pane_height(height));
         }
     }
 
@@ -314,7 +332,7 @@ impl App {
     #[must_use]
     pub fn diff_view(&self) -> Option<&DiffView> {
         match &self.screen {
-            Screen::Timeline | Screen::Bench(_) => None,
+            Screen::Timeline | Screen::Bench(_) | Screen::Detail(_) => None,
             Screen::Diff(sha) => self.diffs.get(sha),
         }
     }
@@ -322,7 +340,7 @@ impl App {
     /// The open diff view, mutably.
     pub fn diff_view_mut(&mut self) -> Option<&mut DiffView> {
         match &self.screen {
-            Screen::Timeline | Screen::Bench(_) => None,
+            Screen::Timeline | Screen::Bench(_) | Screen::Detail(_) => None,
             Screen::Diff(sha) => self.diffs.get_mut(sha),
         }
     }
@@ -331,7 +349,7 @@ impl App {
     #[must_use]
     pub fn bench_view(&self) -> Option<&Panel> {
         match &self.screen {
-            Screen::Timeline | Screen::Diff(_) => None,
+            Screen::Timeline | Screen::Diff(_) | Screen::Detail(_) => None,
             Screen::Bench(sha) => self.bench.as_ref().filter(|panel| panel.sha == *sha),
         }
     }
@@ -339,8 +357,87 @@ impl App {
     /// The open bench panel, mutably.
     pub fn bench_view_mut(&mut self) -> Option<&mut Panel> {
         match &self.screen {
-            Screen::Timeline | Screen::Diff(_) => None,
+            Screen::Timeline | Screen::Diff(_) | Screen::Detail(_) => None,
             Screen::Bench(sha) => self.bench.as_mut().filter(|panel| panel.sha == *sha),
+        }
+    }
+
+    /// Open the detail view of one commit, returning the commands the loop must run — one
+    /// [`Command::Detail`] the first time, nothing after, because the snapshot is cached.
+    ///
+    /// The read is the engine's job for the same reason the patch is: a snapshot is a row, a parent row,
+    /// and one block per file the commit touched, and a keypress must not wait on any of them.
+    pub fn open_detail(&mut self, sha: &str) -> Vec<Command> {
+        self.touches += 1;
+        let touch = self.touches;
+        let mut commands = Vec::new();
+        if let Some(view) = self.details.get_mut(sha) {
+            view.touched = touch;
+        } else {
+            let mut view = Detail::open(sha);
+            view.set_height(detail::pane_height(self.height));
+            self.details.insert(sha.to_owned(), view);
+            commands.push(Command::Detail(sha.to_owned()));
+            self.evict_details(sha);
+        }
+        self.screen = Screen::Detail(sha.to_owned());
+        commands
+    }
+
+    /// Leave the detail view. The snapshot stays cached, which is the point of the cache.
+    pub fn close_detail(&mut self) {
+        self.screen = Screen::Timeline;
+    }
+
+    /// Show a detail snapshot that has already been read — `--detail REV`, which opens the screen
+    /// `enter` opens without the read `enter` would have asked the engine for.
+    pub fn show_detail(&mut self, snapshot: Snapshot) {
+        self.touches += 1;
+        let sha = snapshot.sha.clone();
+        let mut view = Detail::read(snapshot);
+        view.touched = self.touches;
+        view.set_height(detail::pane_height(self.height));
+        self.details.insert(sha.clone(), view);
+        self.evict_details(&sha);
+        self.screen = Screen::Detail(sha);
+    }
+
+    /// The open detail view, if the detail screen is up.
+    #[must_use]
+    pub fn detail_view(&self) -> Option<&Detail> {
+        match &self.screen {
+            Screen::Timeline | Screen::Diff(_) | Screen::Bench(_) => None,
+            Screen::Detail(sha) => self.details.get(sha),
+        }
+    }
+
+    /// The open detail view, mutably.
+    pub fn detail_view_mut(&mut self) -> Option<&mut Detail> {
+        match &self.screen {
+            Screen::Timeline | Screen::Diff(_) | Screen::Bench(_) => None,
+            Screen::Detail(sha) => self.details.get_mut(sha),
+        }
+    }
+
+    /// Forget the least recently opened detail views once the cache is over its bound.
+    fn evict_details(&mut self, keep: &str) {
+        if self.details.len() <= DETAIL_CACHE {
+            return;
+        }
+        let mut oldest: Option<(u64, String)> = None;
+        for (sha, view) in &self.details {
+            if sha == keep {
+                continue;
+            }
+            if oldest
+                .as_ref()
+                .is_none_or(|(touch, _)| view.touched < *touch)
+            {
+                oldest = Some((view.touched, sha.clone()));
+            }
+        }
+        if let Some((_, sha)) = oldest {
+            self.details.remove(&sha);
         }
     }
 
@@ -519,6 +616,10 @@ impl App {
                 let sha = sha.clone();
                 self.on_bench_key(&sha, key)
             }
+            Screen::Detail(sha) => {
+                let sha = sha.clone();
+                self.on_detail_key(&sha, key)
+            }
         }
     }
 
@@ -613,7 +714,19 @@ impl App {
                     }
                 }
             }
-            Key::Detail => self.message = Some(sibling("detail", "mact-by1.14")),
+            // The ticket's named interaction, and the one that answers "what exactly got worse?": a
+            // three-pane view of the commit's coverage, MI and diffstat. The read goes to the engine, so
+            // pressing `enter` on a commit whose blocks are not in memory still cannot delay a key.
+            Key::Detail => {
+                let selected = self.selected().map(|entry| entry.sha.clone());
+                match selected {
+                    Some(sha) => commands.extend(self.open_detail(&sha)),
+                    None => {
+                        self.message =
+                            Some("nothing is selected, so there is nothing to open".to_owned());
+                    }
+                }
+            }
             // The ticket's second named interaction, and the cheap one: every number the panel shows is
             // already in the reading, so there is nothing to ask the engine for.
             Key::Bench => match self.selected().map(|entry| entry.sha.clone()) {
@@ -638,6 +751,15 @@ impl App {
             Key::ToggleFiles => {
                 self.message =
                     Some("t shows the files a diff is hiding \u{b7} d opens one first".to_owned());
+            }
+            Key::SortCycle => {
+                // Not this screen's key, and `timeline_letter` does not map `s` at all, so this arm is
+                // reached only if a caller hands it in directly. The answer is the same one the diff and
+                // bench screens give: the key exists, on another screen.
+                self.message = Some(
+                    "s sorts a pane inside the commit detail view \u{b7} enter opens one"
+                        .to_owned(),
+                );
             }
             Key::Backspace | Key::Text(_) | Key::Ignored => {}
         }
@@ -693,13 +815,19 @@ impl App {
                         .to_owned(),
                 );
             }
-            Key::Detail => self.message = Some(sibling("detail", "mact-by1.14")),
+            Key::Detail => commands.extend(self.open_detail(sha)),
             // `b` from a diff is the same commit's other panel, and it costs nothing: no read, no
             // command, one screen swap.
             Key::Bench => self.open_bench(sha),
             Key::ExcludedRuns => {
                 self.message = Some(
                     "f belongs to the benchmark panel \u{b7} b opens it for this commit".to_owned(),
+                );
+            }
+            Key::SortCycle => {
+                self.message = Some(
+                    "s sorts a pane inside the commit detail view \u{b7} enter opens one"
+                        .to_owned(),
                 );
             }
             Key::Reindex => {
@@ -759,7 +887,7 @@ impl App {
                         .to_owned(),
                 );
             }
-            Key::Detail => self.message = Some(sibling("detail", "mact-by1.14")),
+            Key::Detail => commands.extend(self.open_detail(sha)),
             Key::Reindex => {
                 self.message =
                     Some("re-index is the timeline's key \u{b7} Esc goes back to it".to_owned());
@@ -769,7 +897,98 @@ impl App {
                     "n/p/t belong to the diff view \u{b7} d opens it for this commit".to_owned(),
                 );
             }
+            Key::SortCycle => {
+                self.message = Some(
+                    "s sorts a pane inside the commit detail view \u{b7} enter opens one"
+                        .to_owned(),
+                );
+            }
             Key::Backspace | Key::Text(_) | Key::Ignored => {}
+        }
+        commands
+    }
+
+    /// The commit detail view's answer to a key (mact-by1.14).
+    ///
+    /// The cursor belongs to one pane and the *file* belongs to all three: `j`/`k` move inside the focused
+    /// pane, and whichever file the cursor lands on is what the other two panes highlight. That is the
+    /// whole reason the three are drawn together, so it is the first behaviour a key test has to pin.
+    fn on_detail_key(&mut self, sha: &str, key: Key) -> Vec<Command> {
+        let mut commands = Vec::new();
+        let key = detail_letter(key);
+        // The screen is only up while its own SHA is the screen's SHA, so this borrow cannot clash with
+        // the `self` methods the navigation arms below call.
+        if let Some(view) = self.details.get_mut(sha) {
+            self.touches += 1;
+            view.touched = self.touches;
+            match key {
+                // `Tab`/`Shift-Tab` (and `n`/`p`) choose a *pane* here, not a file: the file is chosen by
+                // the cursor, and the other panes follow it.
+                Key::NextFile => view.cycle_pane(1),
+                Key::PrevFile => view.cycle_pane(-1),
+                Key::Down => view.move_cursor(1),
+                Key::Up => view.move_cursor(-1),
+                Key::Top => view.jump(true),
+                Key::Bottom => view.jump(false),
+                Key::SortCycle => view.cycle_sort(),
+                Key::ToggleFiles => view.toggle_inputs(),
+                _ => {}
+            }
+        }
+        match key {
+            // `enter` twice is the round trip the ticket is judged on: open from the timeline, back out to
+            // the same selected commit. Nothing here moves the timeline's cursor.
+            Key::Escape | Key::Detail => self.close_detail(),
+            Key::Diff => commands.extend(self.open_diff(sha)),
+            Key::Bench => self.open_bench(sha),
+            Key::Help => self.help = !self.help,
+            Key::Quit => commands.push(Command::Quit),
+            Key::PageDown | Key::PageUp => {
+                // A page is a pane-full of rows, not a screen-full: the frame spends four rows on the
+                // heading, the status pair and the key line, and paging by the frame's height would skip
+                // the rows that fell off a pane's bottom.
+                let step =
+                    isize::try_from(usize::from(detail::pane_height(self.height))).unwrap_or(1);
+                if let Some(view) = self.details.get_mut(sha) {
+                    view.move_cursor(if matches!(key, Key::PageUp) {
+                        -step
+                    } else {
+                        step
+                    });
+                }
+            }
+            Key::Reindex => {
+                self.message =
+                    Some("re-index is the timeline's key \u{b7} Esc goes back to it".to_owned());
+            }
+            Key::ExcludedRuns => {
+                self.message = Some(
+                    "f belongs to the benchmark panel \u{b7} b opens it for this commit".to_owned(),
+                );
+            }
+            Key::Filter => {
+                self.message = Some(
+                    "search inside the detail view is a later ticket \u{b7} / filters the timeline"
+                        .to_owned(),
+                );
+            }
+            Key::Text(other) => {
+                self.message = Some(format!(
+                    "{other} is not a key in the detail view \u{b7} ? lists them"
+                ));
+            }
+            // Already handled above, on the cached view itself: these are the keys that move a cursor or
+            // a focus, and they have no `self`-level work to do.
+            Key::Down
+            | Key::Up
+            | Key::Top
+            | Key::Bottom
+            | Key::NextFile
+            | Key::PrevFile
+            | Key::SortCycle
+            | Key::ToggleFiles
+            | Key::Backspace
+            | Key::Ignored => {}
         }
         commands
     }
@@ -900,6 +1119,19 @@ impl App {
                 }
                 Vec::new()
             }
+            // The snapshot lands in the cached view whether or not this screen is still up: the reader may
+            // have backed out while the reads were in flight, and the next `enter` should find the answer
+            // already there. An evicted view drops the answer, as a diff's does.
+            Event::Detail { sha, outcome } => {
+                let Some(view) = self.details.get_mut(&sha) else {
+                    return Vec::new();
+                };
+                match outcome {
+                    Ok(snapshot) => view.set_snapshot(*snapshot),
+                    Err(reason) => view.set_error(reason),
+                }
+                Vec::new()
+            }
         }
     }
 
@@ -1013,6 +1245,10 @@ impl App {
             Screen::Bench(_) => self
                 .bench_view()
                 .map_or_else(String::new, |panel| panel.status(palette)),
+            Screen::Detail(_) => self.detail_view().map_or_else(
+                || "commit detail: reading \u{2026}".to_owned(),
+                |view| view.status(palette),
+            ),
         }
     }
 
@@ -1114,10 +1350,6 @@ impl App {
     }
 }
 
-fn sibling(view: &str, ticket: &str) -> String {
-    format!("the {view} view is {ticket} — same epic, not wired yet; it is not lost, it is next")
-}
-
 /// What the timeline means by a typed character ([`Key::Text`]), and what it leaves alone.
 ///
 /// This is the second half of [`super::keys::classify`]'s job, and it lives with the screen that has the
@@ -1143,6 +1375,36 @@ fn timeline_letter(key: Key) -> Key {
     }
 }
 
+/// What the commit detail view means by a typed character.
+///
+/// `enter` and `Esc` arrive as named keys and are handled in [`App::on_detail_key`]; the letters are
+/// mapped here so the help overlay and the "not a key" message can both mean what they say. `Tab` and
+/// `Shift-Tab` arrive as `n`/`p`'s named keys and choose a *pane*, which is why they are not here.
+fn detail_letter(key: Key) -> Key {
+    match key {
+        Key::Text(character) => match character {
+            'j' => Key::Down,
+            'k' => Key::Up,
+            'g' => Key::Top,
+            'G' => Key::Bottom,
+            'q' => Key::Quit,
+            '?' => Key::Help,
+            's' => Key::SortCycle,
+            // `i` for the MI inputs; `t` also works because it is the "show what the pane was hiding"
+            // key everywhere else in this front end, and a reader who reaches for it is not wrong.
+            'i' | 't' => Key::ToggleFiles,
+            'n' => Key::NextFile,
+            'p' => Key::PrevFile,
+            'd' => Key::Diff,
+            'b' => Key::Bench,
+            'f' => Key::ExcludedRuns,
+            'R' => Key::Reindex,
+            other => Key::Text(other),
+        },
+        other => other,
+    }
+}
+
 /// What the bench panel means by a typed character.
 ///
 /// `f` is this screen's own key — the failed-run overlay — and it is a letter rather than a modifier
@@ -1161,6 +1423,8 @@ fn bench_letter(key: Key) -> Key {
             'b' => Key::Bench,
             'd' => Key::Diff,
             'f' => Key::ExcludedRuns,
+            // `s` belongs to the detail view; this screen still has to say so rather than be quiet.
+            's' => Key::SortCycle,
             other => Key::Text(other),
         },
         other => other,
@@ -1183,6 +1447,8 @@ fn diff_letter(key: Key) -> Key {
             'p' => Key::PrevFile,
             't' => Key::ToggleFiles,
             'b' => Key::Bench,
+            // `s` belongs to the detail view; the screens that do not sort still have to say so.
+            's' => Key::SortCycle,
             'R' => Key::Reindex,
             other => Key::Text(other),
         },

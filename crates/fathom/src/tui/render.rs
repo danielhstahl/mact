@@ -25,6 +25,7 @@ use ratatui::Frame;
 use crate::mi::score::Band;
 
 use super::cells::{self, Align, ColumnKind, Slot};
+use super::detail::{self, Detail};
 use super::diff_view::{DiffView, Screen};
 use super::entry::Entry;
 use super::palette::Palette;
@@ -58,7 +59,19 @@ pub fn draw(app: &App, frame: &mut Frame, palette: &Palette) {
     // missing, which run it all came from — and one row at a hundred columns cut it off mid-clause, which
     // is the one place a reader goes to check whether a cell is a regression. The other two screens'
     // status lines are one row long by construction, so they do not pay for the extra row.
-    let status_rows = 1 + u16::from(matches!(app.screen, Screen::Bench(_)));
+    // How many rows the status gets is a property of the screen, not of the message:
+    //
+    // * the timeline and the diff view fit one row by construction;
+    // * the bench panel's line is a sentence about the selected metric — verdict, samples, spread,
+    //   provenance — and one row at a hundred columns cut it mid-clause;
+    // * the detail view's line *is* the focused pane's footer, and that footer has to carry a caveat, a
+    //   run bill and a provenance stamp in one breath. Two rows cut the coverage bill before the caveats,
+    //   which are the one part a reader must never lose, so this screen pays for three.
+    let status_rows = match app.screen {
+        Screen::Detail(_) => 3,
+        Screen::Bench(_) => 2,
+        Screen::Timeline | Screen::Diff(_) => 1,
+    };
     let [header, body, status, keys] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(3),
@@ -92,6 +105,15 @@ pub fn draw(app: &App, frame: &mut Frame, palette: &Palette) {
             );
             draw_heading(&left, &right, frame, header, palette);
             draw_bench(app, frame, body, palette);
+        }
+        Screen::Detail(_) => {
+            let view = app.detail_view();
+            let (left, right) = view.map_or_else(
+                || ("DETAIL".to_owned(), String::new()),
+                |view| view.header_line(palette),
+            );
+            draw_heading(&left, &right, frame, header, palette);
+            draw_detail(view, frame, body, palette);
         }
     }
     draw_status(app, frame, status, palette);
@@ -414,6 +436,158 @@ fn draw_bench(app: &App, frame: &mut Frame, area: Rect, palette: &Palette) {
     }
 }
 
+/// The commit detail view (mact-by1.14): three bordered panes stacked, one shared file selection.
+///
+/// The drawing is dumb on purpose — [`super::detail::Detail::frame`] has already decided the order, the
+/// columns, the window, the marks and the footer text — so everything that could be wrong about a
+/// measurement is wrong in one module and not in the paint. What this function owns is geometry: how many
+/// rows each pane gets and which marks get which modifiers.
+fn draw_detail(view: Option<&Detail>, frame: &mut Frame, area: Rect, palette: &Palette) {
+    let Some(view) = view else {
+        return;
+    };
+    // No snapshot yet — still reading, or refused. Three panes of nothing would be three boxes saying the
+    // same nothing, so the frame is one box that says the one thing there is to say, with the fix in it.
+    if view.snapshot.is_none() {
+        let block = Block::default().borders(Borders::ALL).title(Span::styled(
+            format!(" detail \u{b7} {} \u{b7} ", detail::short(&view.sha)),
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        let lines = view
+            .notice()
+            .into_iter()
+            .map(|line| {
+                Line::from(Span::styled(
+                    line,
+                    Style::default().add_modifier(Modifier::DIM),
+                ))
+            })
+            .collect::<Vec<Line>>();
+        Paragraph::new(lines)
+            .block(block)
+            .render(area, frame.buffer_mut());
+        return;
+    }
+
+    let heights = view.heights;
+    let areas: [Rect; 3] = Layout::vertical([
+        Constraint::Length(heights[0]),
+        Constraint::Length(heights[1]),
+        Constraint::Length(heights[2]),
+    ])
+    .areas(area);
+    for (pane, pane_area) in super::detail::Pane::ALL.iter().zip(areas) {
+        draw_detail_pane(view, *pane, frame, pane_area, palette);
+    }
+}
+
+/// One detail pane: border, title with its provenance aside, column row, rows, footer.
+fn draw_detail_pane(
+    view: &Detail,
+    pane: super::detail::Pane,
+    frame: &mut Frame,
+    area: Rect,
+    palette: &Palette,
+) {
+    let drawn = view.frame(pane, usize::from(area.width.saturating_sub(2)), palette);
+    let focused = view.focus == pane;
+    // The title keeps the sort and the provenance token it was built with; when the row is too short the
+    // aside goes first, because the pane's *name* is what tells you which of the three you are reading.
+    let room = usize::from(area.width.saturating_sub(4)).max(4);
+    let mut title = format!(" {} ", drawn.title);
+    let aside = Span::raw(drawn.aside.clone()).width();
+    if Span::raw(&title).width() + aside + 2 > room {
+        let left = room.saturating_sub(aside + 2).max(4);
+        title = format!(
+            "{} ",
+            super::plain::fit(
+                title.trim_end(),
+                left,
+                super::cells::Align::Left,
+                palette.ellipsis()
+            )
+        );
+    }
+    let titled = format!("{title}{}", drawn.aside);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            titled,
+            Style::default().add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            format!(" {} ", drawn.footer),
+            Style::default().add_modifier(Modifier::DIM),
+        ))
+        .border_style(if focused {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().add_modifier(Modifier::DIM)
+        });
+    let inner = block.inner(area);
+    block.render(area, frame.buffer_mut());
+    if inner.width < 4 || inner.height == 0 {
+        return;
+    }
+    let buffer = frame.buffer_mut();
+
+    // The column row, underlined, so a reader can tell it from the data without a second line of border.
+    let columns = drawn
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(index, cell)| {
+            let _ = index;
+            Span::raw(cell.clone())
+        })
+        .collect::<Vec<Span>>();
+    Paragraph::new(Line::from(columns).style(Style::default().add_modifier(Modifier::UNDERLINED)))
+        .render(
+            Rect {
+                x: inner.x,
+                y: inner.y,
+                width: inner.width,
+                height: 1,
+            },
+            buffer,
+        );
+
+    let body = usize::from(inner.height.saturating_sub(1));
+    for (row, cell) in drawn.rows.into_iter().enumerate().take(body) {
+        let mut style = Style::default();
+        if cell.cursor {
+            // The focused pane's cursor: bold always, reverse video only where the palette asks for it, so
+            // a terminal that drops colour still shows it (ADR-0008 6.1's rule, applied to a cursor).
+            style = style.add_modifier(Modifier::BOLD);
+            if palette.highlight {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+        } else if cell.marked {
+            // The shared file selection in a pane the cursor is not in: bold, no colour-only signal.
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        if drawn.empty {
+            style = style.add_modifier(Modifier::DIM);
+        }
+        let text = cell
+            .cells
+            .iter()
+            .map(|cell| cell.as_str())
+            .collect::<Vec<&str>>()
+            .join("");
+        buffer.set_stringn(
+            inner.x,
+            inner
+                .y
+                .saturating_add(1)
+                .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
+            text,
+            usize::from(inner.width),
+            style,
+        );
+    }
+}
+
 /// The bordered table: one header line of column names and the visible window of rows.
 fn draw_table(app: &App, frame: &mut Frame, area: Rect, palette: &Palette) {
     let block = Block::default()
@@ -676,6 +850,33 @@ fn draw_keys(app: &App, frame: &mut Frame, area: Rect, palette: &Palette) {
                 "{position}j/k scroll   n/p file   t all files   g/G ends   d/Esc back   ? help   q quit"
             )
         }
+        Screen::Detail(_) => {
+            // The detail view's keys, in the order they get used: move the cursor, move the focus, change
+            // the order, leave. The position is the focused pane's cursor, because that is the number a
+            // reader on this screen is tracking.
+            let position = app.detail_view().map_or_else(String::new, |view| {
+                let pane = view.focus;
+                let count = view.count(pane);
+                if count == 0 {
+                    String::new()
+                } else {
+                    format!("{}/{}  ", view.cursor_index(pane) + 1, count)
+                }
+            });
+            let focus = app.detail_view().map_or_else(String::new, |view| {
+                // A three-letter tag rather than the pane's whole title: the key line has to survive a
+                // hundred columns with eight keys on it, and each pane's name is on its own border.
+                let short = match view.focus {
+                    super::detail::Pane::Coverage => "cov",
+                    super::detail::Pane::Hotspots => "mi",
+                    super::detail::Pane::Diffstat => "diff",
+                };
+                format!("{short}> ")
+            });
+            format!(
+                "{position}{focus}j/k row  Tab pane  s sort  i inputs  d diff  b bench  Esc back  ? help  q quit"
+            )
+        }
         Screen::Bench(_) => {
             // The panel's own keys, and `f` where the diff view's `t` is: the key that shows what the
             // derivation left out.
@@ -714,6 +915,10 @@ fn draw_help(app: &App, frame: &mut Frame, palette: &Palette, area: Rect) {
         "keys",
         Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
     )));
+    if matches!(app.screen, Screen::Detail(_)) {
+        draw_help_box(frame, palette, area, detail_help(app, palette));
+        return;
+    }
     if matches!(app.screen, Screen::Bench(_)) {
         draw_help_box(frame, palette, area, bench_help(app, palette));
         return;
@@ -838,6 +1043,61 @@ fn draw_help(app: &App, frame: &mut Frame, palette: &Palette, area: Rect) {
     )));
 
     draw_help_box(frame, palette, area, lines);
+}
+
+/// The `?` overlay on the commit detail view: the keys of three panes that share one selection, plus
+/// the reading notes the footers have no room for (mact-by1.14).
+fn detail_help(_app: &App, _palette: &Palette) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        "keys",
+        Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+    )));
+    for (key, what) in [
+        ("j / k, PgDn / PgUp", "move the cursor in the focused pane"),
+        (
+            "Tab / Shift-Tab, n / p",
+            "focus the next / previous pane; the cursor moves the other two",
+        ),
+        ("g / G", "first / last row of the focused pane"),
+        ("s", "next sort order for the focused pane"),
+        (
+            "i / t",
+            "show the MI pane's V/G/LOC inputs, which is what a score is made of",
+        ),
+        ("d", "this commit's diff, from here"),
+        ("b", "this commit's benchmark panel, from here"),
+        ("enter / Esc", "back to the timeline, on the row you left"),
+        ("?", "this help"),
+        ("q / Ctrl-C", "quit"),
+    ] {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{key:<20}"),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(what),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "reading these three panes",
+        Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+    )));
+    for note in [
+        "coverage is pooled over the selected runs (sum hit / sum found) — the model's own derivation, not a mean of per-file percentages",
+        "the file records come from the same runs and the same measure; when they do not add up to the pooled number the footer says which one the aggregate publishes",
+        "a file CI measured that this commit did not touch is listed too and marked with a middle dot, because \"what did this commit do to coverage\" can only be answered against what was measured",
+        "MI is the ADR-0007 score of the file at this commit, read from the cached analysis; a dash means no cached analysis, never a score of zero",
+        "\"vs parent\" is the first parent only, so a merge compares against one of its parents and says which",
+        "the diffstat is the filtered list the timeline headline is built from: noise files are in the table and out of the headline, and the footer gives both totals",
+    ] {
+        lines.push(Line::from(Span::styled(
+            format!("  {note}"),
+            Style::default().add_modifier(Modifier::DIM),
+        )));
+    }
+    lines
 }
 
 /// The bench panel's legend: its keys, the marks it draws, and the two things about a benchmark that

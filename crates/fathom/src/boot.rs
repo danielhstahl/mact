@@ -540,6 +540,7 @@ mod tests {
             limit: None,
             diff: None,
             bench: None,
+            detail: None,
             max_diff_bytes: None,
             max_diff_bytes_per_file: None,
             verbose: 0,

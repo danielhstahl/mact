@@ -90,6 +90,16 @@ pub enum Event {
         /// The patch, or the refusal line to print.
         outcome: Result<Box<CommitDiff>, String>,
     },
+    /// One commit's detail snapshot is here, or the reason it is not (mact-by1.14).
+    ///
+    /// Boxed like [`Event::Diff`]: a snapshot carries a row per file a commit touched, and a progress
+    /// tick is a dozen bytes.
+    Detail {
+        /// Which commit this answers.
+        sha: String,
+        /// The snapshot, or the refusal line to print.
+        outcome: Result<Box<super::detail::Snapshot>, String>,
+    },
 }
 
 /// What the worker was asked to do.
@@ -101,6 +111,11 @@ pub enum Job {
     Index,
     /// Read one commit's patch (`d` on the timeline).
     Diff {
+        /// The commit, as a full SHA.
+        sha: String,
+    },
+    /// Read one commit's detail snapshot (`enter` on the timeline, mact-by1.14).
+    Detail {
         /// The commit, as a full SHA.
         sha: String,
     },
@@ -147,6 +162,16 @@ pub trait Work: Send + Sync + 'static {
     fn diff(&self, sha: &str) -> Result<CommitDiff, String> {
         let _ = sha;
         Err("this workspace source cannot read a diff".to_owned())
+    }
+
+    /// Read one commit's detail snapshot (mact-by1.14): per-file coverage, MI hotspots, diffstat.
+    ///
+    /// Bounded work — one row, one parent row, one cached block per touched file — so it runs inline on
+    /// the worker like a patch read, and the loop never waits for it. The default refuses, which is what a
+    /// stub wants.
+    fn detail(&self, sha: &str) -> Result<super::detail::Snapshot, String> {
+        let _ = sha;
+        Err("this workspace source cannot read a commit detail".to_owned())
     }
 }
 
@@ -260,6 +285,10 @@ impl Work for StoreWork {
             // status line.
             .map_err(|reason| reason.to_string())
     }
+
+    fn detail(&self, sha: &str) -> Result<super::detail::Snapshot, String> {
+        store_view::detail(&self.boot, sha)
+    }
 }
 
 /// The handle the loop owns: send jobs, take events.
@@ -368,6 +397,13 @@ impl Engine {
                         let outcome = work.diff(&sha).map(Box::new);
                         let _ = event_tx.send(Event::Diff { sha, outcome });
                     }
+                    Job::Detail { sha } => {
+                        // Same shape as a patch read: a handful of small file reads, inline, and the loop
+                        // carries on painting. The snapshot is store-only, so unlike a diff this never
+                        // touches `git`.
+                        let outcome = work.detail(&sha).map(Box::new);
+                        let _ = event_tx.send(Event::Detail { sha, outcome });
+                    }
                 }
             }
         });
@@ -398,6 +434,13 @@ impl Engine {
     /// commit is a second answer to the same question, and the view takes whichever arrives.
     pub fn request_diff(&self, sha: &str) {
         let _ = self.jobs.send(Job::Diff {
+            sha: sha.to_owned(),
+        });
+    }
+
+    /// Ask for one commit's detail snapshot. Idempotent for the same reason a patch read is.
+    pub fn request_detail(&self, sha: &str) {
+        let _ = self.jobs.send(Job::Detail {
             sha: sha.to_owned(),
         });
     }

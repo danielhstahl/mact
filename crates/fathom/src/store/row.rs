@@ -34,7 +34,15 @@ use super::keys;
 use super::keys::is_commit_id;
 
 /// The row shape version, carried per row so §8's "one stale row, not a whole store" rule works.
-pub const ROW_VERSION: u32 = 1;
+///
+/// `2` adds the `coverage_files` section (mact-by1.14): the per-file `scope:"file"` rows and the
+/// per-run totals the detail view needs and the metric-model row deliberately does not carry. They are
+/// a new section rather than new keys inside `evidence` because `evidence` *is* ADR-0008's row shape,
+/// which is closed in both directions (model, ADR and golden vectors move together or not at all);
+/// the store's own row is allowed an additive section, and this is one. A v1 row is one stale row and
+/// re-derives whole (§8.1: v1 has no migration path and says so), which costs a repository one
+/// re-analyse pass — the blocks survive, only the rows are rewritten.
+pub const ROW_VERSION: u32 = 2;
 
 /// What a row was derived from (§6.4's `sources`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,6 +78,73 @@ impl GitIdentity {
             author_utc: commit.author_utc,
         }
     }
+}
+
+/// The row's `coverage_files` section (mact-by1.14): what the pooled `evidence.coverage` number is
+/// made of.
+///
+/// Two halves, because the detail view's coverage pane has two questions to answer:
+///
+/// * **which files** — `files`, one row per path the selected runs reported, with the counts the rate
+///   was computed from. The pane can then be sorted by rate, by size or by biggest drop, none of which
+///   a pooled percent can be.
+/// * **which runs** — `runs`, one row per `(run, measure)` total that fed the pool, with its
+///   `run_status` and whether it was used at all. This is the pane's audit trail, and it is also how
+///   the pane can say *why* its rows do not add up to its header: a run's `scope:"total"` record is
+///   that run's total and counts files no file record names (ADR-0002 §4.2, ADR-0008 §3.3).
+///
+/// Stored, not recomputed: the alternative is a second walk of `.evidence` every time somebody presses
+/// `enter`, which is the thing the index exists to avoid (§11.4's whole budget).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CoverageSection {
+    /// One entry per file the selected runs reported, path order.
+    pub files: Vec<FileCoverage>,
+    /// One entry per selected run and measure, `run_id` order.
+    pub runs: Vec<RunTotal>,
+}
+
+/// One file's row of [`CoverageSection::files`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileCoverage {
+    /// Workspace-relative path, as the record named it (ADR-0002 `$defs/relpath`: the container's
+    /// `/srv/…` prefix is gone before this build ever sees the string).
+    pub path: String,
+    /// Which measure the counts are — always the row's primary measure.
+    pub measure: String,
+    /// Numerator, pooled over the selected runs that reported this path.
+    pub hit: u64,
+    /// Denominator, same population. `0` is vacuous, and `percent` is absent rather than `0.0`.
+    pub found: u64,
+    /// The rate at the model's one decimal, absent when `found == 0`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub percent: Option<f64>,
+    /// Which runs reported it, sorted.
+    #[serde(default)]
+    pub runs: Vec<String>,
+}
+
+/// One run's total, as [`CoverageSection::runs`] stores it — the store's spelling of
+/// [`crate::metrics::CoverageRunTotal`], deserialisable so a row can be read back.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunTotal {
+    /// Which run.
+    pub run_id: String,
+    /// Its `run_status` verbatim, including the runs that were not used.
+    pub run_status: String,
+    /// `lcov`, `coverage_summary` or `log_scrape`.
+    pub source: String,
+    /// Which measure.
+    pub measure: String,
+    /// Numerator.
+    pub hit: u64,
+    /// Denominator. `0` is vacuous.
+    pub found: u64,
+    /// `scope_total` when the run published its own total, `sum_of_file_records` when the reader
+    /// added its file records up (ADR-0008 §3.3).
+    pub total_source: String,
+    /// Whether this total fed the row's pooled number. False for a superseded run, a non-success run,
+    /// a truncated run or a non-primary measure — all of which the pane still lists, marked.
+    pub used: bool,
 }
 
 /// The row's `mi` section: ADR-0007 §4's aggregate, plus the two things that make its numbers
@@ -108,6 +183,11 @@ pub struct Row {
     /// this commit has no evidence, and `gaps` says which gap that is.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<serde_json::Value>,
+    /// The per-file and per-run coverage behind `evidence.coverage`, stored so the detail view is a
+    /// row read and not a tree walk. Absent on a row written before this section existed — which is
+    /// why [`freshness`] refuses to call an `evidence` section fresh without it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub coverage_files: Option<CoverageSection>,
     /// See [`MiSection`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mi: Option<MiSection>,
@@ -210,6 +290,12 @@ pub fn freshness(
     if same(Section::Evidence)
         && row.sources.evidence_digest == current.evidence_digest
         && (row.evidence.is_some() || current.evidence_digest.is_empty())
+        // A row written before `coverage_files` existed has an `evidence` section and none of its
+        // detail, and nothing else would ever make it re-derive: the evidence digest is unchanged, so
+        // the section that *did* move is the one freshness would wave through. This is the one check
+        // that turns "the store is older than this build" into work instead of a permanently missing
+        // pane.
+        && (row.evidence.is_none() || row.coverage_files.is_some())
     {
         fresh.mark(Section::Evidence);
     }
@@ -227,6 +313,48 @@ pub fn freshness(
 #[must_use]
 pub fn evidence_value(metrics: &CommitMetrics) -> serde_json::Value {
     serde_json::to_value(metrics).unwrap_or(serde_json::Value::Null)
+}
+
+/// The `coverage_files` section, from one commit's read: its per-file rows and its per-run totals.
+///
+/// `None` when neither produced anything, which is the honest spelling of "there is nothing to show"
+/// and keeps a row that has no coverage from carrying an empty section that looks like a truncated
+/// one. `Some` with empty `files` and non-empty `runs` is the everyday shape of an `lcov` run that
+/// published only its total, and the detail view says exactly that rather than drawing an empty table.
+#[must_use]
+pub fn coverage_section(
+    files: &[crate::metrics::CoverageFile],
+    totals: &[crate::metrics::CoverageRunTotal],
+) -> Option<CoverageSection> {
+    if files.is_empty() && totals.is_empty() {
+        return None;
+    }
+    Some(CoverageSection {
+        files: files
+            .iter()
+            .map(|file| FileCoverage {
+                path: file.path.clone(),
+                measure: file.measure.to_string(),
+                hit: file.hit,
+                found: file.found,
+                percent: file.percent,
+                runs: file.runs.clone(),
+            })
+            .collect(),
+        runs: totals
+            .iter()
+            .map(|total| RunTotal {
+                run_id: total.run_id.clone(),
+                run_status: total.run_status.clone(),
+                source: total.source.clone(),
+                measure: total.measure.to_string(),
+                hit: total.hit,
+                found: total.found,
+                total_source: total.total_source.as_str().to_owned(),
+                used: total.used,
+            })
+            .collect(),
+    })
 }
 
 /// The `gaps` a row carries, from a freshly read evidence row and the MI aggregate if there is one.
@@ -351,6 +479,7 @@ mod tests {
             sources: sources(),
             history: Some(serde_json::json!({ "subject": "x" })),
             evidence: None,
+            coverage_files: None,
             mi: Some(MiSection {
                 blocks: BTreeMap::from([("src/a.rs".to_owned(), keys::fk1_str("a"))]),
                 tree_block: keys::fk1_str("tree"),

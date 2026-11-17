@@ -14,10 +14,17 @@
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 
 use fathom::metrics::vocab::ActionState;
+use fathom::tui::diff_view::Screen;
 use fathom::tui::entry::{Bench, Churn, Entry, Metric};
 use fathom::tui::keys::{classify, key, key_with};
+use fathom::tui::palette::Palette;
 use fathom::tui::state::{App, Command, Key};
 use fathom::tui::store_view::{Reading, StoreState};
+
+/// The palette the status-line assertions read: unicode, no colour, no TTY assumptions.
+fn palette() -> Palette {
+    Palette::resolve(Some("xterm-256color"), false, false, false)
+}
 
 /// The clock the fixtures are aged from.
 const NOW: i64 = 1_767_225_600;
@@ -273,31 +280,53 @@ fn help_opens_on_the_same_key_it_closes_and_esc_also_closes_it() {
     assert!(!app.help, "and the key that opened it closes it");
 }
 
-/// `enter` still belongs to a sibling ticket (mact-by1.14's commit detail). `d` and `b` are this epic's
-/// and are wired for real; what is left here is wired to an answer, not to nothing: the line names the
-/// ticket, so "it did not respond" is never the impression.
+/// `enter` is wired for real now (mact-by1.14): it opens the commit detail view and asks the engine for
+/// that commit's snapshot. `d` and `b` were this epic's; what is left is not a placeholder either.
 #[test]
-fn the_sibling_keys_answer_with_the_ticket_that_owns_them() {
+fn enter_opens_the_detail_view_and_asks_for_one_snapshot() {
     let mut app = app_with(3);
+    let selected = app.selected().map(|entry| entry.sha.clone()).unwrap();
     let commands = press(&mut app, KeyCode::Enter);
-    assert!(commands.is_empty(), "enter starts no work");
-    let message = app.message.clone().unwrap_or_default();
-    assert!(
-        message.contains("mact-by1.14") && message.contains("not wired yet"),
-        "enter should name mact-by1.14: {message}"
+    assert_eq!(
+        commands,
+        vec![Command::Detail(selected.clone())],
+        "enter asks the engine for exactly the selected commit's snapshot"
     );
-    // The message is one keypress's worth of life: the next key clears it.
-    let mut app = app_with(3);
-    press(&mut app, KeyCode::Enter);
-    press(&mut app, KeyCode::Char('j'));
     assert!(
-        !app.message
-            .clone()
-            .unwrap_or_default()
-            .contains("mact-by1.14"),
-        "a stale explanation of an earlier key is noise: {:?}",
-        app.message
+        matches!(&app.screen, Screen::Detail(sha) if *sha == selected),
+        "and the screen is that commit's detail view"
     );
+    assert!(
+        app.details.contains_key(&selected),
+        "the view is cached under the full SHA the way a diff view is"
+    );
+    // The message the key left behind is the *reading* line, not an apology about a missing ticket.
+    let status = app.status_line(&palette());
+    assert!(
+        status.contains("detail") || status.contains("reading"),
+        "the status line says what is happening: {status}"
+    );
+    // A second `enter` on the same commit re-opens it without a second read, and `Esc` returns to the
+    // timeline on the row the reader left — the round trip the ticket is judged on.
+    app.close_detail();
+    assert!(matches!(app.screen, Screen::Timeline));
+    assert_eq!(app.selection, 0, "the timeline's cursor never moved");
+    assert_eq!(press(&mut app, KeyCode::Enter), Vec::new(), "cached");
+}
+
+/// `Tab` and `Shift-Tab` on the timeline are keys pressed one screen early, and the answer names the
+/// screen that wants them rather than being silence.
+#[test]
+fn the_detail_view_keys_explain_themselves_from_the_timeline() {
+    for key in [KeyCode::Tab, KeyCode::BackTab] {
+        let mut app = app_with(3);
+        assert!(press(&mut app, key).is_empty(), "{key:?} starts no work");
+        let message = app.message.clone().unwrap_or_default();
+        assert!(
+            message.contains("diff"),
+            "{key:?} should point at the diff view: {message}"
+        );
+    }
 }
 
 #[test]

@@ -68,6 +68,9 @@ pub enum Screen {
     Diff(String),
     /// The benchmark panel of one commit, named by its full SHA (mact-by1.12).
     Bench(String),
+    /// The commit detail view, named by its full SHA (mact-by1.14): coverage by file, MI hotspots and
+    /// the diffstat for one commit, in three panes.
+    Detail(String),
 }
 
 /// Where the reader is inside one commit's diff.

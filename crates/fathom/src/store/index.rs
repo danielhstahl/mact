@@ -88,7 +88,7 @@ use super::analyzer::{self, Analyzer, Section};
 use super::keys;
 use super::ledger::Ledger;
 use super::lock::{self, CacheLock, Phase};
-use super::row::{self, Gaps, MiSection, Row, Sources, ROW_VERSION};
+use super::row::{self, CoverageSection, Gaps, MiSection, Row, Sources, ROW_VERSION};
 use super::{now_utc, ConfigStamp, Meta, Run, Runbook, Store, StoreError};
 
 /// One file of one tree, as the store remembers it.
@@ -235,6 +235,9 @@ struct Build {
     trees: HashMap<String, String>,
     /// The evidence rows this run read, by SHA.
     metrics: BTreeMap<String, CommitMetrics>,
+    /// The `coverage_files` section of each of those rows, by SHA (mact-by1.14). Read with the rows,
+    /// from the same pass over `.evidence`, so a detail view never costs a second walk.
+    coverage: BTreeMap<String, CoverageSection>,
     /// Whether each cached tree block was built under this run's `mi` digest. See [`Build::current`].
     current: HashMap<String, bool>,
     cost: Cost,
@@ -519,6 +522,7 @@ impl<'boot> Indexer<'boot> {
         }
 
         // --- the evidence rows: the SHAs whose digest moved, and only those ---------------------
+        let (metrics, coverage) = self.read_evidence(&evidence_root, &planned, run)?;
         let mut build = Build {
             blobs: git
                 .blobs()
@@ -526,7 +530,8 @@ impl<'boot> Indexer<'boot> {
             git,
             tables: HashMap::new(),
             trees,
-            metrics: self.read_evidence(&evidence_root, &planned, run)?,
+            metrics,
+            coverage,
             current: HashMap::new(),
             cost: Cost::default(),
         };
@@ -597,12 +602,25 @@ impl<'boot> Indexer<'boot> {
     ///
     /// A warm run with no new evidence reads none at all: the ledger answered "nothing moved" per file
     /// for §11.4's "one `stat` per evidence file and one read per row".
+    ///
+    /// The second map is the per-file and per-run coverage behind each row, taken from the same
+    /// readset: one walk of the tree, two shapes out (§6.4's `coverage_files`).
+    #[allow(
+        clippy::type_complexity,
+        reason = "the two halves of one read of `.evidence`"
+    )]
     fn read_evidence(
         &self,
         evidence_root: &Path,
         planned: &[Planned],
         run: &mut Run,
-    ) -> Result<BTreeMap<String, CommitMetrics>, StoreError> {
+    ) -> Result<
+        (
+            BTreeMap<String, CommitMetrics>,
+            BTreeMap<String, CoverageSection>,
+        ),
+        StoreError,
+    > {
         let wanted: Vec<String> = planned
             .iter()
             .filter(|plan| !plan.fresh.is_fresh(Section::Evidence))
@@ -610,16 +628,29 @@ impl<'boot> Indexer<'boot> {
             .map(|plan| plan.commit.sha.clone())
             .collect();
         if wanted.is_empty() {
-            return Ok(BTreeMap::new());
+            return Ok((BTreeMap::new(), BTreeMap::new()));
         }
         let readset = EvidenceReader::from_config(&self.config)
             .read_commits(evidence_root, &wanted)
             .map_err(|reason| StoreError::Io(reason.to_string()))?;
         run.evidence_rows_read = u64::try_from(readset.len()).unwrap_or(u64::MAX);
-        Ok(readset
+        let coverage = readset
             .rows()
-            .map(|row| (row.commit.clone(), row.clone()))
-            .collect())
+            .filter_map(|row| {
+                row::coverage_section(
+                    readset.coverage_files(&row.commit),
+                    readset.coverage_totals(&row.commit),
+                )
+                .map(|section| (row.commit.clone(), section))
+            })
+            .collect();
+        Ok((
+            readset
+                .rows()
+                .map(|row| (row.commit.clone(), row.clone()))
+                .collect(),
+            coverage,
+        ))
     }
 
     /// Derive one commit's row and publish it if anything actually moved.
@@ -668,6 +699,17 @@ impl<'boot> Indexer<'boot> {
             )
         };
 
+        // The per-file coverage moves with the evidence section and only with it: same inputs, same
+        // digest, so a fresh evidence section always has a stored section beside it (checked in
+        // `freshness`, which is what makes "copied forward" true of both halves or neither).
+        let coverage_files = if plan.fresh.is_fresh(Section::Evidence) {
+            plan.stored
+                .as_ref()
+                .and_then(|row| row.coverage_files.clone())
+        } else {
+            build.coverage.get(&commit.sha).cloned()
+        };
+
         let (mi_section, aggregate, mi_cost) = self.mi_section(commit, store, build)?;
         cost.absorb(&mi_cost);
 
@@ -678,6 +720,7 @@ impl<'boot> Indexer<'boot> {
             &plan.current,
             &history_value,
             &evidence_value,
+            &coverage_files,
             &mi_section,
             &gaps,
         ) {
@@ -695,6 +738,7 @@ impl<'boot> Indexer<'boot> {
             sources: plan.current.clone(),
             history: Some(history_value),
             evidence: evidence_value,
+            coverage_files,
             mi: mi_section,
             gaps,
         };
@@ -1318,6 +1362,7 @@ fn row_changed(
     current: &Sources,
     history: &Value,
     evidence: &Option<Value>,
+    coverage_files: &Option<CoverageSection>,
     mi: &Option<MiSection>,
     gaps: &Gaps,
 ) -> bool {
@@ -1327,6 +1372,7 @@ fn row_changed(
     row.sources != *current
         || row.history.as_ref() != Some(history)
         || row.evidence != *evidence
+        || row.coverage_files != *coverage_files
         || row.mi != *mi
         || row.gaps != *gaps
 }

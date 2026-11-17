@@ -21,7 +21,7 @@ use act_evidence::read::{Reason as ReadReason, Record as ReadRecord, Scan};
 use act_evidence::Kind;
 use serde_json::Number;
 
-use super::explain::{BenchmarkSpread, CoverageRunTotal, Drop, Explain, Kept};
+use super::explain::{BenchmarkSpread, CoverageFile, CoverageRunTotal, Drop, Explain, Kept};
 use super::row::{
     canonical_json, median, round_half_away, ActionGroup, BenchmarkGroup, CommitMetrics, Coverage,
     ExcludedRun, Gaps, SecondaryMeasure, TotalSource,
@@ -488,12 +488,26 @@ fn run_totals(
     totals
 }
 
+/// The coverage stage's whole answer: the pooled block, the caveats it earned, and the per-file rows.
+///
+/// The three come out together because all three are read from the same filtered population: a file
+/// row that was not eligible for the pooled number may not be shown as one either, or the detail
+/// view's rows would not add up to its header.
+pub(super) struct CoverageOut {
+    /// The row's `coverage` block, or `None` plus a gap code.
+    pub block: Option<Coverage>,
+    /// The caveats this stage found.
+    pub caveats: Vec<Caveat>,
+    /// Per-file rows, path order, primary measure only (empty when there is no pooled number).
+    pub files: Vec<CoverageFile>,
+}
+
 /// The pooled coverage for one commit: the row's `coverage` block, or `None` plus the reason why.
 pub(super) fn coverage_of(
     reader: &Reader,
     selected: &[ReadRecord],
     log: &mut Log<'_>,
-) -> (Option<Coverage>, Vec<Caveat>) {
+) -> CoverageOut {
     let mut caveats: Vec<Caveat> = Vec::new();
     let mut eligible: Vec<ReadRecord> = Vec::new();
 
@@ -529,7 +543,11 @@ pub(super) fn coverage_of(
         eligible.push(record.clone());
     }
     if eligible.is_empty() {
-        return (None, caveats);
+        return CoverageOut {
+            block: None,
+            caveats,
+            files: Vec::new(),
+        };
     }
 
     let totals = run_totals(&eligible, |record, reason, detail| {
@@ -581,7 +599,11 @@ pub(super) fn coverage_of(
         // Every pooled denominator was 0. That is *vacuous*, not 0 %, and it is not a number:
         // printing 100 % for "the only thing instrumented was an empty generated file" would be the
         // single most misleading thing this column could do (ADR-0008 §3.4).
-        return (None, caveats);
+        return CoverageOut {
+            block: None,
+            caveats,
+            files: Vec::new(),
+        };
     };
 
     let decimals = reader.model.coverage.percent_decimals;
@@ -610,6 +632,7 @@ pub(super) fn coverage_of(
             hit: other.hit,
         });
     }
+    let files = file_rows(&eligible, primary, decimals);
     if !block.secondary.is_empty() {
         push_caveat(reader, &mut caveats, Caveat::SecondaryMeasures);
     }
@@ -634,7 +657,54 @@ pub(super) fn coverage_of(
             push_caveat(reader, &mut caveats, Caveat::MeasureNotPrimary);
         }
     }
-    (Some(block), caveats)
+    CoverageOut {
+        block: Some(block),
+        caveats,
+        files,
+    }
+}
+
+/// The `scope:"file"` rows, pooled per path over the selected records that carry the primary measure.
+///
+/// Deliberately derived from the *records*, never re-derived from the pooled block: the point of the
+/// rows is that a reader can add them up and compare the sum with the header, which is the one place
+/// the contract says the two are allowed to disagree (ADR-0002 §4.2 — files instrumented outside the
+/// workspace are in the total and in no file record).
+fn file_rows(records: &[ReadRecord], primary: Measure, decimals: u32) -> Vec<CoverageFile> {
+    let mut pooled: BTreeMap<String, (u64, u64, BTreeSet<String>)> = BTreeMap::new();
+    for record in records.iter().filter(|record| !is_total(record)) {
+        let path = match &record.record {
+            act_evidence::EvidenceRecord::Coverage(line) => {
+                line.counts.path.as_ref().map(|path| path.to_string())
+            }
+            act_evidence::EvidenceRecord::Benchmark(_) => None,
+        };
+        let Some(path) = path else { continue };
+        let Some((hit, found)) = count_pairs(record)
+            .into_iter()
+            .find(|(measure, ..)| *measure == primary)
+            .map(|(_, hit, found)| (hit, found))
+        else {
+            continue;
+        };
+        let entry = pooled.entry(path).or_default();
+        entry.0 += hit;
+        entry.1 += found;
+        entry.2.insert(record.envelope().run_id.to_string());
+    }
+    pooled
+        .into_iter()
+        .map(|(path, (hit, found, runs))| CoverageFile {
+            measure: primary,
+            hit,
+            found,
+            // One rounding, from the pooled counts, exactly like the pooled percent above. `found == 0`
+            // is vacuous and gets no percentage rather than a measured `0.0`.
+            percent: (found > 0).then(|| rate(hit, found, decimals)),
+            runs: runs.into_iter().collect(),
+            path,
+        })
+        .collect()
 }
 
 fn reported_measure_of(record: &ReadRecord) -> Option<String> {
@@ -876,11 +946,12 @@ pub(super) fn derive_commit(
             sha,
             explain: &mut *explain,
         };
-        let (block, cov_caveats) = coverage_of(reader, &selected, &mut log);
-        for caveat in cov_caveats {
+        let out = coverage_of(reader, &selected, &mut log);
+        for caveat in out.caveats {
             push_caveat(reader, &mut caveats, caveat);
         }
-        block
+        explain.set_coverage_files(sha, out.files);
+        out.block
     };
     let spreads = spreads_of(retained);
     let (benchmarks, bench_caveats) = benchmarks_of(reader, &selected, &spreads);

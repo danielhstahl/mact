@@ -39,6 +39,7 @@ use crate::store::{self, Run};
 
 use super::bench;
 use super::cells;
+use super::detail;
 use super::entry::{Bench, Churn, Delta, Entry, Metric};
 
 /// How many row files one read will parse.
@@ -656,4 +657,284 @@ pub fn diff(
     let git = Git::open(&boot.workspace)?;
     let classifier = Classifier::try_from_config(config)?;
     diff::commit(&git, &classifier, sha, limits)
+}
+
+// ------------------------------------------------------------------ the commit detail view
+
+/// One commit's detail snapshot — what `enter` opens, read from the store and from nothing else.
+///
+/// Three kinds of read, all small, all on the engine's thread:
+///
+/// ```text
+/// index/rows/<xx>/<commit>.json        one row: history, evidence, coverage_files, mi
+/// index/rows/<xx>/<parent>.json        its first parent, for the two delta columns
+/// index/blocks/<xx>/<key>.json         one per file the commit touched, here and at the parent
+/// ```
+///
+/// No `.evidence` walk and no `git`: the per-file coverage rows and the per-file MI are in the store
+/// precisely so that opening this screen costs reads instead of derivations — mact-by1.14's "read from
+/// the index, not recomputed per keypress", taken literally. A refusal is one line with a fix in it,
+/// because an empty pane with no reason is indistinguishable from a commit that measured nothing.
+///
+/// # Errors
+///
+/// A sentence per refusal: no store, no row, a store this build will not open.
+pub fn detail(boot: &Boot, sha: &str) -> Result<detail::Snapshot, String> {
+    let store = match store::Store::open(&boot.cache.path) {
+        Ok(None) => {
+            return Err("nothing is indexed here — press R, or run `fathom index`".to_owned());
+        }
+        Ok(Some(store)) => store,
+        Err(reason) => return Err(reason.to_string().replace('\n', " ")),
+    };
+    let row: Row = store.read_json(&store.row_path(sha)).ok_or_else(|| {
+        format!(
+            "{} has no row in this store — press R to index it, or widen --from/--to",
+            detail::short(sha)
+        )
+    })?;
+    let parent = row.sources.git.parents.first().cloned();
+    let parent_row: Option<Row> = parent
+        .as_deref()
+        .and_then(|parent| store.read_json(&store.row_path(parent)));
+    Ok(snapshot(&store, &row, parent_row.as_ref(), parent))
+}
+
+/// Assemble one commit's snapshot out of its row, its parent's row, and the cached MI blocks.
+///
+/// Pure with respect to the store: everything that reads is a `read_json` of a path the store already
+/// owns, so the whole cost is bounded by the files the commit touched and is visible from here.
+fn snapshot(
+    store: &store::Store,
+    row: &Row,
+    parent: Option<&Row>,
+    parent_sha: Option<String>,
+) -> detail::Snapshot {
+    let history = row.history.clone().unwrap_or(Value::Null);
+    let evidence = row.evidence.clone().unwrap_or(Value::Null);
+    let present = row.evidence.is_some();
+
+    // --- the diffstat: the row's own per-file list, in git's order -------------------------------
+    let mut diff: Vec<detail::DiffRow> = Vec::new();
+    if let Some(files) = history.get("files").and_then(Value::as_array) {
+        for file in files {
+            let scope = text(file, "scope").unwrap_or_else(|| "source".to_owned());
+            diff.push(detail::DiffRow {
+                path: text(file, "path").unwrap_or_default(),
+                old_path: text(file, "old_path"),
+                kind: text(file, "kind").unwrap_or_default(),
+                add: uint(file, "add"),
+                del: uint(file, "del"),
+                binary: file.get("binary").and_then(Value::as_bool).unwrap_or(false),
+                noise: scope != "source",
+                scope,
+            });
+        }
+    }
+    let filter = detail::Filter {
+        source_files: uint(&history, "n_files"),
+        noise_files: uint(&history, "noise_files"),
+        noise_add: uint(&history, "noise_add"),
+        noise_del: uint(&history, "noise_del"),
+        excluded_files: uint(&history, "excluded_files"),
+        truncated: history
+            .get("files_truncated")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            > 0,
+        // The reader always asks git for renames (`-M`), and the row's rename rows are the proof; the
+        // footer says it anyway, because "which filter produced this list" should not need a guess.
+        renames: true,
+        add: uint(&history, "n_add"),
+        del: uint(&history, "n_del"),
+        add_all: uint(&history, "n_add_all"),
+        del_all: uint(&history, "n_del_all"),
+    };
+
+    // --- coverage: the pooled number, its file records, and the runs that fed it -----------------
+    let pooled = detail::pooled(if present { Some(&evidence) } else { None });
+    let section = row.coverage_files.clone().unwrap_or_default();
+    let touched: std::collections::BTreeSet<&str> =
+        diff.iter().map(|file| file.path.as_str()).collect();
+    // A rename means the coverage record and the diff may name either side of the move, so the match
+    // is on the new path *or* the old one — otherwise `R` a file and its coverage row falls off the
+    // screen, which is the ticket's "rename-in-coverage path matching".
+    let renamed: std::collections::BTreeSet<&str> = diff
+        .iter()
+        .filter_map(|file| file.old_path.as_deref())
+        .collect();
+    let parent_files = parent
+        .and_then(|parent| parent.coverage_files.clone())
+        .unwrap_or_default();
+    let files: Vec<detail::CoverageRow> = section
+        .files
+        .iter()
+        .map(|file| {
+            detail::coverage_row(
+                file,
+                parent_files
+                    .files
+                    .iter()
+                    .find(|candidate| candidate.path == file.path)
+                    .and_then(|candidate| candidate.percent),
+                touched.contains(file.path.as_str()) || renamed.contains(file.path.as_str()),
+            )
+        })
+        .collect();
+    let runs = section
+        .runs
+        .iter()
+        .map(|run| detail::RunLine {
+            run_id: run.run_id.clone(),
+            run_status: run.run_status.clone(),
+            source: run.source.clone(),
+            measure: run.measure.clone(),
+            hit: run.hit,
+            found: run.found,
+            total_source: run.total_source.clone(),
+            used: run.used,
+        })
+        .collect();
+    let excluded = evidence_rows(&evidence, "excluded_runs")
+        .iter()
+        .filter_map(|run| {
+            Some((
+                text(run, "run_id")?.to_owned(),
+                text(run, "status")?.to_owned(),
+            ))
+        })
+        .collect();
+
+    // --- MI: the touched files, their blocks, and the parent's numbers ---------------------------
+    let blocks = row
+        .mi
+        .as_ref()
+        .map(|mi| mi.blocks.clone())
+        .unwrap_or_default();
+    let parent_blocks = parent
+        .and_then(|parent| parent.mi.as_ref())
+        .map(|mi| mi.blocks.clone())
+        .unwrap_or_default();
+    let mut mi: Vec<detail::HotspotRow> = Vec::new();
+    let mut mi_uncached = 0_usize;
+    for (index, file) in diff.iter().enumerate() {
+        // Past the cap the pane is a partial table and says so; nothing is dropped silently.
+        if index >= detail::MI_INPUTS {
+            mi_uncached += 1;
+            continue;
+        }
+        let key = blocks
+            .get(&file.path)
+            .or_else(|| file.old_path.as_deref().and_then(|old| blocks.get(old)));
+        let numbers = key
+            .and_then(|key| block_numbers(store, key))
+            .unwrap_or_else(|| detail::HotspotRow {
+                path: file.path.clone(),
+                // No block at all. The classifier's answer is the only reason there is one: a noise or
+                // excluded path was never analysed on purpose, and a source path with no block is a
+                // store that has not seen this file yet — two different sentences, and the second one
+                // is the only one "press R" can fix.
+                status: match file.scope.as_str() {
+                    "noise" => "skipped_noise".to_owned(),
+                    "excluded" => "excluded".to_owned(),
+                    _ => "no_block".to_owned(),
+                },
+                mi: None,
+                delta: None,
+                loc: None,
+                volume: None,
+                cyclomatic: None,
+                vocabulary: None,
+                language: None,
+            });
+        let mut here = numbers;
+        here.path = file.path.clone();
+        // The parent's number for the same file: its own block, keyed on the parent's content. A
+        // deleted file has no entry here at the parent and no entry there at all, and a rename is
+        // looked up under the name it had then.
+        if let Some(parent_key) = parent_blocks.get(&file.path).or_else(|| {
+            file.old_path
+                .as_deref()
+                .and_then(|old| parent_blocks.get(old))
+        }) {
+            here.delta = block_mi(store, parent_key).and_then(|before| {
+                here.mi
+                    .map(|now| (now - before) * 10.0)
+                    .map(|delta| delta / 10.0)
+            });
+        }
+        mi.push(here);
+    }
+
+    let aggregate = row
+        .mi
+        .as_ref()
+        .map(|mi| mi.aggregate.clone())
+        .unwrap_or(Value::Null);
+    let tree = row.sources.git.tree.clone();
+    detail::Snapshot {
+        sha: row.commit.clone(),
+        subject: text(&history, "subject").unwrap_or_default(),
+        parent: parent_sha.or_else(|| row.sources.git.parents.first().cloned()),
+        tree,
+        pooled,
+        files,
+        runs,
+        diff,
+        mi,
+        analyzers: row
+            .mi
+            .as_ref()
+            .map(|mi| mi.analyzers.clone())
+            .unwrap_or_default(),
+        aggregate: number(&aggregate, "aggregate"),
+        aggregate_files: uint(&aggregate, "files"),
+        aggregate_loc: uint(&aggregate, "loc"),
+        unanalysed_paths: row.gaps.unanalysed_paths,
+        caveats: string_list(&evidence, "caveats"),
+        excluded,
+        filter,
+        mi_uncached,
+        no_mi: row.gaps.no_mi,
+        total_only: section.files.is_empty() && !section.runs.is_empty(),
+    }
+}
+
+/// One cached `mi.score` block, as the MI pane needs it. Absent or unparseable is `None`: the pane
+/// prints `no cached analysis` rather than a zero.
+fn block_numbers(store: &store::Store, key: &str) -> Option<detail::HotspotRow> {
+    let block: store::index::Block = store.read_json(&store.block_path(key))?;
+    let result = &block.result;
+    let number = |key: &str| result.get(key).and_then(Value::as_f64);
+    Some(detail::HotspotRow {
+        path: text(result, "path").unwrap_or_default(),
+        status: text(result, "status").unwrap_or_else(|| "no_block".to_owned()),
+        mi: number("mi"),
+        delta: None,
+        loc: number("loc").map(|value| value as u64),
+        volume: number("halstead_volume"),
+        cyclomatic: number("cyclomatic").map(|value| value as u64),
+        vocabulary: number("vocabulary").map(|value| value as u64),
+        language: text(result, "language"),
+    })
+}
+
+/// Just one block's MI, for a delta that needs nothing else from the parent.
+fn block_mi(store: &store::Store, key: &str) -> Option<f64> {
+    let block: store::index::Block = store.read_json(&store.block_path(key))?;
+    block.result.get("mi").and_then(Value::as_f64)
+}
+
+/// One array of objects from the stored evidence section.
+fn evidence_rows(evidence: &Value, key: &str) -> Vec<Value> {
+    evidence
+        .get(key)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// A JSON number as a `u64`, for the counts this view only ever displays.
+fn uint(value: &Value, key: &str) -> u64 {
+    value.get(key).and_then(Value::as_u64).unwrap_or(0)
 }

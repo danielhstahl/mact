@@ -146,6 +146,18 @@ pub enum TotalSource {
     SumOfFileRecords,
 }
 
+impl TotalSource {
+    /// The stored spelling — the same two strings `serde` writes, so a store section and a row cannot
+    /// drift into two spellings of one fact (ADR-0006 §6.4's `coverage_files` keeps this one).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ScopeTotal => "scope_total",
+            Self::SumOfFileRecords => "sum_of_file_records",
+        }
+    }
+}
+
 /// One benchmark group at one commit (ADR-0008 §4.2).
 ///
 /// Group identity is `(name, labels, unit)` — an absent unit is its own key — which is what makes

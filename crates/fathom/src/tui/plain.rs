@@ -205,6 +205,50 @@ pub fn bench(panel: &super::bench::Panel, palette: &Palette, width: usize) -> St
     out
 }
 
+/// One commit's detail view as text, for `--plain --detail REV` (mact-by1.14's no-TTY fallback).
+///
+/// The same three panes, in the same order, with the same cells and the same footers: every string comes
+/// from [`super::detail::Detail::frame`], the code the screen paints. Two things differ, both forced by
+/// the surface: every row is printed rather than the visible window, and there is no cursor, so the
+/// cross-pane highlight is gone and the footers carry the whole weight of the caveats.
+pub fn detail(view: &super::detail::Detail, palette: &Palette, width: usize) -> String {
+    let mut out = String::new();
+    // Every row, not the paged window: a pipe does not scroll. The clone is what keeps the state machine's
+    // paging maths out of this function rather than a second copy of it here.
+    let mut whole = view.clone();
+    for height in whole.heights.iter_mut() {
+        *height = u16::MAX;
+    }
+    whole.offset = [0; 3];
+
+    let (left, right) = whole.header_line(palette);
+    let _ = writeln!(out, "{}", prose(palette, &format!("{left}  {right}")));
+    if whole.snapshot.is_none() {
+        for line in whole.notice() {
+            let _ = writeln!(out, "{}", prose(palette, &line));
+        }
+        return out;
+    }
+    let content = width.saturating_sub(4);
+    for pane in super::detail::Pane::ALL {
+        let drawn = whole.frame(pane, content, palette);
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "{}",
+            prose(palette, &format!("{}{}", drawn.title, drawn.aside))
+        );
+        let head: Vec<&str> = drawn.columns.iter().map(String::as_str).collect();
+        let _ = writeln!(out, "  {}", head.join(" "));
+        for row in drawn.rows {
+            let cells: Vec<&str> = row.cells.iter().map(String::as_str).collect();
+            let _ = writeln!(out, "  {}", cells.concat().trim_end());
+        }
+        let _ = writeln!(out, "  {}", prose(palette, &drawn.footer));
+    }
+    out
+}
+
 /// Join one row's cells at their slot offsets, truncating to the slot width and padding to its
 /// alignment — the same geometry [`super::render`] draws into the buffer.
 fn line(slots: &[Slot], texts: &[String; 8], ellipsis: char) -> String {

@@ -11,7 +11,7 @@
 //! group's spread and which runs it spans — and they are what `docs/evidence-format.md` §12's
 //! recipes print. That is what makes "the reader and the documented recipes agree" a test with
 //! something to compare (see `crates/fathom/tests/evidence_recipes.rs`), and it is what the commit
-//! detail view (mact-by1.14) renders: per-run totals, excluded runs, caveats by name.
+//! detail view (mact-by1.14) renders: per-run totals, per-file coverage rows, excluded runs, caveats by name.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -21,7 +21,7 @@ use std::{
 use serde_json::Number;
 
 use super::row::TotalSource;
-use super::vocab::DropReason;
+use super::vocab::{DropReason, Measure};
 
 /// One dropped record: where it was, why, and what it was.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,7 +99,7 @@ pub struct CoverageRunTotal {
     /// The record's `source` (`lcov`, `coverage_summary`, `log_scrape`).
     pub source: String,
     /// Which measure the counts are.
-    pub measure: super::vocab::Measure,
+    pub measure: Measure,
     /// Numerator.
     pub hit: u64,
     /// Denominator. `0` is vacuous, not `0 %`.
@@ -109,6 +109,40 @@ pub struct CoverageRunTotal {
     /// Whether this total fed the row's pooled number — false for a superseded run, a non-success
     /// run, a truncated run, or a non-primary measure.
     pub used: bool,
+}
+
+/// One file's coverage at one commit, pooled over the **selected** runs that reported it.
+///
+/// This is the `scope:"file"` half of ADR-0008 §3 — the half the pooled `coverage` block sums away.
+/// The detail view (mact-by1.14) is what reads it, because "what exactly got worse?" is a per-file
+/// question and a pooled percent cannot answer it: 86.9 % is the same number whether one file fell
+/// from 100 % to 20 % or two hundred files each moved a point.
+///
+/// Three rules, and they are the pooled number's rules applied one level down:
+///
+/// * **the counts are pooled, the rate is derived once.** Two selected runs reporting one path give
+///   one row whose `hit`/`found` are the sums and whose `percent` is computed from those sums
+///   (ADR-0008 §3.1) — never an average of the two runs' percentages.
+/// * **`found == 0` has no percent.** That is `vacuous`, not `0 %` (§3.4), and a file of generated
+///   nothing is the everyday case.
+/// * **only the commit's primary measure is here.** A file measured in `statements` by one tool and
+///   `lines` by another is two different units (ADR-0002 §6), and the row already says which measure
+///   its headline is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoverageFile {
+    /// The workspace-relative path the record named (the container prefix is gone by contract,
+    /// `act_evidence::RelPath` / ADR-0002 `$defs/relpath`).
+    pub path: String,
+    /// Which measure the counts are — the row's primary measure, by construction.
+    pub measure: Measure,
+    /// Numerator, summed over the selected runs that reported this path.
+    pub hit: u64,
+    /// Denominator, same population. `0` is vacuous and has no `percent`.
+    pub found: u64,
+    /// `round_half_away(100 · hit / found, coverage.percent_decimals)`, absent when `found == 0`.
+    pub percent: Option<f64>,
+    /// Which selected runs reported it, sorted — the audit trail for this row.
+    pub runs: Vec<String>,
 }
 
 /// One benchmark group's spread at one commit, over every retained run.
@@ -141,6 +175,7 @@ pub struct Explain {
     drops: Vec<Drop>,
     kept: Vec<Kept>,
     coverage: BTreeMap<String, Vec<CoverageRunTotal>>,
+    per_file: BTreeMap<String, Vec<CoverageFile>>,
     spreads: BTreeMap<String, Vec<BenchmarkSpread>>,
 }
 
@@ -209,6 +244,12 @@ impl Explain {
         self.spreads.get(sha).map_or(&[], Vec::as_slice)
     }
 
+    /// Every file the selected runs reported coverage for at one commit, path order.
+    #[must_use]
+    pub fn coverage_files(&self, sha: &str) -> &[CoverageFile] {
+        self.per_file.get(sha).map_or(&[], Vec::as_slice)
+    }
+
     pub(crate) fn set_counts(
         &mut self,
         files: usize,
@@ -239,6 +280,12 @@ impl Explain {
     pub(crate) fn set_spreads(&mut self, sha: &str, spreads: Vec<BenchmarkSpread>) {
         if !spreads.is_empty() {
             self.spreads.insert(sha.to_owned(), spreads);
+        }
+    }
+
+    pub(crate) fn set_coverage_files(&mut self, sha: &str, files: Vec<CoverageFile>) {
+        if !files.is_empty() {
+            self.per_file.insert(sha.to_owned(), files);
         }
     }
 
@@ -297,6 +344,20 @@ impl fmt::Display for Explain {
             }
             for drop in self.drops.iter().filter(|drop| &drop.sha == sha) {
                 writeln!(f, "# {drop}")?;
+            }
+        }
+        for (sha, files) in &self.per_file {
+            for file in files {
+                writeln!(
+                    f,
+                    "# {sha} file {} {:7} {}/{} {}",
+                    file.path,
+                    file.measure,
+                    file.hit,
+                    file.found,
+                    file.percent
+                        .map_or_else(|| "vacuous".to_owned(), |percent| format!("{percent}%")),
+                )?;
             }
         }
         for (sha, totals) in &self.coverage {

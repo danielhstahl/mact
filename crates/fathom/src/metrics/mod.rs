@@ -72,7 +72,7 @@ use std::{
 use act_evidence::read::{self, Scan};
 use thiserror::Error;
 
-pub use explain::{BenchmarkSpread, CoverageRunTotal, Drop, Explain, Kept};
+pub use explain::{BenchmarkSpread, CoverageFile, CoverageRunTotal, Drop, Explain, Kept};
 pub use model::Model;
 pub use row::{
     canonical_json, median, number_text, round_half_away, ActionGroup, BenchmarkGroup,
@@ -386,6 +386,23 @@ impl Readset {
     #[must_use]
     pub fn explain(&self) -> &Explain {
         &self.explain
+    }
+
+    /// One commit's per-file coverage rows (ADR-0008 §3's `scope:"file"` half, pooled per path over
+    /// the selected runs), in path order.
+    ///
+    /// Not part of the metric-model row shape — `row_shape` is closed and belongs to ADR-0008 — but the
+    /// same derivation's output all the same, which is what lets the store cache it beside the row it
+    /// belongs to instead of a second reader re-walking the tree to get it (mact-by1.14).
+    #[must_use]
+    pub fn coverage_files(&self, sha: &str) -> &[CoverageFile] {
+        self.explain.coverage_files(sha)
+    }
+
+    /// One commit's per-run coverage totals, used and unused alike.
+    #[must_use]
+    pub fn coverage_totals(&self, sha: &str) -> &[CoverageRunTotal] {
+        self.explain.coverage_totals(sha)
     }
 
     /// Rows whose action state is one of `failed` / `mixed` — the set

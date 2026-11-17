@@ -220,6 +220,7 @@ impl Driver for Scripted {
                 Command::Index => engine.request_index(),
                 Command::Cancel => engine.cancel(),
                 Command::Diff(sha) => engine.request_diff(sha),
+                Command::Detail(sha) => engine.request_detail(sha),
                 Command::Quit => {}
             }
         }

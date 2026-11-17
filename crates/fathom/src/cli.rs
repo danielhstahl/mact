@@ -182,6 +182,15 @@ pub struct CommonArgs {
     )]
     pub bench: Option<String>,
 
+    /// Open one commit's detail view instead of the timeline (mact-by1.14's key, on the command line).
+    #[arg(
+        long,
+        value_name = "REV",
+        global = true,
+        help = "Open this commit's detail view instead of the timeline — per-file coverage, MI hotspots and the diffstat: a SHA, HEAD, a branch, or a form like HEAD~3. With --plain it prints all three panes as text"
+    )]
+    pub detail: Option<String>,
+
     /// The whole-commit patch cap, in bytes.
     #[arg(
         long,

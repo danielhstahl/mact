@@ -5,6 +5,7 @@
 //! ```text
 //! tui.rs        the loop, the terminal's lifecycle, the --plain fork, the driver contract
 //!   state.rs    what the screen knows and what the keys do to it — pure, testable on its own
+//!   detail      the commit detail view: three panes over one commit, one shared path, three sorts
 //!   diff_view   the diff screen's own state: per-commit view state, the file filter, and what the caps say
 //!   bench       the benchmark panel's own state: one row per metric group, its history and its verdict
 //!   cells.rs    values → text: ADR-0008 §6.1's glyphs, §4.5's one bench group, the width budget
@@ -41,6 +42,7 @@
 
 pub mod bench;
 pub mod cells;
+pub mod detail;
 pub mod diff_view;
 pub mod engine;
 pub mod entry;
@@ -211,6 +213,7 @@ impl Driver for TerminalDriver {
                 Command::Index => self.engine.request_index(),
                 Command::Cancel => self.engine.cancel(),
                 Command::Diff(sha) => self.engine.request_diff(sha),
+                Command::Detail(sha) => self.engine.request_detail(sha),
                 Command::Quit => {}
             }
         }
@@ -301,6 +304,20 @@ pub fn run(
             print!("{}", plain::diff(&view, &palette, plain::WIDTH));
             return Ok(Exit::Success);
         }
+        // `--detail REV` is `enter` on a commit, asked on the command line and printed as text: all three
+        // panes, every row, footers and caveats included (mact-by1.14's no-TTY fallback).
+        if let Some(rev) = &arguments.detail {
+            let sha = resolve_rev(boot, rev)?;
+            match store_view::detail(boot, &sha) {
+                Ok(snapshot) => print!(
+                    "{}",
+                    plain::detail(&detail_view(snapshot), &palette, plain::WIDTH)
+                ),
+                // A refusal is one line, as every other plain-mode refusal is.
+                Err(reason) => println!("{}", reason.replace('\n', " ")),
+            }
+            return Ok(Exit::Success);
+        }
         // `--bench REV` is `b` for a terminal you cannot press `b` in, and it is the same rendering:
         // the panel is built by the same state machine the screen paints (mact-by1.12's no-TTY fallback).
         if let Some(rev) = &arguments.bench {
@@ -339,6 +356,15 @@ pub fn run(
         // everything else the user asked for.
         if let Err(reason) = app.show_bench(&sha) {
             app.message = Some(reason);
+        }
+    }
+    // `--detail REV` opens the same three panes `enter` opens, on the commit the shell named — read before
+    // the screen is taken over, so the first frame is the answer and not a loading pane.
+    if let Some(rev) = &arguments.detail {
+        let sha = resolve_rev(boot, rev)?;
+        match store_view::detail(boot, &sha) {
+            Ok(snapshot) => app.show_detail(snapshot),
+            Err(reason) => app.message = Some(reason),
         }
     }
     // `--diff REV` on an interactive run opens the diff view on that commit, read here for the same
@@ -391,6 +417,14 @@ pub fn now() -> i64 {
 #[must_use]
 pub fn index_in_progress(boot: &Boot) -> Option<store::lock::LockBody> {
     store::lock::read_body(&boot.cache.path)
+}
+
+/// A detail view that already holds its snapshot, for `--plain --detail REV`.
+#[must_use]
+fn detail_view(snapshot: self::detail::Snapshot) -> self::detail::Detail {
+    let mut view = self::detail::Detail::read(snapshot);
+    view.loading = false;
+    view
 }
 
 /// Resolve a `--diff`/`--bench` revision to a full SHA, with the same refusal lines every other
