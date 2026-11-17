@@ -187,6 +187,19 @@ impl Bench {
         !self.value.is_empty()
     }
 
+    /// How many groups the row carries in all, the chosen one included — the `+N` plus one.
+    ///
+    /// `0` when there is no group at all, so a consumer never has to know that `rest` counts the
+    /// others and not the total.
+    #[must_use]
+    pub const fn groups(&self) -> usize {
+        if self.is_known() {
+            self.rest + 1
+        } else {
+            0
+        }
+    }
+
     /// The group's identity as a delta key: two commits may only be compared inside one group.
     #[must_use]
     pub fn identity(&self) -> String {
@@ -262,6 +275,59 @@ impl Entry {
         text.push_str(&self.author);
         text.make_ascii_lowercase();
         text
+    }
+
+    /// Whether any evidence-backed column knows something about this commit.
+    ///
+    /// The three that come from `.evidence` — a pooled coverage percent, a benchmark group, an action
+    /// verdict — and not one more: `churn` and `MI` are derived from git and from the blobs, so a
+    /// commit can have both and still have never had a workflow run for it. This is the question
+    /// `fathom report --only-missing` asks, because that list is a queue for whatever runs the
+    /// measurements, and a commit that has no row at all has no evidence either.
+    #[must_use]
+    pub fn has_evidence(&self) -> bool {
+        self.indexed
+            && (self.coverage.is_known()
+                || self.bench.is_known()
+                || self.action != ActionState::NoEvidence)
+    }
+
+    /// The row for a commit the metric cache has never seen: every column unknown, and `indexed`
+    /// saying so, which is the one honest way to put a commit on a timeline that has no measurements.
+    ///
+    /// The identity fields come from git, because git is what listed the commit; the deltas stay absent
+    /// because a root and an unindexed commit are the same answer from the front end's side (ADR-0008
+    /// §6.1: no both-sided comparison, no arrow).
+    #[must_use]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "git's six identity fields, spelled once"
+    )]
+    pub fn unindexed(
+        sha: String,
+        parent: Option<String>,
+        author: String,
+        author_utc: i64,
+        committer_utc: i64,
+        subject: String,
+    ) -> Self {
+        Self {
+            sha,
+            parent,
+            author_utc,
+            committer_utc,
+            subject,
+            author,
+            coverage: Metric::UNKNOWN,
+            churn: Churn::UNKNOWN,
+            mi: Metric::UNKNOWN,
+            unanalysed_paths: 0,
+            bench: Bench::missing(None),
+            detail: crate::tui::bench::Commit::default(),
+            action: ActionState::NoEvidence,
+            indexed: false,
+            caveats: Vec::new(),
+        }
     }
 
     /// Whether every metric column is unknown — the "all-unknown row" the ticket's snapshot list asks

@@ -47,6 +47,12 @@ serde_json = { workspace = true }
 # that ticket. Pure Rust, no C, no async, no transport.
 sha2 = { workspace = true }
 toml = { workspace = true }
+# The doctor's workflow check (mact-by1.13) reads `.github/workflows/*.yml` locally — "is there
+# anything here that would produce evidence" is the question the evidence tree cannot answer, and
+# `list_tasks` may not be called to answer it (ADR-0005 P4/P5). Same crate act-mcp's own workflow
+# reader uses, so the two halves of the workspace parse one YAML dialect; pure Rust, no async, no
+# transport, already in `[workspace.dependencies]` and already in the lockfile.
+yaml-rust2 = { workspace = true }
 # `thiserror` is not on ADR-0005 §6's short list, and §6 says the list is a code-review question
 # rather than an ADR question as long as nothing on the forbidden side rides in with it: this is a
 # pure-proc-macro error enum crate with no runtime, no async, no transport. It is here because the

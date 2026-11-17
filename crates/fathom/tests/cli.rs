@@ -5,9 +5,14 @@
 //!
 //! * **the surface** (`--help` lists the subcommands and every shared flag, `-V` prints one line):
 //!   mact-by1.16 will gate on this file's shape, so the contract is asserted here first.
-//! * **the exit codes** ([`fathom::exit`]): 0 for `index --status`, 1 for a typed refusal, 2 for a
-//!   bad flag (clap's, never re-implemented), 3 for a subcommand whose engine is a later ticket. A
-//!   stub that exited 0 would let CI assert a report had been produced.
+//! * **the exit codes** ([`fathom::exit`]): 0 for `index --status` and for a report the gate liked,
+//!   1 for a typed refusal (and for a gate finding), 2 for a bad flag (clap's, never re-implemented),
+//!   2 for a `report`/`doctor` that could not run, and 3 for a subcommand whose engine is a later
+//!   ticket. A stub that exited 0 would let CI assert a report had been produced.
+//! * **the two CI-shaped commands' own contract**: `report` and `doctor` answer `0` clean, `1`
+//!   something to look at, `2` could not run, because that is the scale `act-mcp validate-evidence`
+//!   already uses and the one a workflow step is written against. The rest of the binary keeps the
+//!   older `1`-for-any-refusal habit, so the two scales have to be asserted side by side.
 //! * **the stream split**: a refusal, a warning and a `not yet wired` all go to stderr, and stdout
 //!   stays empty until a command genuinely has data — so `fathom report > timeline.tsv` cannot be
 //!   poisoned by a log line (ADR-0005 §6).
@@ -130,6 +135,7 @@ fn help_names_every_subcommand_and_every_shared_flag() {
         "tui",
         "index",
         "report",
+        "doctor",
         "--evidence-dir",
         "--cache-dir",
         "--from",
@@ -158,7 +164,7 @@ fn help_names_every_subcommand_and_every_shared_flag() {
 
 #[test]
 fn each_subcommand_has_its_own_help_and_takes_a_workspace() {
-    for subcommand in ["tui", "index", "report"] {
+    for subcommand in ["tui", "index", "report", "doctor"] {
         let help = fathom(&[subcommand, "--help"]);
         help.assert_code(0);
         assert!(
@@ -173,6 +179,49 @@ fn each_subcommand_has_its_own_help_and_takes_a_workspace() {
         "`fathom index --help` should document --status:\n{}",
         index.stdout
     );
+
+    // The two headless commands' own flags, named where a person reading `--help` in CI will see them:
+    // the format, the missing-evidence filter, the gate, and the exit-code contract the gate is written
+    // against.
+    let report = fathom(&["report", "--help"]);
+    for expected in ["--format", "--only-missing", "--fail-on"] {
+        assert!(
+            report.stdout.contains(expected),
+            "`fathom report --help` did not document {expected}:\n{}",
+            report.stdout
+        );
+    }
+    for gate in [
+        "coverage-drop",
+        "mi-drop",
+        "benchmark-regression",
+        "action-failure",
+    ] {
+        assert!(
+            report.stdout.contains(gate),
+            "`fathom report --help` did not list the gate value {gate:?}:\n{}",
+            report.stdout
+        );
+    }
+    assert!(
+        report
+            .stdout
+            .contains("0 clean, 1 findings, 2 could not run"),
+        "the exit-code contract belongs in the help text:\n{}",
+        report.stdout
+    );
+    assert!(
+        fathom(&["report", "--help"]).stdout.contains("json")
+            && fathom(&["report", "--help"]).stdout.contains("tsv"),
+        "the formats are listed by name"
+    );
+
+    let doctor = fathom(&["doctor", "--help"]);
+    assert!(
+        doctor.stdout.contains("--json"),
+        "`fathom doctor --help` should document --json:\n{}",
+        doctor.stdout
+    );
 }
 
 #[test]
@@ -185,7 +234,7 @@ fn version_is_one_line_and_matches_the_manifest() {
     assert_eq!(short.stdout.trim(), format!("fathom {declared}"));
     assert_eq!(long.stdout.trim(), format!("fathom {declared}"));
     // `propagate_version`: a subcommand that lost it shows up here rather than as a confused reader.
-    for subcommand in ["tui", "index", "report"] {
+    for subcommand in ["tui", "index", "report", "doctor"] {
         let with_subcommand = fathom(&[subcommand, "--version"]);
         with_subcommand.assert_code(0);
         assert!(
@@ -252,27 +301,48 @@ fn a_directory_that_is_not_a_work_tree_is_refused_by_every_mode() {
     let plain = scratch.path().join("plain");
     std::fs::create_dir_all(&plain).expect("make a directory");
 
-    for arguments in [
-        vec![plain.display().to_string()],
-        vec!["tui".to_owned(), plain.display().to_string()],
-        vec!["index".to_owned(), plain.display().to_string()],
-        vec!["report".to_owned(), plain.display().to_string()],
-        vec![
-            "index".to_owned(),
-            "--status".to_owned(),
-            plain.display().to_string(),
-        ],
+    // The codes differ for one reason: `report` and `doctor` are what a CI step runs, and a step has to
+    // tell "could not run" (2) from "ran, and did not like what it saw" (1). Everything else keeps the
+    // binary's older 1-for-a-refusal.
+    for (command, code) in [
+        (vec![plain.display().to_string()], 1),
+        (vec!["tui".to_owned(), plain.display().to_string()], 1),
+        (vec!["index".to_owned(), plain.display().to_string()], 1),
+        (vec!["report".to_owned(), plain.display().to_string()], 2),
+        (
+            vec![
+                "index".to_owned(),
+                "--status".to_owned(),
+                plain.display().to_string(),
+            ],
+            1,
+        ),
     ] {
-        let as_refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
+        let as_refs: Vec<&str> = command.iter().map(String::as_str).collect();
         let run = fathom(&as_refs);
-        run.assert_code(1).assert_not_panicked();
+        run.assert_code(code).assert_not_panicked();
         assert!(
             run.stderr.contains("not a git work tree"),
-            "{arguments:?} should refuse a non-repository:\n{}",
+            "{command:?} should refuse a non-repository:\n{}",
             run.stderr
         );
-        assert!(run.stderr.contains("fix:"), "{arguments:?}: {}", run.stderr);
+        assert!(run.stderr.contains("fix:"), "{command:?}: {}", run.stderr);
+        assert!(run.stdout.is_empty(), "{command:?} printed data");
     }
+
+    // `doctor` says the same thing, but as a check in its own report rather than as a refusal on stderr:
+    // the workspace line *is* the diagnosis, and 2 still means broken.
+    let doctor = fathom(&["doctor", &plain.display().to_string()]);
+    doctor.assert_code(2).assert_not_panicked();
+    assert!(
+        doctor.stdout.contains("not a git work tree"),
+        "{}",
+        doctor.stdout
+    );
+    assert!(
+        !doctor.stdout.is_empty(),
+        "doctor's report is data, so it is on stdout"
+    );
 }
 
 #[test]
@@ -317,14 +387,28 @@ fn an_unwritable_cache_root_refuses_index_and_warns_everyone_else() {
     std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o555)).expect("read-only");
 
     let report = fathom(&["report", &repo.display().to_string()]);
-    // Still `not yet wired`, not a refusal: a read-only workspace is a build agent, and it may read
-    // a store someone else wrote (ADR-0006 §10.1).
-    report.assert_code(3);
+    // A read-only workspace is a build agent, and it may read a store someone else wrote (ADR-0006
+    // §10.1): the cache root is a *warning* for a reader, where `index` refuses outright. This fixture
+    // cannot be indexed at all (its `.git` is an empty directory), so the run ends as "could not run"
+    // — 2, with the warning it earned on stderr and nothing on stdout.
+    report.assert_code(2).assert_not_panicked();
     assert!(
         report.stderr.contains("cannot write the cache root"),
         "expected the read-only warning:\n{}",
         report.stderr
     );
+    assert!(
+        !report.stderr.contains("not yet wired"),
+        "{}",
+        report.stderr
+    );
+    assert!(report.stdout.is_empty(), "{}", report.stdout);
+
+    // `doctor` is where a read-only cache belongs: it says so as a check, and its report is stdout even
+    // when the workspace itself is the broken part.
+    let doctor = fathom(&["doctor", &repo.display().to_string()]);
+    doctor.assert_code(2).assert_not_panicked();
+    assert!(doctor.stdout.contains("read-only"), "{}", doctor.stdout);
 
     let index = fathom(&["index", &repo.display().to_string()]);
     index.assert_code(1).assert_not_panicked();
@@ -453,17 +537,40 @@ fn a_dumb_terminal_is_the_plain_table_too() {
 }
 
 #[test]
-fn report_is_not_wired_and_leaves_stdout_empty_for_the_tsv_consumer() {
+fn report_and_doctor_are_wired_and_leave_stdout_to_their_own_data() {
     let scratch = tempfile::tempdir().expect("scratch");
     let repo = workspace(scratch.path());
-    let run = fathom(&["report", &repo.display().to_string()]);
-    run.assert_code(3).assert_not_panicked();
-    assert!(run.stderr.contains("not yet wired"), "{}", run.stderr);
-    assert!(run.stderr.contains("mact-by1.13"), "{}", run.stderr);
+
+    // mact-by1.13 wired both headless commands, so neither may claim otherwise. This fixture is a
+    // directory with an empty `.git` in it, which git refuses — so `report` ends as "could not run"
+    // (2, nothing on stdout) and `doctor` turns the same news into a check. What is under test is that
+    // neither is a stub any more, and that stdout is never given a log line: `fathom report >
+    // timeline.tsv` has to be a file of rows, and `tests/report.rs` is where the produced envelope is
+    // asserted against a repository that can answer.
+    let report = fathom(&["report", &repo.display().to_string()]);
+    report.assert_code(2).assert_not_panicked();
     assert!(
-        run.stdout.is_empty(),
-        "`fathom report > timeline.tsv` must not inherit a log line; got {:?}",
-        run.stdout
+        !report.stderr.contains("not yet wired"),
+        "report is implemented now; it must not claim otherwise:\n{}",
+        report.stderr
+    );
+    assert!(
+        report.stdout.is_empty(),
+        "stdout is data only: {}",
+        report.stdout
+    );
+
+    let doctor = fathom(&["doctor", &repo.display().to_string()]);
+    doctor.assert_code(2).assert_not_panicked();
+    assert!(
+        !doctor.stderr.contains("not yet wired"),
+        "doctor is implemented now; it must not claim otherwise:\n{}",
+        doctor.stderr
+    );
+    assert!(
+        doctor.stdout.contains("workspace"),
+        "stdout is the check report: {}",
+        doctor.stdout
     );
 }
 

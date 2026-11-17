@@ -30,6 +30,10 @@
 //! * [`metrics`] — the evidence reader (mact-by1.6): `.evidence` in, one typed row per SHA out.
 //! * [`tui`] — the timeline screen (mact-by1.9): the store in, one row per commit on the screen or on
 //!   stdout, with the index running on a worker thread.
+//! * [`report`] — the headless table (mact-by1.13): the same rows and the same cells on stdout as
+//!   json/tsv/csv, with the CI gate (`--fail-on`) and its 0/1/2 exit codes.
+//! * [`doctor`] — why there is nothing to show (mact-by1.13): seven checks, each `ok`/`warn`/`fail`
+//!   with a `fix:`, and the same in `--json`.
 //! * [`git`] — the git CLI itself: opening a repository, the version floor, the streamed
 //!   `NUL`-separated calls, and the typed refusals. `git` is a subprocess here, never libgit2
 //!   (ADR-0005 §6, and the rationale is in `crates/fathom/Cargo.toml`).
@@ -40,21 +44,20 @@
 //! * [`classify`] — the one path classifier ADR-0007 §7.1 shares between the `+`/`−` column and the
 //!   MI column, so one row's two columns always describe the same file set.
 //!
-//! The diff view (mact-by1.11) is the second screen: `d` on a row, or `--diff REV`, and [`diff`]'s
-//! answer goes into a two-pane view whose state machine is [`tui::diff_view`] — the same shape as the
-//! timeline's, with its own keys, its own filter and its own honesty about what the byte caps cut.
+//! The benchmark panel (mact-by1.12) and the diff view (mact-by1.11) are the sibling screens: `b` or
+//! `d` on a row, or `--bench REV` / `--diff REV`, each with its own state machine
+//! ([`tui::bench::Panel`], [`tui::diff_view::DiffView`]) and its own `--plain` rendering.
 //!
-//! Still absent on purpose: the screens above the timeline (mact-by1.12's benchmark panel,
-//! mact-by1.14's commit detail), `report` and `doctor` (mact-by1.13). The subcommands that will call
-//! them already parse and validate: they exit `3` with the ticket that owns them rather than pretending.
+//! Still absent on purpose: the commit detail view (mact-by1.14). A subcommand whose engine is a later
+//! ticket exits `3` naming the ticket rather than pretending ([`crate::exit`]).
 //!
 //! ## Two rules this crate keeps
 //!
 //! 1. **logs to stderr, frames and data to stdout.** The server's rule is "stdout is sacred"; a TUI
 //!    owns the terminal, so fathom's version is stricter about *which* stream is which: stdout is
-//!    reserved for what the user asked for — the screen, and `report`'s table — and every
-//!    diagnostic, warning and `fix:` line goes to stderr. `crates/fathom/tests/cli.rs` asserts that
-//!    `report` and the not-yet-wired commands leave stdout empty, so `fathom report > timeline.tsv`
+//!    reserved for what the user asked for — the screen, and `report`'s and `doctor`'s output —
+//!    and every diagnostic, warning and `fix:` line goes to stderr. `crates/fathom/tests/cli.rs`
+//!    asserts that a refusal and a bad flag leave stdout empty, so `fathom report > timeline.tsv`
 //!    cannot be poisoned by a log line. That is also why there is no `tracing` subscriber here
 //!    (ADR-0005 §6 forbids one, and [`log`] is the thirty lines that replace it).
 //! 2. **fathom reads; it never runs.** Nothing in this crate may depend on `act_mcp` or gain an MCP
@@ -78,12 +81,14 @@ pub mod classify;
 pub mod cli;
 pub mod config;
 pub mod diff;
+pub mod doctor;
 pub mod exit;
 pub mod git;
 pub mod history;
 pub mod log;
 pub mod metrics;
 pub mod mi;
+pub mod report;
 pub mod store;
 pub mod tui;
 
@@ -126,4 +131,10 @@ pub enum FathomError {
     /// already carries its `fix:` line.
     #[error(transparent)]
     Diff(#[from] crate::diff::Error),
+
+    /// `git` refused a question a headless command had to ask (mact-by1.13): `report` cannot enumerate
+    /// its window without it, and `doctor` reports the refusal as a failed check instead of raising
+    /// it. Each [`crate::git::GitError`] already carries its own `fix:` line.
+    #[error(transparent)]
+    Git(#[from] crate::git::GitError),
 }

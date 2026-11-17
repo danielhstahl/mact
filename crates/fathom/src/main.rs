@@ -8,11 +8,11 @@
 //! A bad flag never reaches the library: `Clap::parse` prints clap's own message and exits `2`,
 //! which is the code CI asserts for "your command line is wrong" ([`fathom::exit`]).
 
-use std::error::Error as _;
 use std::process::ExitCode;
 
 use clap::Parser;
 use fathom::cli::{self, Cli};
+use fathom::exit::print_refusal;
 use fathom::Exit;
 
 fn main() -> ExitCode {
@@ -22,13 +22,9 @@ fn main() -> ExitCode {
         Ok(exit) => exit.exit_code(),
         Err(err) => {
             // The chain, not the Debug blob: the top line is the refusal, each cause is context,
-            // and every `ConfigError`/`BootError` already carries a `fix:` line of its own.
-            eprintln!("fathom: {err}");
-            let mut source = err.source();
-            while let Some(cause) = source {
-                eprintln!("  caused by: {cause}");
-                source = cause.source();
-            }
+            // and every `ConfigError`/`BootError` already carries a `fix:` line of its own. Same
+            // printer `fathom report` uses when it needs to say a refusal and still exit 2.
+            print_refusal(&err);
             Exit::Failure.exit_code()
         }
     }

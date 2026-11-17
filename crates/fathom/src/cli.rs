@@ -8,17 +8,17 @@
 //! fathom [WORKSPACE]                     the TUI (the default mode)
 //! fathom tui [WORKSPACE]                 the same thing, spelled out
 //! fathom index [WORKSPACE]               build or refresh the metric cache  (--status)
-//! fathom report [WORKSPACE]              headless table on stdout
+//! fathom report [WORKSPACE]              headless table on stdout  (--format, --only-missing, --fail-on)
+//! fathom doctor [WORKSPACE]              why there is nothing to show  (--json)
 //! ```
 //!
 //! with the shared plumbing flags (`--evidence-dir`, `--cache-dir`, `--config`, `--from`, `--to`,
-//! `--first-parent`, `-v`/`-vv`) accepted on the bare command *and* on every subcommand, because
-//! `--cache-dir` is the same question whichever command asks it (ADR-0006 §3.1).
+//! `--first-parent`, `--limit`, `-v`/`-vv`) accepted on the bare command *and* on every subcommand,
+//! because `--cache-dir` is the same question whichever command asks it (ADR-0006 §3.1).
 //!
-//! What is not here yet, and where it comes from: the commit detail frame (mact-by1.14), the report and
-//! `doctor` (mact-by1.13). Those subcommands are wired to
-//! `not_yet_wired` — they parse, they validate the workspace, and they exit `3` naming the ticket
-//! instead of panicking or pretending to have produced a report ([`crate::exit`]).
+//! What is not here yet, and where it comes from: mact-by1.14's commit detail frame, which is a key
+//! inside the TUI (`enter`) rather than a subcommand, and whose key already answers with the ticket
+//! that owns it.
 //!
 //! `fathom tui` is wired for real (mact-by1.9), including the diff view (mact-by1.11) and the benchmark
 //! panel (mact-by1.12): `d` or `b` on a row inside the screen, or `--diff REV` / `--bench REV` on the
@@ -26,6 +26,10 @@
 //!
 //! `fathom index` is wired for real (mact-by1.10): it takes the cache lock, builds or updates
 //! `index/`, and publishes its own counters. It is the only command in this crate that writes.
+//!
+//! `fathom report` and `fathom doctor` are wired for real (mact-by1.13), and they are the two commands
+//! whose exit codes follow CI's 0/1/2 convention instead of the binary's 0/1/3 one — see
+//! [`crate::exit`]'s table, [`crate::report`] and [`crate::doctor`].
 
 use std::path::PathBuf;
 
@@ -36,7 +40,7 @@ use crate::config::Config;
 use crate::exit::Exit;
 use crate::history::Query;
 use crate::store::{self, Runbook, Store};
-use crate::{debug, error, info, warn, FathomError};
+use crate::{debug, info, warn, FathomError};
 
 /// Per-commit repo quality: coverage, benchmarks and maintainability, one row per commit.
 #[derive(Parser, Debug)]
@@ -207,9 +211,9 @@ pub struct CommonArgs {
     pub verbose: u8,
 }
 
-/// The subcommands. All three are recognised today; two of them print
-/// [`crate::exit::Exit::NotImplemented`] after validating the workspace, because their engines are
-/// later tickets and a stub that exits 0 would let CI assert a report was produced.
+/// The subcommands. All five are recognised and wired; the ones whose engine is a later ticket exit
+/// [`crate::exit::Exit::NotImplemented`] after validating the workspace, because a stub that exits 0
+/// would let CI assert a report was produced.
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// The timeline TUI: one row per commit (the default when no subcommand is given).
@@ -221,6 +225,9 @@ pub enum Command {
 
     /// Print the timeline as a table on stdout, no TTY needed.
     Report(ReportArgs),
+
+    /// Explain why the timeline is empty: workspace, evidence, workflows, cache, languages, config.
+    Doctor(DoctorArgs),
 }
 
 /// `fathom tui [WORKSPACE]`.
@@ -253,12 +260,56 @@ pub struct IndexArgs {
     pub rebuild: bool,
 }
 
-/// `fathom report [WORKSPACE]`.
+/// `fathom report [WORKSPACE]` — the timeline, machine-readable (mact-by1.13).
+///
+/// The window flags (`--from`, `--to`, `--limit`) and the rev-selection flags are the shared ones, and
+/// deliberately so: `fathom report --from v1.2` must mean the window `fathom index --from v1.2` built,
+/// or the report would be answering a different question than the index was asked.
 #[derive(Args, Debug)]
 pub struct ReportArgs {
     /// The workspace to report on; defaults to the current directory.
     #[arg(value_name = "WORKSPACE")]
     pub workspace: Option<PathBuf>,
+
+    /// The output format.
+    #[arg(
+        long,
+        value_name = "FMT",
+        default_value = "json",
+        help = "json (the stable, versioned envelope), tsv (the timeline's own columns, ascii glyphs) or csv; stdout carries the data and nothing else"
+    )]
+    pub format: crate::report::Format,
+
+    /// Only commits with no evidence — the queue a runner works through.
+    #[arg(
+        long,
+        help = "Only commits with no evidence at all (no coverage percent, no benchmark group, no action verdict), including commits the index never reached: the list an act-mcp sweep would consume"
+    )]
+    pub only_missing: bool,
+
+    /// The CI gate; repeat the flag to ask more than one question.
+    #[arg(
+        long,
+        value_name = "WHAT",
+        value_delimiter = ',',
+        help = "Exit 1 when this is true of a commit in the window (repeat or comma-separate): coverage-drop, mi-drop, benchmark-regression, action-failure. 0 clean, 1 findings, 2 could not run — the same codes act-mcp validate-evidence uses"
+    )]
+    pub fail_on: Vec<crate::report::FailOn>,
+}
+
+/// `fathom doctor [WORKSPACE] [--json]` — the explanation command (mact-by1.13).
+#[derive(Args, Debug)]
+pub struct DoctorArgs {
+    /// The workspace to explain; defaults to the current directory.
+    #[arg(value_name = "WORKSPACE")]
+    pub workspace: Option<PathBuf>,
+
+    /// The same checks as one JSON document.
+    #[arg(
+        long,
+        help = "Print the checks as JSON (name, status, summary, details, fixes) instead of the text report; the exit code is the worst check either way"
+    )]
+    pub json: bool,
 }
 
 /// What the argv asked for, after the default subcommand is filled in.
@@ -268,10 +319,12 @@ pub enum Mode {
     Tui,
     /// Write the store: the walk, the derive, the metric cache (mact-by1.10).
     Index,
-    /// Answer questions about the workspace and the store; the one `index` mode that works today.
+    /// Answer questions about the workspace and the store; the one `index` mode that writes nothing.
     IndexStatus,
-    /// Print the table. This ticket cannot: the table is mact-by1.13's.
+    /// Print the table, machine-readable (mact-by1.13).
     Report,
+    /// Explain why there is nothing to show (mact-by1.13).
+    Doctor,
 }
 
 impl Mode {
@@ -280,18 +333,19 @@ impl Mode {
     pub const fn access(self) -> Access {
         match self {
             Self::Index => Access::Write,
-            Self::Tui | Self::IndexStatus | Self::Report => Access::Read,
+            Self::Tui | Self::IndexStatus | Self::Report | Self::Doctor => Access::Read,
         }
     }
 
-    /// The ticket that fills this mode in, for the `not yet wired` line.
+    /// Whether a refusal in this mode exits `2` ("could not run") rather than `1`.
+    ///
+    /// The two headless commands, and only them: they exist to be run by a script, and their 0/1/2
+    /// convention is `act-mcp validate-evidence`'s ([`crate::exit`]). `doctor` never raises a refusal
+    /// of its own — it turns one into a `fail` check — but a workspace that never booted at all has no
+    /// checks to hang the refusal on.
     #[must_use]
-    pub const fn owner(self) -> &'static str {
-        match self {
-            Self::Tui => "mact-by1.9 (the timeline screen, ratatui)",
-            Self::Index | Self::IndexStatus => "mact-by1.10 (the metric cache store)",
-            Self::Report => "mact-by1.13 (the headless report)",
-        }
+    pub const fn blocks_on_error(self) -> bool {
+        matches!(self, Self::Report | Self::Doctor)
     }
 }
 
@@ -309,14 +363,33 @@ pub fn run(cli: &Cli) -> Result<Exit, FathomError> {
     crate::log::init(cli.common.verbose);
 
     let (workspace_argument, mode, rebuild) = resolve_request(cli);
-    let workspace = Boot::resolve_workspace(workspace_argument.as_deref())?;
-    let boot = Boot::validate(&workspace, &cli.common, mode.access())?;
+    let workspace = match Boot::resolve_workspace(workspace_argument.as_deref()) {
+        Ok(workspace) => workspace,
+        Err(reason) => return refuse(mode, reason.into()),
+    };
+    // `doctor` is the command you run when the workspace is wrong, so a boot refusal cannot be allowed
+    // to end it: the refusal becomes its report, and the exit code is still 2 ([`crate::exit`]).
+    let boot = match Boot::validate(&workspace, &cli.common, mode.access()) {
+        Ok(boot) => boot,
+        Err(reason) if mode == Mode::Doctor => {
+            let report = crate::doctor::unusable(&workspace, &reason.to_string());
+            print!("{}", report.render(doctor_json(cli)));
+            return Ok(report.exit());
+        }
+        Err(reason) => return refuse(mode, reason.into()),
+    };
 
-    let mut config = Config::discover(
+    // A `fathom.toml` this build does not understand is a refusal for every command except `doctor`,
+    // which reports it as a failed check and carries on with the defaults — saying which in the check.
+    let (mut config, config_error) = match Config::discover(
         cli.common.config.as_deref(),
         &boot.workspace,
         boot.git_root.as_deref(),
-    )?;
+    ) {
+        Ok(config) => (config, None),
+        Err(reason) if mode == Mode::Doctor => (Config::default(), Some(reason.to_string())),
+        Err(reason) => return refuse(mode, reason.into()),
+    };
     if cli.common.first_parent {
         // The one flag that is also config (§7.4), and the one that costs a re-index: ADR-0008's
         // per-commit delta is measured against a parent, so which parent decides the digest.
@@ -359,18 +432,48 @@ pub fn run(cli: &Cli) -> Result<Exit, FathomError> {
         act_evidence::SCHEMA_VERSION
     );
 
-    match mode {
-        Mode::IndexStatus => {
-            print_status(&boot, &config, &cli.common);
-            Ok(Exit::Success)
+    match &cli.command {
+        Some(Command::Report(args)) => crate::report::run(&boot, &config, &cli.common, args)
+            .or_else(|reason| refuse(Mode::Report, reason)),
+        Some(Command::Doctor(args)) => {
+            let input = crate::doctor::Input {
+                boot: &boot,
+                config: &config,
+                config_error,
+            };
+            let report = crate::doctor::run(&input);
+            print!("{}", report.render(args.json));
+            Ok(report.exit())
         }
-        Mode::Index => index(&boot, &config, &cli.common, rebuild).map(|()| Exit::Success),
-        Mode::Tui => crate::tui::run(&boot, &config, &cli.common),
-        Mode::Report => {
-            not_yet_wired(mode);
-            Ok(Exit::NotImplemented)
-        }
+        _ => match mode {
+            Mode::IndexStatus => {
+                print_status(&boot, &config, &cli.common);
+                Ok(Exit::Success)
+            }
+            Mode::Index => index(&boot, &config, &cli.common, rebuild).map(|()| Exit::Success),
+            Mode::Tui => crate::tui::run(&boot, &config, &cli.common),
+            Mode::Report | Mode::Doctor => unreachable!("handled above: both have their own argv"),
+        },
     }
+}
+
+/// Print a refusal on stderr and return the exit code this mode gives one.
+///
+/// Every command but the two headless ones keeps the binary's convention (a refusal is 1, and `main`
+/// prints it); `report` and `doctor` say the same thing and exit 2, because that is what "could not
+/// run" means to a CI step in this pipeline ([`crate::exit`]).
+fn refuse(mode: Mode, error: FathomError) -> Result<Exit, FathomError> {
+    if mode.blocks_on_error() {
+        crate::exit::print_refusal(&error);
+        return Ok(Exit::Blocked);
+    }
+    Err(error)
+}
+
+/// Whether `fathom doctor` was asked for JSON, without threading the subcommand's fields through
+/// [`resolve_request`] for a flag only one mode reads.
+fn doctor_json(cli: &Cli) -> bool {
+    matches!(&cli.command, Some(Command::Doctor(args)) if args.json)
 }
 
 /// `fathom index [WORKSPACE] [--rebuild]`: build the store, and say on stderr what it cost.
@@ -434,6 +537,11 @@ fn resolve_request(cli: &Cli) -> (Option<PathBuf>, Mode, bool) {
         Some(Command::Report(args)) => (
             pick(args.workspace.clone(), &top, "report"),
             Mode::Report,
+            false,
+        ),
+        Some(Command::Doctor(args)) => (
+            pick(args.workspace.clone(), &top, "doctor"),
+            Mode::Doctor,
             false,
         ),
     }
@@ -513,6 +621,12 @@ pub fn window(config: &Config, common: &CommonArgs) -> Query {
     if let Some(to) = &common.to {
         query.to = to.clone();
     }
+    if common.first_parent {
+        // Applied here as well as to the config in [`Cli::run`], because a caller that builds a window
+        // directly (the report, a test) must not be able to ask for first parents and get a full walk:
+        // which parent a delta was measured against decides what the word "drop" means (§7.4).
+        query.first_parent = true;
+    }
     query
 }
 
@@ -537,28 +651,4 @@ fn store_status(boot: &Boot) -> Vec<(String, String)> {
             ),
         ],
     }
-}
-
-/// The `not yet wired` line: stderr, exit 3, and the ticket that owns the rest.
-///
-/// Not `todo!()`/`unimplemented!()`, which would be a panic in a user's terminal and a core dump in
-/// CI: the argv is honoured, the workspace was validated, and what is missing is named with its
-/// owner.
-fn not_yet_wired(mode: Mode) {
-    let name = match mode {
-        Mode::Tui => "tui",
-        Mode::Index => "index",
-        Mode::IndexStatus => "index --status",
-        Mode::Report => "report",
-    };
-    error!(
-        "fathom {}: not yet wired — {} lands it. The argv and the boot checks above are real; the \
-         output is not.",
-        name,
-        mode.owner()
-    );
-    error!(
-        "  fix: `fathom index --status [WORKSPACE]` prints what this build already knows (roots, \
-         config, store state) as key<TAB>value lines"
-    );
 }
