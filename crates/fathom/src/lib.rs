@@ -126,6 +126,13 @@ pub enum FathomError {
     #[error("{0}")]
     Terminal(String),
 
+    /// stdout could not take the data (see [`crate::exit::print_data`]): a full disk, a closed
+    /// descriptor, a redirect into a place that will not hold it. A reader that hung up early is not
+    /// this — `fathom report | head -1` is normal, and the gate's verdict is still the exit code.
+    /// Carries its own `fix:` line.
+    #[error("{0}")]
+    Output(String),
+
     /// A commit's diff could not be read (see [`crate::diff`], mact-by1.11): git does not know the
     /// revision, the repository is unreadable, or a `paths.*` glob will not compile. Every variant
     /// already carries its `fix:` line.

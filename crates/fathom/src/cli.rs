@@ -382,7 +382,9 @@ pub fn run(cli: &Cli) -> Result<Exit, FathomError> {
         Ok(boot) => boot,
         Err(reason) if mode == Mode::Doctor => {
             let report = crate::doctor::unusable(&workspace, &reason.to_string());
-            print!("{}", report.render(doctor_json(cli)));
+            if let Err(why) = crate::exit::print_data(&report.render(doctor_json(cli))) {
+                return refuse(Mode::Doctor, why);
+            }
             return Ok(report.exit());
         }
         Err(reason) => return refuse(mode, reason.into()),
@@ -451,12 +453,16 @@ pub fn run(cli: &Cli) -> Result<Exit, FathomError> {
                 config_error,
             };
             let report = crate::doctor::run(&input);
-            print!("{}", report.render(args.json));
+            // `doctor`'s whole output is a status code, so a stdout that will not take the document is
+            // the command failing to run: exit 2, the same code a failed check earns.
+            if let Err(why) = crate::exit::print_data(&report.render(args.json)) {
+                return refuse(Mode::Doctor, why);
+            }
             Ok(report.exit())
         }
         _ => match mode {
             Mode::IndexStatus => {
-                print_status(&boot, &config, &cli.common);
+                print_status(&boot, &config, &cli.common)?;
                 Ok(Exit::Success)
             }
             Mode::Index => index(&boot, &config, &cli.common, rebuild).map(|()| Exit::Success),
@@ -568,7 +574,13 @@ fn pick(subcommand: Option<PathBuf>, top: &Option<PathBuf>, name: &str) -> Optio
 
 /// The `key<TAB>value` table `fathom index --status` writes on stdout — the only thing this ticket
 /// prints there, and the shape `report` will grow into.
-fn print_status(boot: &Boot, config: &Config, common: &CommonArgs) {
+///
+/// The write is checked for the same reason every other one is ([`crate::exit::print_data`]).
+fn print_status(
+    boot: &Boot,
+    config: &Config,
+    common: &CommonArgs,
+) -> Result<(), crate::FathomError> {
     let mut lines = boot.status_lines();
     lines.extend(config.status_lines());
     lines.push((
@@ -593,7 +605,7 @@ fn print_status(boot: &Boot, config: &Config, common: &CommonArgs) {
         out.push_str(&value.replace('\t', " "));
         out.push('\n');
     }
-    print!("{out}");
+    crate::exit::print_data(&out)
 }
 
 /// The diff view's byte caps, from the two flags (mact-by1.11).

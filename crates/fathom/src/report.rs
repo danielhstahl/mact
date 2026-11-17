@@ -503,7 +503,10 @@ pub fn run(
     args: &ReportArgs,
 ) -> Result<Exit, FathomError> {
     let report = build(boot, config, common, args)?;
-    print!("{}", report.render(args.format));
+    // The one place this command writes stdout, and it is checked: a reader that took the first line and
+    // left (`| head -1`) is not a crash, and must not cost the run its gate verdict either
+    // ([`crate::exit::print_data`]).
+    crate::exit::print_data(&report.render(args.format))?;
     for finding in &report.gate.findings {
         // The findings are data only in the JSON: a TSV consumer must not inherit prose, so the human
         // line goes to stderr with every other diagnostic.

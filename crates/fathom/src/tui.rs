@@ -301,7 +301,7 @@ pub fn run(
         // and all (mact-by1.11's no-TTY fallback).
         if let Some(rev) = &arguments.diff {
             let view = requested_diff(boot, config, rev, limits)?;
-            print!("{}", plain::diff(&view, &palette, plain::WIDTH));
+            crate::exit::print_data(&plain::diff(&view, &palette, plain::WIDTH))?;
             return Ok(Exit::Success);
         }
         // `--detail REV` is `enter` on a commit, asked on the command line and printed as text: all three
@@ -309,12 +309,15 @@ pub fn run(
         if let Some(rev) = &arguments.detail {
             let sha = resolve_rev(boot, rev)?;
             match store_view::detail(boot, &sha) {
-                Ok(snapshot) => print!(
-                    "{}",
-                    plain::detail(&detail_view(snapshot), &palette, plain::WIDTH)
-                ),
+                Ok(snapshot) => crate::exit::print_data(&plain::detail(
+                    &detail_view(snapshot),
+                    &palette,
+                    plain::WIDTH,
+                ))?,
                 // A refusal is one line, as every other plain-mode refusal is.
-                Err(reason) => println!("{}", reason.replace('\n', " ")),
+                Err(reason) => {
+                    crate::exit::print_data(&format!("{}\n", reason.replace('\n', " ")))?;
+                }
             }
             return Ok(Exit::Success);
         }
@@ -325,18 +328,18 @@ pub fn run(
             app.bench_band = config.benchmarks.regression_band_percent;
             let sha = resolve_rev(boot, rev)?;
             if app.show_bench(&sha).is_err() {
-                print!("{}", app.status_line(&palette).replace('\n', " ") + "\n");
+                crate::exit::print_data(&(app.status_line(&palette).replace('\n', " ") + "\n"))?;
                 return Ok(Exit::Success);
             }
             if let Some(panel) = app.bench.as_ref() {
-                print!("{}", plain::bench(panel, &palette, plain::WIDTH));
+                crate::exit::print_data(&plain::bench(panel, &palette, plain::WIDTH))?;
             }
             return Ok(Exit::Success);
         }
         let reading = store_view::read(boot, arguments.limit);
         let mut app = App::new(reading, now);
         app.bench_band = config.benchmarks.regression_band_percent;
-        print!("{}", plain::table(&app, &palette, plain::WIDTH));
+        crate::exit::print_data(&plain::table(&app, &palette, plain::WIDTH))?;
         return Ok(Exit::Success);
     }
 

@@ -16,15 +16,21 @@
 //! * **the stream split**: a refusal, a warning and a `not yet wired` all go to stderr, and stdout
 //!   stays empty until a command genuinely has data — so `fathom report > timeline.tsv` cannot be
 //!   poisoned by a log line (ADR-0005 §6).
+//! * **the reader who stops reading**: `| head -1` is ordinary for a tool whose stdout *is* the product,
+//!   so a closed pipe is not a panic and not a different exit code, while a stdout that is broken for
+//!   real (`/dev/full`) is a refusal with the command's own code.
 //! * **the refusals** themselves: a workspace that is not a checkout, a cache root nested in the
 //!   evidence root, an unwritable cache for a writer, a `fathom.toml` that names a key this build
 //!   does not know — each one line plus a `fix:`, none of them a panic.
 //!
-//! Nothing here needs a TTY, a network, `git`, or `act`. A "git work tree" is a directory with a
-//! `.git` in it, which is exactly what `fathom::boot` checks.
+//! Nothing here needs a TTY, a network, or `act`. A "git work tree" is a directory with a `.git` in
+//! it, which is exactly what `fathom::boot` checks; the one test that has to get *past* the boot
+//! checks to reach the failure it is testing builds a real commit with `git`.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+
+mod common;
 
 /// The binary under test, from the same build as this test binary.
 const FATHOM: &str = env!("CARGO_BIN_EXE_fathom");
@@ -1010,5 +1016,102 @@ fn verbose_flags_raise_the_level_and_rust_log_overrides_them() {
         puzzled.stderr.contains("is not a level"),
         "an unparseable directive says so:\n{}",
         puzzled.stderr
+    );
+}
+
+// ---------------------------------------------------------------------------
+// a reader that stops reading
+// ---------------------------------------------------------------------------
+
+/// `fathom report --format tsv | head -1` is one of the first things a reader types at a tool whose own
+/// comment above the write says *stdout is data*. Rust ignores `SIGPIPE` at startup, so the write comes
+/// back `EPIPE`, and `print!` panics on a write error — which is a `101` and a core-dump sentence for
+/// something the reader did on purpose. Nobody reads the end of a diff, and `fathom` must know that.
+#[test]
+fn a_reader_that_hangs_up_early_is_not_a_crash() {
+    let scratch = tempfile::tempdir().expect("scratch");
+    let repo = workspace(scratch.path());
+    let mut child = Command::new(FATHOM)
+        .args(["--plain", &repo.display().to_string()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary runs");
+    // Nobody is going to read a byte: hang up the read end before asking for one.
+    drop(child.stdout.take().expect("the pipe this test asked for"));
+    let output = child.wait_with_output().expect("the child finished");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a closed reader is not this program's failure: {stderr}"
+    );
+    for needle in ["panicked", "Broken pipe", "broken pipe"] {
+        assert!(
+            !stderr.contains(needle),
+            "stderr says {needle:?}:\n{stderr}"
+        );
+    }
+}
+
+/// The other half: a stdout that is genuinely broken — here `/dev/full`, which answers every write with
+/// `ENOSPC` — is a refusal like every other, with the exit code the command's own table promises. A gate
+/// that could not print its findings may not report them as clean.
+#[test]
+fn a_stdout_that_will_not_take_the_data_is_a_refusal_with_the_commands_own_code() {
+    if !Path::new("/dev/full").exists() {
+        // Not a linux box; the two outcomes are unit-tested in `src/exit.rs` regardless.
+        return;
+    }
+    let scratch = tempfile::tempdir().expect("scratch");
+    // A real commit, because the refusal under test is the one *after* the report was produced: a
+    // workspace git will not answer for is refused earlier and for a different reason.
+    let repo = common::Repo::init(&scratch.path().join("repo"));
+    repo.write("src/a.py", "def a():\n    return 1\n");
+    repo.commit("first");
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .expect("/dev/full is writable-by-name and fails");
+    let child = Command::new(FATHOM)
+        .args(["report", &repo.path().display().to_string()])
+        .stdout(Stdio::from(full))
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary runs");
+    let output = child.wait_with_output().expect("the child finished");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "`report` could not produce its report, which is 2: {stderr}"
+    );
+    assert!(
+        stderr.contains("cannot write to stdout") && stderr.contains("fix:"),
+        "a refusal in the usual shape:\n{stderr}"
+    );
+    assert!(!stderr.contains("panicked"), "and not a panic:\n{stderr}");
+
+    // The interactive commands keep their own scale, where every refusal is 1.
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .expect("/dev/full again");
+    let child = Command::new(FATHOM)
+        .args(["index", "--status", &repo.path().display().to_string()])
+        .stdout(Stdio::from(full))
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary runs");
+    let output = child.wait_with_output().expect("the child finished");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "`index --status` refuses with 1: {stderr}"
+    );
+    assert!(
+        stderr.contains("cannot write to stdout"),
+        "and says which stream: {stderr}"
     );
 }

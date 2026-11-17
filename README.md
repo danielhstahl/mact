@@ -747,6 +747,12 @@ thing in this binary.
 pipeline treats both tools alike. A finding is the product there, not a fault: a `--fail-on` gate that
 prints findings and exits `0` anyway is worse than no gate, because CI goes green.
 
+And a reader is allowed to stop reading. `fathom report --format tsv | head -1` is one of the first things
+anyone types at a table, so a pipe whose far end went away is not an error in this binary: the command
+finishes the work, keeps the exit code its own row above promises (a tripped gate is still `1`, closed
+pipe or not), and says nothing. A stdout that is broken *for real* — a full disk, a redirect into a place
+that will not take it — is a refusal like every other, with the code that row calls a refusal.
+
 ### When the timeline is empty
 
 The first thing everyone meets is a timeline with no numbers, and it is nearly always one of three things.
