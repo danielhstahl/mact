@@ -539,6 +539,7 @@ mod tests {
             no_color: false,
             limit: None,
             diff: None,
+            bench: None,
             max_diff_bytes: None,
             max_diff_bytes_per_file: None,
             verbose: 0,

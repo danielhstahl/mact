@@ -66,6 +66,8 @@ pub enum Screen {
     Timeline,
     /// The diff of one commit, named by its full SHA.
     Diff(String),
+    /// The benchmark panel of one commit, named by its full SHA (mact-by1.12).
+    Bench(String),
 }
 
 /// Where the reader is inside one commit's diff.

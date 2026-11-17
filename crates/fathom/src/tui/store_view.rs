@@ -37,6 +37,7 @@ use crate::store::lock::LockBody;
 use crate::store::row::Row;
 use crate::store::{self, Run};
 
+use super::bench;
 use super::cells;
 use super::entry::{Bench, Churn, Delta, Entry, Metric};
 
@@ -443,6 +444,8 @@ fn entry_of(row: &Row, model: &Model) -> Entry {
         mi: mi_metric,
         unanalysed_paths: unanalysed,
         bench: bench_of(&evidence, &caveats, model),
+        // The panel's whole input, from the same section the timeline's one-cell summary is cut from.
+        detail: bench::Commit::from_row(row),
         action: action_of(&evidence),
         indexed: true,
         caveats,

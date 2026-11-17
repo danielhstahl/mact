@@ -341,3 +341,121 @@ fn a_cancelled_index_leaves_a_usable_store_and_says_so() {
         "the flag is the caller's, untouched"
     );
 }
+
+/// The benchmark panel's read path, end to end: a record act-mcp wrote, the row `fathom index` derived
+/// from it, the `Entry` the store hands the screen, and the panel built on top — with no fixture in
+/// between to disagree with the real row shape.
+///
+/// This is the test that says the panel is a *view*. Everything in `tests/tui_bench.rs` builds its commit
+/// from JSON it wrote itself, which is the right way to test a parser and the wrong way to prove the
+/// parser is pointed at the right keys. Here the JSON comes from the reader, through the ledger, and out
+/// again, so a panel that reads `benchmarks[].median` instead of `benchmarks[].value`, or forgets that
+/// the failed run is not a row, fails here as well as there.
+#[test]
+fn a_benchmark_record_reaches_the_panel_through_the_store() {
+    let scratch = tempfile::tempdir().expect("scratch");
+    let fixture = Fixture::new(scratch.path(), "bench-through-the-store");
+    let shas = three_commits(&fixture.repo);
+    let at = &shas[1];
+
+    // One successful run with two samples of the same metric, and a later failed run whose number is
+    // bigger than both. Retention is what makes the two of them comparable, so the panel's value must be
+    // the successful run's median and the failed run must appear only as a named exclusion.
+    let dir = fixture.repo.path().join(".evidence/benchmark").join(at);
+    std::fs::create_dir_all(&dir).expect("the sha directory is the contract's");
+    std::fs::write(
+        dir.join("20261110T040000Z-aaaaaa.jsonl"),
+        benchmark_record(at, "20261110T040000Z-aaaaaa", "success", 100.0, 1)
+            + &benchmark_record(at, "20261110T040000Z-aaaaaa", "success", 200.0, 2),
+    )
+    .expect("write the successful run");
+    std::fs::write(
+        dir.join("20261110T050000Z-bbbbbb.jsonl"),
+        benchmark_record(at, "20261110T050000Z-bbbbbb", "failed", 999.0, 1),
+    )
+    .expect("write the failed run");
+    fixture.index();
+
+    let reading = fixture.read();
+    let entry = reading
+        .entries
+        .iter()
+        .find(|entry| entry.sha == *at)
+        .expect("the commit is on the timeline");
+    assert_eq!(
+        entry.detail.groups.len(),
+        1,
+        "one group, from the run that ended `success`"
+    );
+    let group = &entry.detail.groups[0];
+    println!("EXCLUDED: {:?}", entry.detail.excluded);
+    assert_eq!(group.id.name, "tokenizer_throughput");
+    assert_eq!(group.id.unit.as_deref(), Some("ops/s"));
+    assert_eq!(group.value.value, 150.0, "the median of the two samples");
+    assert_eq!(group.samples, 2);
+    assert_eq!((group.min.value, group.max.value), (100.0, 200.0));
+    assert_eq!(group.run_id, "20261110T040000Z-aaaaaa");
+    assert_eq!(
+        entry.detail.excluded.len(),
+        1,
+        "the failed run is an identity with a reason, not a number"
+    );
+
+    // And the panel on top of it, in the shape the store gave: this commit's row as `at`, the older rows
+    // below it, nothing else.
+    let older: Vec<fathom::tui::bench::Commit> = reading
+        .entries
+        .iter()
+        .skip_while(|entry| entry.sha != *at)
+        .skip(1)
+        .map(|entry| entry.detail.clone())
+        .collect();
+    let opened = fathom::tui::bench::Panel::open(
+        &entry.detail,
+        &older,
+        &fathom::tui::bench::Evidence {
+            present: reading.evidence_present,
+            path: reading.evidence_path.clone(),
+        },
+        5.0,
+    );
+    assert_eq!(opened.lines.len(), 1);
+    let line = opened.lines.first().expect("the row");
+    assert_eq!(line.value_text(&Palette::interactive(), 14), "150 n=2");
+    assert_eq!(
+        line.verdict,
+        Some(fathom::tui::bench::Verdict::NoBaseline),
+        "no earlier commit in this window has the metric, and the panel says so rather than drawing a \
+         flat line"
+    );
+}
+
+/// One benchmark record in the ADR-0002 shape, with the run's identity, status and sample index varied.
+///
+/// The `sample` field is not decoration: ADR-0008 §4.1's duplicate rule keys a measurement on
+/// `(run, metric identity, sample)`, so two records without it are one measurement published twice and
+/// the second is dropped — which is exactly how a fixture silently ends up testing a one-sample run.
+fn benchmark_record(sha: &str, run_id: &str, status: &str, value: f64, sample: u64) -> String {
+    let record = serde_json::json!({
+        "schema_version": 1,
+        "kind": "benchmark",
+        "run_id": run_id,
+        "commit": sha,
+        "workflow": "benchmark",
+        "task": "hyperfine-bench",
+        "category": "benchmark",
+        "run_status": status,
+        "tool": { "name": "act-mcp", "version": "0.1.0", "act_version": "0.2.68" },
+        "started_at": "2026-11-10T04:00:00.000Z",
+        "duration_ms": 61_000,
+        "exit_code": if status == "success" { 0 } else { 1 },
+        "host": "build-box-07",
+        "name": "tokenizer_throughput",
+        "value": value,
+        "unit": "ops/s",
+        "labels": { "job": "hyperfine-bench" },
+        "sample": sample,
+        "source": "job_file"
+    });
+    format!("{record}\n")
+}

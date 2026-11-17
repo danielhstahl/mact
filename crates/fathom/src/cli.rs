@@ -15,14 +15,14 @@
 //! `--first-parent`, `-v`/`-vv`) accepted on the bare command *and* on every subcommand, because
 //! `--cache-dir` is the same question whichever command asks it (ADR-0006 §3.1).
 //!
-//! What is not here yet, and where it comes from: the benchmark panel (mact-by1.12) and the commit
-//! detail frame (mact-by1.14), the report and `doctor` (mact-by1.13). Those subcommands are wired to
+//! What is not here yet, and where it comes from: the commit detail frame (mact-by1.14), the report and
+//! `doctor` (mact-by1.13). Those subcommands are wired to
 //! `not_yet_wired` — they parse, they validate the workspace, and they exit `3` naming the ticket
 //! instead of panicking or pretending to have produced a report ([`crate::exit`]).
 //!
-//! `fathom tui` is wired for real (mact-by1.9), including the diff view (mact-by1.11): `d` on a row
-//! inside the screen, or `--diff REV` on the command line, which is also what `--plain --diff REV`
-//! prints to a pipe.
+//! `fathom tui` is wired for real (mact-by1.9), including the diff view (mact-by1.11) and the benchmark
+//! panel (mact-by1.12): `d` or `b` on a row inside the screen, or `--diff REV` / `--bench REV` on the
+//! command line, which are also what `--plain --diff REV` and `--plain --bench REV` print to a pipe.
 //!
 //! `fathom index` is wired for real (mact-by1.10): it takes the cache lock, builds or updates
 //! `index/`, and publishes its own counters. It is the only command in this crate that writes.
@@ -168,6 +168,15 @@ pub struct CommonArgs {
         help = "Open this commit's diff instead of the timeline: a SHA, HEAD, a branch, or a form like HEAD~3. With --plain it prints that diff as text"
     )]
     pub diff: Option<String>,
+
+    /// Open one commit's benchmark panel instead of the timeline (mact-by1.12's key, on the command line).
+    #[arg(
+        long,
+        value_name = "REV",
+        global = true,
+        help = "Open this commit's benchmark panel instead of the timeline: a SHA, HEAD, a branch, or a form like HEAD~3. With --plain it prints that panel as text"
+    )]
+    pub bench: Option<String>,
 
     /// The whole-commit patch cap, in bytes.
     #[arg(

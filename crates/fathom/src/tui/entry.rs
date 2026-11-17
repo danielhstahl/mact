@@ -220,6 +220,12 @@ pub struct Entry {
     pub unanalysed_paths: u64,
     /// The benchmark column (ADR-0008 §4.5).
     pub bench: Bench,
+    /// The same commit's benchmark evidence in full, for the panel `b` opens (mact-by1.12).
+    ///
+    /// The timeline shows one group and this is everything behind it, so the panel is a pure function
+    /// of rows the store already gave this screen: no second read, no second derivation, and no way for
+    /// the cell and the panel to disagree about a number.
+    pub detail: crate::tui::bench::Commit,
     /// The action column (ADR-0008 §5.3's four states).
     pub action: ActionState,
     /// Whether this commit has a row at all. `false` is a commit the index has not reached: every

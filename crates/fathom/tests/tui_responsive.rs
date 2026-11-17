@@ -43,6 +43,7 @@ fn reading_with(count: usize) -> Reading {
         mi: fathom::tui::entry::Metric::UNKNOWN,
         unanalysed_paths: 0,
         bench: fathom::tui::entry::Bench::missing(None),
+        detail: fathom::tui::bench::Commit::default(),
         action: fathom::metrics::vocab::ActionState::NoEvidence,
         indexed: true,
         caveats: Vec::new(),

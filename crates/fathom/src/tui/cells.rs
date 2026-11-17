@@ -441,6 +441,7 @@ mod tests {
                 gap: None,
             },
             unanalysed_paths: 0,
+            detail: crate::tui::bench::Commit::default(),
             bench: Bench {
                 name: "tokenizer_throughput".to_owned(),
                 labels: "{}".to_owned(),

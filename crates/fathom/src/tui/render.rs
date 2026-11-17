@@ -19,7 +19,7 @@
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
 use ratatui::Frame;
 
 use crate::mi::score::Band;
@@ -53,10 +53,16 @@ pub fn draw(app: &App, frame: &mut Frame, palette: &Palette) {
         return;
     }
 
+    // Two rows of status when the bench panel is up. Its status line is a sentence about the selected
+    // metric — the verdict, the samples behind the number, the spread, how much of the history is
+    // missing, which run it all came from — and one row at a hundred columns cut it off mid-clause, which
+    // is the one place a reader goes to check whether a cell is a regression. The other two screens'
+    // status lines are one row long by construction, so they do not pay for the extra row.
+    let status_rows = 1 + u16::from(matches!(app.screen, Screen::Bench(_)));
     let [header, body, status, keys] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(3),
-        Constraint::Length(1),
+        Constraint::Length(status_rows),
         Constraint::Length(1),
     ])
     .areas(area);
@@ -77,6 +83,15 @@ pub fn draw(app: &App, frame: &mut Frame, palette: &Palette) {
             );
             draw_heading(&left, &right, frame, header, palette);
             draw_panes(view, frame, body, palette);
+        }
+        Screen::Bench(_) => {
+            let panel = app.bench_view();
+            let (left, right) = panel.map_or_else(
+                || ("BENCH".to_owned(), String::new()),
+                |panel| panel.header(palette),
+            );
+            draw_heading(&left, &right, frame, header, palette);
+            draw_bench(app, frame, body, palette);
         }
     }
     draw_status(app, frame, status, palette);
@@ -107,10 +122,14 @@ fn draw_heading(left: &str, right: &str, frame: &mut Frame, area: Rect, palette:
     // vanished entirely tells you you are in a very narrow terminal and nothing else.
     let floor = 12.min(usize::from(area.width));
     let room = usize::from(area.width);
+    // The right half may claim at most half the row, whatever it wanted: the bench panel's fact list is
+    // long by nature (which workflows ran, what retention dropped, the superseded and unreadable counts),
+    // and a heading whose left half is `BENCH  3b8e…` has stopped saying which commit this is — the one
+    // thing the heading exists to say.
     let gutter = if right_wanted == 0 {
         0
     } else {
-        right_wanted + 1
+        right_wanted.min(usize::from(area.width) / 2) + 1
     };
     let head_width = u16::try_from(
         (wanted + 1)
@@ -315,6 +334,83 @@ fn line_style(kind: crate::diff::LineKind, palette: &Palette) -> Style {
         LineKind::Hunk => style.fg(Color::Cyan).add_modifier(Modifier::BOLD),
         LineKind::Meta => style.add_modifier(Modifier::DIM),
         LineKind::Context => style,
+    }
+}
+
+/// The benchmark panel's table: one bordered box, a title row of column names, and the rows the
+/// panel has.
+///
+/// No policy lives here: [`super::bench::Panel`] decided which rows exist, what each cell says and which
+/// columns the width can afford, and this function puts those strings in a buffer. The empty state is
+/// drawn in the table's body for the same reason the timeline draws its own: a bordered box with nothing
+/// in it is a dead end, and the lines that name the next step belong where the eye already is.
+fn draw_bench(app: &App, frame: &mut Frame, area: Rect, palette: &Palette) {
+    let block = Block::default().borders(Borders::ALL).title(Span::styled(
+        " benchmark ",
+        Style::default().add_modifier(Modifier::BOLD),
+    ));
+    let inner = block.inner(area);
+    block.render(area, frame.buffer_mut());
+    let Some(panel) = app.bench_view() else {
+        return;
+    };
+    let buffer = frame.buffer_mut();
+    if panel.lines.is_empty() {
+        let text = panel
+            .next_step()
+            .into_iter()
+            .map(|line| {
+                Line::from(Span::styled(
+                    line,
+                    Style::default().add_modifier(Modifier::DIM),
+                ))
+            })
+            .collect::<Vec<Line>>();
+        Paragraph::new(text).render(
+            Rect {
+                x: inner.x,
+                y: inner.y,
+                width: inner.width,
+                height: inner.height,
+            },
+            buffer,
+        );
+        return;
+    }
+    // One cell of gutter on each side, which is the budget `Panel::rows` was written against.
+    let width = usize::from(inner.width.saturating_sub(2));
+    buffer.set_stringn(
+        inner.x + 1,
+        inner.y,
+        panel.header_row(width, palette),
+        usize::from(inner.width),
+        Style::default().add_modifier(Modifier::UNDERLINED),
+    );
+    let body = usize::from(inner.height.saturating_sub(1));
+    let rows = panel.rows(width, palette, true);
+    for row in 0..body {
+        let index = panel.offset + row;
+        let Some(text) = rows.get(index) else {
+            break;
+        };
+        let selected = index == panel.selection;
+        let mut style = Style::default();
+        if selected {
+            style = style.add_modifier(Modifier::BOLD);
+            if palette.highlight {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+        }
+        buffer.set_stringn(
+            inner.x + 1,
+            inner
+                .y
+                .saturating_add(1)
+                .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
+            text,
+            usize::from(inner.width),
+            style,
+        );
     }
 }
 
@@ -532,13 +628,21 @@ fn row_style(entry: &Entry, palette: &Palette, selected: bool) -> Style {
 
 /// The one-line explanation: a message, the filter prompt, or the selected row's caveats.
 fn draw_status(app: &App, frame: &mut Frame, area: Rect, palette: &Palette) {
-    let line = app.status_line();
+    let line = app.status_line(palette);
     let style = if palette.colour {
         Style::default().fg(Color::Cyan)
     } else {
         Style::default().add_modifier(Modifier::DIM)
     };
-    Paragraph::new(Line::from(Span::styled(line, style))).render(area, frame.buffer_mut());
+    // Two-row statuses wrap; one-row statuses are cut, as they always were. The difference is deliberate
+    // and it is the bench panel that asked for it: a wrapped clause is readable where an ellipsis is a
+    // mystery, but a wrap on a one-row box does not gain a row, it loses the partial word at the edge —
+    // so the timeline and the diff view keep the cut they were drawn and tested with.
+    let mut text = Paragraph::new(Line::from(Span::styled(line, style)));
+    if area.height > 1 {
+        text = text.wrap(Wrap { trim: false });
+    }
+    text.render(area, frame.buffer_mut());
 }
 
 /// The key line, always visible: the keys of whichever screen is up, and nothing else.
@@ -572,6 +676,26 @@ fn draw_keys(app: &App, frame: &mut Frame, area: Rect, palette: &Palette) {
                 "{position}j/k scroll   n/p file   t all files   g/G ends   d/Esc back   ? help   q quit"
             )
         }
+        Screen::Bench(_) => {
+            // The panel's own keys, and `f` where the diff view's `t` is: the key that shows what the
+            // derivation left out.
+            let panel = app.bench_view();
+            let position = panel.map_or_else(String::new, |panel| {
+                if panel.lines.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}/{}  ", panel.selection + 1, panel.lines.len())
+                }
+            });
+            let runs = panel.map_or_else(String::new, |panel| {
+                if panel.show_excluded {
+                    "[f] excluded shown   ".to_owned()
+                } else {
+                    "[f] excluded hidden  ".to_owned()
+                }
+            });
+            format!("{position}{runs}j/k row   g/G ends   d diff   b/Esc back   ? help   q quit")
+        }
     };
     Paragraph::new(Line::from(Span::styled(text, style))).render(area, frame.buffer_mut());
 }
@@ -590,6 +714,10 @@ fn draw_help(app: &App, frame: &mut Frame, palette: &Palette, area: Rect) {
         "keys",
         Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
     )));
+    if matches!(app.screen, Screen::Bench(_)) {
+        draw_help_box(frame, palette, area, bench_help(app, palette));
+        return;
+    }
     if matches!(app.screen, Screen::Diff(_)) {
         for (key, what) in [
             ("j / k, PgDn / PgUp", "scroll this file's patch"),
@@ -646,7 +774,7 @@ fn draw_help(app: &App, frame: &mut Frame, palette: &Palette, area: Rect) {
         ("R", "re-index now; esc cancels a running index"),
         ("d", "the selected commit's diff; d or esc comes back"),
         ("enter", "commit detail (mact-by1.14, not wired yet)"),
-        ("b", "benchmark panel (mact-by1.12, not wired yet)"),
+        ("b", "this commit's benchmark panel; b or esc comes back"),
         ("?", "this help"),
         ("q / Ctrl-C", "quit"),
     ] {
@@ -710,6 +838,90 @@ fn draw_help(app: &App, frame: &mut Frame, palette: &Palette, area: Rect) {
     )));
 
     draw_help_box(frame, palette, area, lines);
+}
+
+/// The bench panel's legend: its keys, the marks it draws, and the two things about a benchmark that
+/// a reader has no other place to ask about (what a sparkline's scale means, and what a spread of one
+/// run does not prove).
+fn bench_help(app: &App, palette: &Palette) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        "keys",
+        Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+    )));
+    for (key, what) in [
+        ("j / k, PgDn / PgUp", "one metric / a pane of metrics"),
+        ("g / G", "first / last metric"),
+        (
+            "f",
+            "show the runs retention excluded, with the reason each was excluded",
+        ),
+        ("d", "this commit's diff, from here"),
+        ("b / Esc", "back to the timeline, on the row you left"),
+        ("?", "this help"),
+        ("q / Ctrl-C", "quit"),
+    ] {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{key:<20}"),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(what),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "reading this panel",
+        Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+    )));
+    let marks = format!(
+        "{} {} {}",
+        palette.glyphs.context,
+        if palette.unicode() { "\u{2691}" } else { "!" },
+        palette.glyphs.unknown
+    );
+    for note in [
+        "the value is the median of the newest successful run's samples; the spread is every retained run's, and the run count in the cell says how much that spread has to work with",
+        "one run with min == max is an unmeasured noise floor, so a delta off it is \u{201c}insufficient\u{201d}, never 0%",
+        "a metric with no unit is displayable and never comparable: no delta, no sparkline, no shared axis (ADR-0008 4.3)",
+        "every sparkline is scaled to its own min and max, which is why the axis is printed beside it",
+        "a metric this commit stopped reporting keeps a row saying when it was last seen; absence is never 0 and never carried forward",
+    ] {
+        lines.push(Line::from(Span::styled(
+            format!("  {note}"),
+            Style::default().add_modifier(Modifier::DIM),
+        )));
+    }
+    lines.push(Line::from(""));
+    for (glyph, what) in [
+        (
+            marks.as_str(),
+            "act_log context, in_band_stdout, and \u{2014} for a metric with no measurement here",
+        ),
+        (
+            &format!("{} {} {}", palette.glyphs.delta_up, palette.glyphs.delta_down, palette.glyphs.delta_flat),
+            "the baseline (the newest older commit with this exact group): up, down, equal",
+        ),
+        ("!", "outside the declared band in the column title; the band is a percent of value, not a threshold of importance"),
+    ] {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{glyph:<20}"),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(what),
+        ]));
+    }
+    if let Some(panel) = app.bench_view() {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "band: {}% of value (fathom.toml benchmarks.regression_band_percent)",
+                panel.band_percent
+            ),
+            Style::default().add_modifier(Modifier::DIM),
+        )));
+    }
+    lines
 }
 
 /// The help overlay's box: centred, as large as the screen allows and as small as the text needs, and

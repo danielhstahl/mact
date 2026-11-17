@@ -63,7 +63,7 @@ pub fn table(app: &App, palette: &Palette, width: usize) -> String {
         let _ = writeln!(out, "{}", line(&slots, &texts, ellipsis));
     }
 
-    let status = app.status_line();
+    let status = app.status_line(palette);
     if !status.is_empty() {
         let _ = writeln!(out, "{}", prose(palette, &status));
     }
@@ -151,6 +151,57 @@ pub fn diff(view: &super::diff_view::DiffView, palette: &Palette, width: usize) 
             );
         }
     }
+    out
+}
+
+/// The benchmark panel, as text.
+///
+/// `fathom tui --plain --bench <rev>` is `b` for a terminal you cannot press `b` in. Two things differ
+/// from the screen, both forced by the surface, and nothing else does:
+///
+/// * **every row is printed, not the visible window** — there is no scrolling in a pipe, and the panel
+///   exists to be read top to bottom;
+/// * **there is no selection**, so the status line is the panel's notice (the excluded-run overlay's
+///   bill, or the empty state) and the band is spelled out in a footer instead of sitting in a column
+///   title the reader has already scrolled past.
+///
+/// What is identical: every cell, every glyph, the header's workflow facts, the empty state's next
+/// steps, and the column model — all of it comes from [`super::bench::Panel`], the same code the screen
+/// draws.
+pub fn bench(panel: &super::bench::Panel, palette: &Palette, width: usize) -> String {
+    let mut out = String::new();
+    let (left, right) = panel.header(palette);
+    let _ = writeln!(out, "{}", prose(palette, &format!("{left}  {right}")));
+    // The empty state's headline is `notice()` and `next_step()`'s first line, the same sentence: the
+    // table prints it once, as the first line of what to do about it.
+    if let Some(notice) = panel.notice().filter(|_| !panel.lines.is_empty()) {
+        let _ = writeln!(out, "{}", prose(palette, &notice));
+    }
+    if panel.lines.is_empty() {
+        for line in panel.next_step() {
+            let _ = writeln!(out, "{}", prose(palette, &line));
+        }
+        return out;
+    }
+    let content = width.saturating_sub(2);
+    let _ = writeln!(out, "{}", panel.header_row(content, palette));
+    for row in panel.rows(content, palette, false) {
+        let _ = writeln!(out, "{row}");
+    }
+    let _ = writeln!(
+        out,
+        "{}",
+        prose(
+            palette,
+            &format!(
+                "{} metric group(s) shown \u{b7} band {}% of value \u{b7} history walks the last {} \
+                 commit(s)",
+                panel.lines.len(),
+                panel.band_percent,
+                panel.window
+            )
+        )
+    );
     out
 }
 

@@ -181,6 +181,7 @@ fn app_with(count: usize) -> App {
             mi: Metric::UNKNOWN,
             unanalysed_paths: 0,
             bench: Bench::missing(None),
+            detail: fathom::tui::bench::Commit::default(),
             action: ActionState::NoEvidence,
             indexed: true,
             caveats: Vec::new(),
@@ -1022,7 +1023,7 @@ fn a_narrow_terminal_squeezes_both_panes_and_says_so() {
         44,
         12,
         r#"
-DIFF  3b8e9…vs parent 8ac22d1 · +86 -32 · 1…
+DIFF  3b8e9f1  cover…vs parent 8ac22d1 · +8…
 ┌─ files ──────────┬─ diff ────────────────┐
 │▸ src/met… +82 -31│diff --git a/src/metr… │
 │  src/metri… +4 -1│index 1111111..222222… │

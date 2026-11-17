@@ -535,6 +535,7 @@ fn bare(sha: &str, age_seconds: i64, subject: &str) -> Entry {
         mi: Metric::UNKNOWN,
         unanalysed_paths: 0,
         bench: Bench::missing(None),
+        detail: fathom::tui::bench::Commit::default(),
         action: ActionState::NoEvidence,
         indexed: true,
         caveats: Vec::new(),

@@ -224,15 +224,39 @@ impl Default for Index {
 /// `index.file_size_cap_mib`'s default (§7.2).
 pub const DEFAULT_FILE_SIZE_CAP_MIB: u32 = 2;
 
-/// `benchmarks.*` (§7.2): which metric ids survive into a row. Allow-list empty means allow all —
-/// fathom does not hide evidence by default — and deny wins over allow.
-#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+/// The default `benchmarks.regression_band_percent`, in percent of the value.
+///
+/// Five is a starting point, not a verdict: it is roughly "twice the run-to-run noise a single-sample
+/// benchmark can show", and the panel prints the number it used in its own column title so a reader is
+/// never asked to interpret an arrow against an invisible threshold.
+pub const DEFAULT_REGRESSION_BAND_PERCENT: f64 = 5.0;
+
+/// `benchmarks.*` (§7.2): which metric ids survive into a row, and how wide a delta has to be before
+/// the bench panel calls it outside the band. Allow-list empty means allow all — fathom does not hide
+/// evidence by default — and deny wins over allow.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Benchmarks {
     /// Metric ids to keep; empty means every metric.
     pub allow: Vec<String>,
     /// Metric ids to drop; beats `allow`.
     pub deny: Vec<String>,
+    /// The band a benchmark delta is judged against, as a percent of the value (mact-by1.12).
+    ///
+    /// A display policy and not a derivation input, which is what keeps it out of every digest: it
+    /// changes what the panel says about stored numbers, never what is stored, so editing it
+    /// invalidates nothing (ADR-0006 §7.2's last column).
+    pub regression_band_percent: f64,
+}
+
+impl Default for Benchmarks {
+    fn default() -> Self {
+        Self {
+            allow: Vec::new(),
+            deny: Vec::new(),
+            regression_band_percent: DEFAULT_REGRESSION_BAND_PERCENT,
+        }
+    }
 }
 
 /// `cache.*` (§7.2): prune policy. Read by prune (mact-by1.10), in no digest.
@@ -422,6 +446,10 @@ impl Config {
                 } else {
                     self.benchmarks.deny.join(",")
                 },
+            ),
+            (
+                "benchmarks.regression_band_percent".to_owned(),
+                self.benchmarks.regression_band_percent.to_string(),
             ),
             (
                 "cache.block_cap".to_owned(),

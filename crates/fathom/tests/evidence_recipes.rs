@@ -102,7 +102,15 @@ fn recipe(number: usize) -> (String, String) {
     );
     let joined = program.join("\n");
     let open = joined.find('\'').expect("a jq program is single-quoted");
-    let close = joined.rfind('\'').expect("and closed");
+    // A recipe whose input sits on the same line as its closing quote (recipe 4) leaks the input path
+    // into `joined`, so the closing quote is the last one *before* the input, not the last one.
+    let input = joined
+        .find("\"$EV")
+        .or_else(|| joined.find("\"${RECORDS"))
+        .unwrap_or(joined.len());
+    let close = joined[..input]
+        .rfind('\'')
+        .expect("and closed before the input files");
     let text = joined[open + 1..close].to_owned();
     // The document claims its blocks are the script's, verbatim. That claim is cheap to check and
     // is the only thing stopping the two from drifting apart.
@@ -346,4 +354,252 @@ fn recipe_7_s_advisory_records_are_caveats_and_never_a_pooled_number() {
 fn round_half_away(value: f64, decimals: u32) -> f64 {
     let factor = 10f64.powi(decimals as i32);
     (value * factor + 0.5).floor() / factor
+}
+
+// ---------------------------------------------------------------------------------------------
+// mact-by1.12: the benchmark panel
+//
+// The ticket's "done when" is that the panel matches recipes 4, 5 and 6 for the sample tree, and those
+// three recipes say three different things, which is the point:
+//
+// * recipe 4 is the *grouping* — `(name, labels)` over the whole tree, no `run_status` filter, newest
+//   run by `run_id`. It is therefore also the one that shows a dead workflow's numbers: `job_duration_s`
+//   reads 300.9 there because the failed run is the newest. The panel must agree with its rows and
+//   disagree with its values, in exactly that direction and for exactly that reason.
+// * recipe 5 is the spread, successful runs only, per commit.
+// * recipe 6 is the value: median of the samples, per commit, successful runs only.
+//
+// So the panel's rows are recipe 4's identities, its values are recipe 6's, and its spreads are
+// recipe 5's. Any other combination is a panel that has quietly started plotting a failed run.
+// ---------------------------------------------------------------------------------------------
+
+/// One commit's panel, built from the reader's row the way the store builds one.
+fn panel_rows(readset: &fathom::metrics::Readset, sha: &str) -> Vec<fathom::tui::bench::Commit> {
+    let commit = readset
+        .metrics(sha)
+        .expect("the sample tree has a row for every commit it names");
+    let evidence =
+        serde_json::to_value(commit).expect("a row serialises to the store's evidence section");
+    let parsed = fathom::tui::bench::Commit::from_evidence(sha, Some(&evidence));
+    assert_eq!(
+        parsed.groups.len(),
+        commit.benchmarks.len(),
+        "the panel's parser must not drop a group the reader produced"
+    );
+    vec![parsed]
+}
+
+#[test]
+fn recipe_4s_groups_are_the_panels_rows_and_its_values_are_not() {
+    let root = sample_tree();
+    let files: Vec<PathBuf> = record_files(&root)
+        .into_iter()
+        .filter(|path| path.starts_with(root.join("benchmark")))
+        .collect();
+    let (flags, program) = recipe(4);
+    let table = jq(&flags, &program, &files);
+    if table.is_empty() {
+        return;
+    }
+    let readset = fathom::metrics::Reader::new()
+        .read(&root)
+        .expect("the tree reads");
+    let newest: String = readset
+        .rows()
+        .last()
+        .expect("the tree has rows")
+        .commit
+        .clone();
+    let commit = &panel_rows(&readset, &newest)[0];
+
+    // The identities, in the recipe's own order: `(name, labels)` with the unit as `unit_missing` when
+    // there is none. The panel keys on `(name, labels, unit)` — one key wider, and the extra width is
+    // the whole point of §4.3.
+    let mut theirs: Vec<(String, String, String)> = Vec::new();
+    for line in table.lines() {
+        let column: Vec<&str> = line.split('\t').collect();
+        assert_eq!(column.len(), 5, "recipe 4 prints five columns: {line}");
+        theirs.push((
+            column[0].to_owned(),
+            column[1].to_owned(),
+            column[3].to_owned(),
+        ));
+    }
+    let mine: Vec<(String, String, String)> = commit
+        .groups
+        .iter()
+        .map(|group| {
+            (
+                group.id.name.clone(),
+                group.id.labels.clone(),
+                group.id.unit_or_missing(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        mine.len(),
+        theirs.len(),
+        "the panel has one row per recipe-4 group"
+    );
+    for their in &theirs {
+        assert!(
+            mine.contains(their),
+            "recipe 4's group {their:?} is missing from the panel: {mine:?}"
+        );
+    }
+
+    // …and the values disagree by design, in the direction the doc calls out. Recipe 4 has no
+    // `run_status` filter, so its `job_duration_s` is the failed run's 300.9; the panel's is the
+    // successful run's 91.8, because retention is what makes a benchmark comparable at all (§9).
+    let recipe_four: Vec<(String, String)> = table
+        .lines()
+        .map(|line| {
+            let column: Vec<&str> = line.split('\t').collect();
+            (column[0].to_owned(), column[2].to_owned())
+        })
+        .collect();
+    let job = commit
+        .groups
+        .iter()
+        .find(|group| group.id.name == "job_duration_s")
+        .expect("the sample tree reports the job duration");
+    let theirs = recipe_four
+        .iter()
+        .find(|(name, _)| name == "job_duration_s")
+        .expect("recipe 4 prints it too")
+        .1
+        .clone();
+    assert_eq!(
+        (theirs.as_str(), job.value.text.as_str()),
+        ("300.9", "91.8"),
+        "recipe 4's newest run is the failed one; the panel's newest *selected* run is not"
+    );
+}
+
+#[test]
+fn recipe_6s_median_is_the_panels_value() {
+    let root = sample_tree();
+    let commits: Vec<String> = {
+        let mut commits: Vec<String> = std::fs::read_dir(root.join("coverage"))
+            .expect("the sample tree has coverage")
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                entry
+                    .path()
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .collect();
+        commits.sort();
+        commits
+    };
+    let readset = fathom::metrics::Reader::new()
+        .read(&root)
+        .expect("the tree reads");
+    for commit_id in commits {
+        let files: Vec<PathBuf> = record_files(&root)
+            .into_iter()
+            .filter(|path| path.starts_with(root.join("benchmark").join(&commit_id)))
+            .collect();
+        let (flags, program) = recipe(6);
+        let table = jq(&flags, &program, &files);
+        if table.is_empty() {
+            return;
+        }
+        let commit = &panel_rows(&readset, &commit_id)[0];
+        assert_eq!(
+            table.lines().count(),
+            commit.groups.len(),
+            "one panel row per recipe-6 group at {commit_id}"
+        );
+        for line in table.lines() {
+            let column: Vec<&str> = line.split('\t').collect();
+            assert_eq!(column.len(), 5, "recipe 6 prints five columns: {line}");
+            let group = commit
+                .groups
+                .iter()
+                .find(|group| {
+                    group.id.name == column[0]
+                        && group.id.labels == column[1]
+                        && group.id.unit_or_missing() == column[4]
+                })
+                .unwrap_or_else(|| panic!("no panel row for recipe 6's {} {line}", column[0]));
+            let unit = column[4];
+            // `n` and the median, cell for cell, in the stored spelling both of them print.
+            assert_eq!(
+                group.samples.to_string(),
+                column[2],
+                "samples of {} at {commit_id}",
+                group.id.name
+            );
+            assert_eq!(
+                group.value.text, column[3],
+                "the panel's value is recipe 6's median of the samples, not a re-rounding of it"
+            );
+            assert_eq!(
+                group.comparable,
+                unit != "unit_missing",
+                "a group with no unit is displayable and never comparable (ADR-0008 4.3)"
+            );
+        }
+    }
+}
+
+#[test]
+fn recipe_5s_spread_is_the_panels_spread() {
+    let root = sample_tree();
+    let files: Vec<PathBuf> = record_files(&root)
+        .into_iter()
+        .filter(|path| path.starts_with(root.join("benchmark")))
+        .collect();
+    let (flags, program) = recipe(5);
+    let table = jq(&flags, &program, &files);
+    if table.is_empty() {
+        return;
+    }
+    let readset = fathom::metrics::Reader::new()
+        .read(&root)
+        .expect("the tree reads");
+    // Recipe 5 folds one `(metric, labels)` across every commit onto a single line and does not print
+    // the label set at all — three `step_duration_s` lines that differ only in what the labels said.
+    // So the honest comparison is the whole line, rebuilt from the panel's own groups in the recipe's
+    // own format, with the label set back in the sort key (labels are part of a group's identity even
+    // where the recipe's output cannot show them).
+    let mut mine: BTreeMap<(String, String, String), Vec<String>> = BTreeMap::new();
+    for row in readset.rows() {
+        let commit = &panel_rows(&readset, &row.commit)[0];
+        for group in &commit.groups {
+            let entry = format!(
+                "{}: [{},{}] x{}",
+                group_short(&row.commit),
+                group.min.text,
+                group.max.text,
+                group.samples
+            );
+            mine.entry((
+                group.id.name.clone(),
+                group.id.unit_or_missing(),
+                group.id.labels.clone(),
+            ))
+            .or_default()
+            .push(entry);
+        }
+    }
+    let mut mine: Vec<String> = mine
+        .into_iter()
+        .map(|((name, unit, _labels), entries)| format!("{name}\t{unit}\t{}", entries.join("  ")))
+        .collect();
+    mine.sort();
+    let mut theirs: Vec<String> = table.lines().map(str::to_owned).collect();
+    theirs.sort();
+    assert_eq!(
+        mine, theirs,
+        "every panel cell — `[min,max]` and the sample count beside it — is recipe 5's, and the \
+         successful runs are the only ones in either"
+    );
+}
+
+/// Seven hex, as recipe 5 shortens a commit for width.
+fn group_short(sha: &str) -> String {
+    fathom::tui::bench::short(sha)
 }

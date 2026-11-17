@@ -60,6 +60,7 @@ fn app_with(count: usize) -> App {
             mi: Metric::UNKNOWN,
             unanalysed_paths: 0,
             bench: Bench::missing(None),
+            detail: fathom::tui::bench::Commit::default(),
             action: ActionState::NoEvidence,
             indexed: true,
             caveats: Vec::new(),
@@ -272,33 +273,28 @@ fn help_opens_on_the_same_key_it_closes_and_esc_also_closes_it() {
     assert!(!app.help, "and the key that opened it closes it");
 }
 
-/// `enter` and `b` belong to the sibling tickets (`d` is this epic's own, and mact-by1.11 wired it).
-/// They are wired to an answer, not to nothing: the line names the ticket, so "it did not respond" is
-/// never the impression.
+/// `enter` still belongs to a sibling ticket (mact-by1.14's commit detail). `d` and `b` are this epic's
+/// and are wired for real; what is left here is wired to an answer, not to nothing: the line names the
+/// ticket, so "it did not respond" is never the impression.
 #[test]
 fn the_sibling_keys_answer_with_the_ticket_that_owns_them() {
-    for (code, needle) in [
-        (KeyCode::Enter, "mact-by1.14"),
-        (KeyCode::Char('b'), "mact-by1.12"),
-    ] {
-        let mut app = app_with(3);
-        let commands = press(&mut app, code);
-        assert!(commands.is_empty(), "{code:?} starts no work");
-        let message = app.message.clone().unwrap_or_default();
-        assert!(
-            message.contains(needle) && message.contains("not wired yet"),
-            "{code:?} should name {needle}: {message}"
-        );
-    }
+    let mut app = app_with(3);
+    let commands = press(&mut app, KeyCode::Enter);
+    assert!(commands.is_empty(), "enter starts no work");
+    let message = app.message.clone().unwrap_or_default();
+    assert!(
+        message.contains("mact-by1.14") && message.contains("not wired yet"),
+        "enter should name mact-by1.14: {message}"
+    );
     // The message is one keypress's worth of life: the next key clears it.
     let mut app = app_with(3);
-    press(&mut app, KeyCode::Char('b'));
+    press(&mut app, KeyCode::Enter);
     press(&mut app, KeyCode::Char('j'));
     assert!(
         !app.message
             .clone()
             .unwrap_or_default()
-            .contains("mact-by1.12"),
+            .contains("mact-by1.14"),
         "a stale explanation of an earlier key is noise: {:?}",
         app.message
     );

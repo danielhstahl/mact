@@ -19,9 +19,11 @@
 
 use crate::metrics::Model;
 
+use super::bench::{self, Commit, Evidence, Panel};
 use super::diff_view::{DiffView, Screen};
 use super::engine::Event;
 use super::entry::Entry;
+use super::palette::Palette;
 use super::store_view::{is_stale, Reading, StoreState};
 
 /// How many commits' diff views are kept open at once.
@@ -66,6 +68,8 @@ pub enum Key {
     Detail,
     /// `b`.
     Bench,
+    /// `f`: show the runs retention excluded, and the reason each one was.
+    ExcludedRuns,
     /// `n` or `Tab`: the next file in the diff view.
     NextFile,
     /// `p` or `Shift-Tab`: the previous file in the diff view.
@@ -164,8 +168,21 @@ pub struct App {
     pub now: i64,
     /// Whether the loop should stop.
     pub quit: bool,
-    /// Which screen is up: the timeline, or the diff of one named commit.
+    /// Which screen is up: the timeline, the diff of one named commit, or a commit's bench panel.
     pub screen: Screen,
+    /// The bench panel, if one is open.
+    ///
+    /// One panel rather than a cache of them, because building it costs nothing: every number in it came
+    /// off the reading this screen already holds, so re-opening a commit re-derives its rows in a few
+    /// hundred field reads instead of paying for a map and an eviction rule. What the reader was doing on
+    /// the panel — which row, whether the overlay was up — is kept for the one commit worth keeping,
+    /// which is the one they are still looking at.
+    pub bench: Option<Panel>,
+    /// The declared regression band, percent of value (`benchmarks.regression_band_percent`).
+    ///
+    /// A view policy, so it is passed in rather than read here: the panel prints it in a column header,
+    /// and a band nobody can see is a band nobody can interpret.
+    pub bench_band: f64,
     /// Every diff view this run has opened, by full SHA, so backing out and in keeps the reader's place.
     pub diffs: std::collections::BTreeMap<String, DiffView>,
     /// A counter, not a clock: it orders the diff views for eviction without reading time (rule: nothing
@@ -196,6 +213,8 @@ impl App {
             now,
             quit: false,
             screen: Screen::Timeline,
+            bench: None,
+            bench_band: bench::DEFAULT_BAND_PERCENT,
             diffs: std::collections::BTreeMap::new(),
             touches: 0,
             model: Model::embedded(),
@@ -215,13 +234,87 @@ impl App {
             let pane = super::diff_view::pane_height(height);
             view.set_height(pane);
         }
+        if let Some(panel) = self.bench.as_mut() {
+            panel.set_height(bench::pane_height(height));
+        }
+    }
+
+    /// Open the bench panel of one commit.
+    ///
+    /// No [`Command`] comes back from this and none can: the panel is a function of rows the store already
+    /// handed this screen, so unlike `d` — which asks the engine for a patch — `b` answers in the frame it
+    /// was pressed in. That is the whole reason the panel reads the store's rows and not the evidence
+    /// tree.
+    pub fn open_bench(&mut self, sha: &str) {
+        if self.bench.as_ref().is_none_or(|panel| panel.sha != sha) {
+            let panel = self.build_bench(sha);
+            self.bench = Some(panel);
+        }
+        self.screen = Screen::Bench(sha.to_owned());
+        if let Some(panel) = self.bench.as_mut() {
+            panel.set_height(bench::pane_height(self.height));
+        }
+    }
+
+    /// Leave the bench panel. The panel itself survives, which is what keeps the reader's place.
+    pub fn close_bench(&mut self) {
+        self.screen = Screen::Timeline;
+    }
+
+    /// The panel `--bench REV` opens on the command line: the same screen `b` opens, resolved before the
+    /// first frame is drawn.
+    ///
+    /// A revision the window does not contain is a refusal the caller prints, not a panel of unknowns:
+    /// `--from`/`--to` and `--limit` decide what this screen can know, and saying so is more useful than
+    /// drawing an empty table for a commit that was never indexed here.
+    pub fn show_bench(&mut self, sha: &str) -> Result<(), String> {
+        if !self.reading.entries.iter().any(|entry| entry.sha == sha) {
+            return Err(format!(
+                "{} is not in this window \u{b7} the store has {} row(s); widen with --from/--to or drop \
+                 --limit",
+                bench::short(sha),
+                self.reading.entries.len()
+            ));
+        }
+        self.open_bench(sha);
+        Ok(())
+    }
+
+    /// Build the panel for one commit from the reading: its own row, plus the commits below it.
+    fn build_bench(&self, sha: &str) -> Panel {
+        let evidence = Evidence {
+            present: self.reading.evidence_present,
+            path: self.reading.evidence_path.clone(),
+        };
+        let commit = self
+            .reading
+            .entries
+            .iter()
+            .find(|entry| entry.sha == sha)
+            .map(|entry| entry.detail.clone())
+            .unwrap_or_else(|| Commit {
+                // A commit with no row at all: the empty state, named by SHA, with its next steps.
+                sha: sha.to_owned(),
+                gap: Some("no_evidence".to_owned()),
+                ..Commit::default()
+            });
+        let older: Vec<Commit> = self
+            .reading
+            .entries
+            .iter()
+            .skip_while(|entry| entry.sha != sha)
+            .skip(1)
+            .take(bench::HISTORY_WINDOW.saturating_sub(1))
+            .map(|entry| entry.detail.clone())
+            .collect();
+        Panel::open(&commit, &older, &evidence, self.bench_band)
     }
 
     /// The open diff view, if the diff screen is up.
     #[must_use]
     pub fn diff_view(&self) -> Option<&DiffView> {
         match &self.screen {
-            Screen::Timeline => None,
+            Screen::Timeline | Screen::Bench(_) => None,
             Screen::Diff(sha) => self.diffs.get(sha),
         }
     }
@@ -229,8 +322,25 @@ impl App {
     /// The open diff view, mutably.
     pub fn diff_view_mut(&mut self) -> Option<&mut DiffView> {
         match &self.screen {
-            Screen::Timeline => None,
+            Screen::Timeline | Screen::Bench(_) => None,
             Screen::Diff(sha) => self.diffs.get_mut(sha),
+        }
+    }
+
+    /// The open bench panel, if the bench screen is up.
+    #[must_use]
+    pub fn bench_view(&self) -> Option<&Panel> {
+        match &self.screen {
+            Screen::Timeline | Screen::Diff(_) => None,
+            Screen::Bench(sha) => self.bench.as_ref().filter(|panel| panel.sha == *sha),
+        }
+    }
+
+    /// The open bench panel, mutably.
+    pub fn bench_view_mut(&mut self) -> Option<&mut Panel> {
+        match &self.screen {
+            Screen::Timeline | Screen::Diff(_) => None,
+            Screen::Bench(sha) => self.bench.as_mut().filter(|panel| panel.sha == *sha),
         }
     }
 
@@ -399,13 +509,16 @@ impl App {
             return Vec::new();
         }
 
-        let open = match &self.screen {
-            Screen::Timeline => None,
-            Screen::Diff(sha) => Some(sha.clone()),
-        };
-        match open {
-            None => self.on_timeline_key(key),
-            Some(sha) => self.on_diff_key(&sha, key),
+        match &self.screen {
+            Screen::Timeline => self.on_timeline_key(key),
+            Screen::Diff(sha) => {
+                let sha = sha.clone();
+                self.on_diff_key(&sha, key)
+            }
+            Screen::Bench(sha) => {
+                let sha = sha.clone();
+                self.on_bench_key(&sha, key)
+            }
         }
     }
 
@@ -501,7 +614,21 @@ impl App {
                 }
             }
             Key::Detail => self.message = Some(sibling("detail", "mact-by1.14")),
-            Key::Bench => self.message = Some(sibling("bench", "mact-by1.12")),
+            // The ticket's second named interaction, and the cheap one: every number the panel shows is
+            // already in the reading, so there is nothing to ask the engine for.
+            Key::Bench => match self.selected().map(|entry| entry.sha.clone()) {
+                Some(sha) => self.open_bench(&sha),
+                None => {
+                    self.message =
+                        Some("nothing is selected, so there is nothing to benchmark".to_owned());
+                }
+            },
+            Key::ExcludedRuns => {
+                self.message = Some(
+                    "f shows a commit's excluded runs \u{b7} b opens its benchmark panel"
+                        .to_owned(),
+                )
+            }
             // `n`/`p`/`t` are the diff view's keys. On the timeline they are not nothing, exactly: they
             // are keys the reader pressed a screen too early, and the answer says which screen wants them.
             Key::NextFile | Key::PrevFile => {
@@ -567,7 +694,14 @@ impl App {
                 );
             }
             Key::Detail => self.message = Some(sibling("detail", "mact-by1.14")),
-            Key::Bench => self.message = Some(sibling("bench", "mact-by1.12")),
+            // `b` from a diff is the same commit's other panel, and it costs nothing: no read, no
+            // command, one screen swap.
+            Key::Bench => self.open_bench(sha),
+            Key::ExcludedRuns => {
+                self.message = Some(
+                    "f belongs to the benchmark panel \u{b7} b opens it for this commit".to_owned(),
+                );
+            }
             Key::Reindex => {
                 self.message =
                     Some("re-index is the timeline's key \u{b7} Esc goes back to it".to_owned());
@@ -575,6 +709,76 @@ impl App {
             Key::Backspace | Key::Text(_) | Key::Ignored => {}
         }
         commands
+    }
+
+    /// The bench panel's answer to a key.
+    ///
+    /// `b` and `Esc` both leave, which is the same habit the diff view teaches. Nothing here moves the
+    /// timeline's selection, and nothing here can block: the panel's rows were built when it opened, so
+    /// every key on this screen is a field write and a clamp.
+    fn on_bench_key(&mut self, sha: &str, key: Key) -> Vec<Command> {
+        let mut commands = Vec::new();
+        let page = isize::try_from(usize::from(bench::pane_height(self.height))).unwrap_or(1);
+        match bench_letter(key) {
+            Key::Quit => {
+                self.quit = true;
+                commands.push(Command::Quit);
+            }
+            Key::Escape | Key::Bench => self.close_bench(),
+            Key::Help => self.help = !self.help,
+            Key::Down => self.scroll_bench(1),
+            Key::Up => self.scroll_bench(-1),
+            Key::PageDown => self.scroll_bench(page),
+            Key::PageUp => self.scroll_bench(-page),
+            Key::Top => {
+                if let Some(panel) = self.bench_view_mut() {
+                    panel.jump(false);
+                }
+            }
+            Key::Bottom => {
+                if let Some(panel) = self.bench_view_mut() {
+                    panel.jump(true);
+                }
+            }
+            Key::ExcludedRuns => {
+                if let Some(panel) = self.bench_view_mut() {
+                    let show = !panel.show_excluded;
+                    panel.set_show_excluded(show);
+                    if show && panel.commit.excluded.is_empty() {
+                        self.message =
+                            Some("no run at this commit was excluded by retention".to_owned());
+                    }
+                }
+            }
+            // `d` on the panel is the same commit's diff, so the two detail screens are one hop apart
+            // rather than one trip back through the timeline.
+            Key::Diff => commands.extend(self.open_diff(sha)),
+            Key::Filter => {
+                self.message = Some(
+                    "search inside the panel is a later ticket \u{b7} / filters the timeline"
+                        .to_owned(),
+                );
+            }
+            Key::Detail => self.message = Some(sibling("detail", "mact-by1.14")),
+            Key::Reindex => {
+                self.message =
+                    Some("re-index is the timeline's key \u{b7} Esc goes back to it".to_owned());
+            }
+            Key::NextFile | Key::PrevFile | Key::ToggleFiles => {
+                self.message = Some(
+                    "n/p/t belong to the diff view \u{b7} d opens it for this commit".to_owned(),
+                );
+            }
+            Key::Backspace | Key::Text(_) | Key::Ignored => {}
+        }
+        commands
+    }
+
+    /// Move the panel's row selection.
+    fn scroll_bench(&mut self, delta: isize) {
+        if let Some(panel) = self.bench_view_mut() {
+            panel.move_selection(delta);
+        }
     }
 
     /// Scroll the open diff view, if one is open.
@@ -609,6 +813,26 @@ impl App {
                     {
                         self.selection = index;
                         self.clamp_view();
+                    }
+                }
+                // An open panel is a view of the rows it was built from, so a re-read rebuilds it — with
+                // the reader's place kept, because a frame that jumps the cursor while you are reading a
+                // row is a frame that makes you start over.
+                if let Screen::Bench(sha) = &self.screen {
+                    let sha = sha.clone();
+                    let place = self
+                        .bench
+                        .as_ref()
+                        .map(|panel| (panel.selection, panel.show_excluded));
+                    // Not `open_bench` on its own: that keeps an existing panel, which is right for a key
+                    // and wrong here, where the point of the re-read is that the rows changed. Drop it and
+                    // let the new reading build the panel; the reader's place is put back below.
+                    self.bench = None;
+                    self.open_bench(&sha);
+                    if let (Some((selection, excluded)), Some(panel)) = (place, self.bench.as_mut())
+                    {
+                        panel.select(selection);
+                        panel.set_show_excluded(excluded);
                     }
                 }
                 Vec::new()
@@ -779,13 +1003,16 @@ impl App {
     /// On the diff screen the view's own status line answers instead — the caps, the hidden files, the
     /// refusal — because "why is this pane empty" is the question under a diff.
     #[must_use]
-    pub fn status_line(&self) -> String {
+    pub fn status_line(&self, palette: &Palette) -> String {
         if let Some(message) = &self.message {
             return message.clone();
         }
         match &self.screen {
             Screen::Timeline => self.timeline_status(),
             Screen::Diff(_) => self.diff_view().map_or_else(String::new, DiffView::status),
+            Screen::Bench(_) => self
+                .bench_view()
+                .map_or_else(String::new, |panel| panel.status(palette)),
         }
     }
 
@@ -910,6 +1137,30 @@ fn timeline_letter(key: Key) -> Key {
             'R' => Key::Reindex,
             'd' => Key::Diff,
             'b' => Key::Bench,
+            other => Key::Text(other),
+        },
+        other => other,
+    }
+}
+
+/// What the bench panel means by a typed character.
+///
+/// `f` is this screen's own key — the failed-run overlay — and it is a letter rather than a modifier
+/// because every other key on this screen is a plain letter and a reader reaching for `Ctrl` has
+/// already been told the wrong thing about this terminal.
+fn bench_letter(key: Key) -> Key {
+    match key {
+        Key::Text(character) => match character {
+            'j' => Key::Down,
+            'k' => Key::Up,
+            'g' => Key::Top,
+            'G' => Key::Bottom,
+            'q' => Key::Quit,
+            '?' => Key::Help,
+            '/' => Key::Filter,
+            'b' => Key::Bench,
+            'd' => Key::Diff,
+            'f' => Key::ExcludedRuns,
             other => Key::Text(other),
         },
         other => other,

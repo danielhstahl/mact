@@ -6,6 +6,7 @@
 //! tui.rs        the loop, the terminal's lifecycle, the --plain fork, the driver contract
 //!   state.rs    what the screen knows and what the keys do to it — pure, testable on its own
 //!   diff_view   the diff screen's own state: per-commit view state, the file filter, and what the caps say
+//!   bench       the benchmark panel's own state: one row per metric group, its history and its verdict
 //!   cells.rs    values → text: ADR-0008 §6.1's glyphs, §4.5's one bench group, the width budget
 //!   entry.rs    a commit reduced to what the timeline can say: unknown is `None`, never 0
 //!   store_view  the only reader of `.fathom` and of `git`, and the only place either is touched
@@ -38,6 +39,7 @@
 //!   thread; the screen watches the lock file and the rows directory, cancels on a commit boundary, and
 //!   never re-implements either half.
 
+pub mod bench;
 pub mod cells;
 pub mod diff_view;
 pub mod engine;
@@ -299,8 +301,24 @@ pub fn run(
             print!("{}", plain::diff(&view, &palette, plain::WIDTH));
             return Ok(Exit::Success);
         }
+        // `--bench REV` is `b` for a terminal you cannot press `b` in, and it is the same rendering:
+        // the panel is built by the same state machine the screen paints (mact-by1.12's no-TTY fallback).
+        if let Some(rev) = &arguments.bench {
+            let mut app = App::new(store_view::read(boot, arguments.limit), now);
+            app.bench_band = config.benchmarks.regression_band_percent;
+            let sha = resolve_rev(boot, rev)?;
+            if app.show_bench(&sha).is_err() {
+                print!("{}", app.status_line(&palette).replace('\n', " ") + "\n");
+                return Ok(Exit::Success);
+            }
+            if let Some(panel) = app.bench.as_ref() {
+                print!("{}", plain::bench(panel, &palette, plain::WIDTH));
+            }
+            return Ok(Exit::Success);
+        }
         let reading = store_view::read(boot, arguments.limit);
-        let app = App::new(reading, now);
+        let mut app = App::new(reading, now);
+        app.bench_band = config.benchmarks.regression_band_percent;
         print!("{}", plain::table(&app, &palette, plain::WIDTH));
         return Ok(Exit::Success);
     }
@@ -310,8 +328,18 @@ pub fn run(
     // making the user stare at a blank alternate screen while a store is read would be its own bug.
     let reading = store_view::read(boot, arguments.limit);
     let mut app = App::new(reading, now);
+    app.bench_band = config.benchmarks.regression_band_percent;
     if let Some(notice) = app.reading.notice.take() {
         app.message = Some(notice);
+    }
+    // `--bench REV` on an interactive run opens the panel `b` opens, on the commit the shell named.
+    if let Some(rev) = &arguments.bench {
+        let sha = resolve_rev(boot, rev)?;
+        // A refusal is a status line, not a failed run: the timeline underneath is still the answer to
+        // everything else the user asked for.
+        if let Err(reason) = app.show_bench(&sha) {
+            app.message = Some(reason);
+        }
     }
     // `--diff REV` on an interactive run opens the diff view on that commit, read here for the same
     // reason the rows are read here: the first frame should already be the answer.
@@ -363,6 +391,13 @@ pub fn now() -> i64 {
 #[must_use]
 pub fn index_in_progress(boot: &Boot) -> Option<store::lock::LockBody> {
     store::lock::read_body(&boot.cache.path)
+}
+
+/// Resolve a `--diff`/`--bench` revision to a full SHA, with the same refusal lines every other
+/// git-facing door in this crate prints.
+fn resolve_rev(boot: &Boot, rev: &str) -> Result<String, crate::FathomError> {
+    let git = Git::open(&boot.workspace).map_err(patch::Error::Git)?;
+    Ok(git.resolve(rev).map_err(patch::Error::Git)?)
 }
 
 /// Resolve `--diff REV` to a commit and read its patch before the screen exists.
