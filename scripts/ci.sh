@@ -39,7 +39,10 @@
 #                and ADR-0008's per-commit metric model (`validate_metric_model.py`, which reads
 #                schema/metric-model.json, re-derives the golden vectors in tests/testdata/metrics,
 #                and diffs the reference implementation against the recorded jq-recipe output in
-#                docs/evidence-format.md §12) — and python's own jsonschema over the same
+#                docs/evidence-format.md §12) and the Fathom documentation surface
+#                (`validate_fathom_docs.py`, which asks the built `fathom --help` what it accepts and
+#                fails when a flag, key or exit code is undocumented, documented twice, or invented)
+#                — and python's own jsonschema over the same
 #                evidence tree as a second, independent implementation.
 #   supply-chain cargo-deny: licences, duplicate/wildcard policy and sources always, RUSTSEC
 #                advisories when the network is allowed (`--offline` skips exactly that
@@ -279,6 +282,12 @@ step_schema() {
     #    oracle mact-by1.6 is graded against), and cross-checks that implementation against the *jq
     #    recipes' recorded output* in docs/evidence-format.md — two languages, one answer, or the build
     #    says which record each side picked.
+    #    validate_fathom_docs.py is the fifth, and the only one that checks prose: the Fathom runbook,
+    #    docs/fathom-metrics.md and .fathom/LAYOUT.md must describe the tool that ships, so it asks
+    #    `fathom --help` (five invocations: bare and each subcommand) what the argv actually is and fails
+    #    when a flag, a help-overlay key or an exit code is undocumented, documented in two pages, or
+    #    named in a page and absent from the binary. Hence the fathom build here and not just act-mcp:
+    #    the checker reads the binary, not clap's source.
     echo "--- ADR <-> schema checkers ($py)"
     "$py" scripts/validate_tool_contract.py
     "$py" scripts/validate_run_lifecycle.py
@@ -287,6 +296,18 @@ step_schema() {
     "$py" scripts/validate_fathom_layout.py
     "$py" scripts/validate_mi_definition.py
     "$py" scripts/validate_metric_model.py
+    cargo build -p fathom --bin fathom
+    local fbin
+    if [[ -n "${CARGO_BUILD_TARGET:-}" ]]; then
+        fbin="$target_dir/$CARGO_BUILD_TARGET/debug/fathom"
+    else
+        fbin="$target_dir/debug/fathom"
+    fi
+    if [[ ! -x "$fbin" ]]; then
+        echo "schema: expected a built fathom at $fbin and did not find one" >&2
+        return 1
+    fi
+    FATHOM_BIN="$fbin" "$py" scripts/validate_fathom_docs.py
 
     # 3. python's jsonschema as a second, independent implementation of the same contract
     #    (ADR-0002 §7 wants a disagreement between two engines to show up here rather than

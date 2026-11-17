@@ -1,12 +1,15 @@
 # The `.evidence` format — the contract a reader gets
 
-Who this is for: whoever writes the **downstream cross-commit scanner** — the program that
-walks `<workspace>/.evidence` after a run and answers "did this commit regress?". It is the
+Who this is for: **Fathom** — `crates/fathom`, the downstream cross-commit scanner this page was
+written for, which walks `<workspace>/.evidence` after a run and answers "did this commit regress?"
+([README: Fathom](../README.md#fathom), [what every number means](fathom-metrics.md)). It is the
 human-facing restatement of
 [ADR-0002](adr/0002-evidence-jsonl-contract.md), which stays the normative text: where this
 page and the ADR disagree, the ADR wins. The machine-readable form is
 [`schema/evidence.schema.json`](../schema/evidence.schema.json), and
-`act-mcp validate-evidence` enforces both.
+`act-mcp validate-evidence` enforces both. Anyone else writing a scanner reads the same page: the
+decisions below are not Fathom's private ones, and §2's "what a scanner walks" is the contract for any
+reader.
 
 **Consumers of `act-evidence`.** These records now have two consumers in this repo and they share one
 implementation: `crates/act-evidence` — the crate `records.rs`, `shapes.rs`, `schema.rs` and

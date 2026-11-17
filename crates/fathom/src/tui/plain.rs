@@ -73,8 +73,8 @@ pub fn table(app: &App, palette: &Palette, width: usize) -> String {
         prose(
             palette,
             &format!(
-                "{} of {} commits shown \u{b7} d opens a commit's diff \u{b7} enter detail and b \
-                 bench are siblings of this ticket \u{b7} q quits",
+                "{} of {} commits shown \u{b7} d diff \u{b7} enter detail \u{b7} b bench \u{b7} \
+                 ? help \u{b7} q quits",
                 app.visible().len(),
                 app.reading.entries.len()
             )

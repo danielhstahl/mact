@@ -978,7 +978,10 @@ fn draw_help(app: &App, frame: &mut Frame, palette: &Palette, area: Rect) {
         ),
         ("R", "re-index now; esc cancels a running index"),
         ("d", "the selected commit's diff; d or esc comes back"),
-        ("enter", "commit detail (mact-by1.14, not wired yet)"),
+        (
+            "enter",
+            "commit detail: per-file coverage, MI hotspots, the diffstat",
+        ),
         ("b", "this commit's benchmark panel; b or esc comes back"),
         ("?", "this help"),
         ("q / Ctrl-C", "quit"),

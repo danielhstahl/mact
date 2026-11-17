@@ -68,7 +68,7 @@ A few environment quirks worth knowing before the first red build:
 
 The shell checkers under `scripts/` (`validate_tool_contract.py`, `validate_run_lifecycle.py`,
 `validate_isolation.py`, `validate_crate_layout.py`, `validate_fathom_layout.py`,
-`validate_mi_definition.py`, `validate_metric_model.py`) are CI's, and each
+`validate_mi_definition.py`, `validate_metric_model.py`, `validate_fathom_docs.py`) are CI's, and each
 one's Rust counterpart is named in the file it guards. The first three read `schema/*.json` against
 the ADR that wrote it; the fourth reads `Cargo.toml`, because what ADR-0005 pins is which crate may
 depend on which; the fifth reads `.gitignore` and `.fathom/LAYOUT.md`, because what ADR-0006 pins is
@@ -98,6 +98,10 @@ the reader and the documented reader's-view of the contract cannot drift apart q
 | `crates/act-mcp/tests/e2e/main.rs` | the shipped binary + stub `act` + stub `docker`: call → `.evidence` files on disk, goldens included |
 | `crates/act-mcp/tests/realdata_smoke.rs` | the real-act smoke script's own plumbing (stub), and — `#[ignore]`d — the real act + runtime run of it (**§7**) |
 | `crates/act-mcp/tests/evidence_*.rs`, `crates/act-mcp/tests/*_extraction.rs` | the `.evidence` JSONL contract and the extractors |
+| `crates/fathom/tests/cli.rs` | Fathom's argv and exit-code contract, asserted from outside the process |
+| `crates/fathom/tests/metrics.rs`, `crates/fathom/tests/mi.rs` | **the two semantics oracles — see §8** |
+| `crates/fathom/tests/tui_*.rs` | the screens: keys, state, whole-terminal goldens, responsiveness |
+| `crates/fathom/tests/{report,doctor,index_store,git_history,diff_reader,classify}.rs` | the headless surface, the store, the git and patch readers, the path classifier |
 
 ## 2. Before trusting a green run
 
@@ -488,3 +492,99 @@ the change is committed. `crates/act-mcp/tests/realdata/fixture/.gitignore` comm
 the append a no-op; the script recognises the failure shape and says what happened instead of
 looking like a flaky server. The reconciliation (§6.4 vs G5) is a follow-up ticket, not a
 doc fix.
+
+## 8. Fathom: snapshots, fixtures, and the two semantics oracles
+
+Everything in this section runs with no git server, no act, no container and no TTY — the screens are
+drawn into a `TestBackend`, the repositories are built by the fixture in
+`crates/fathom/tests/common/mod.rs` (real `git`, a fixed author clock, and `fast-import` for the
+thousand-commit case), and the evidence is the checked-in fixture data.
+
+```sh
+cargo test -p fathom                      # every fathom suite
+cargo test -p fathom --test metrics       # one suite
+cargo test -p fathom --test cli -- --list # the surface it pins, by name
+```
+
+| suite | what it pins |
+|---|---|
+| `crates/fathom/tests/cli.rs` | the argv from outside the process: `--help`'s surface, every exit code, the stdout-is-data rule (nothing but the payload on stdout) |
+| `crates/fathom/tests/metrics.rs`, `…/mi.rs` | **the two oracles** — ADR-0008's and ADR-0007's rules, asserted against fixtures both pages quote |
+| `crates/fathom/tests/evidence_recipes.rs` | every jq recipe in [docs/evidence-format.md §12](evidence-format.md#12-recipes) against the tree the reader reads |
+| `crates/fathom/tests/report.rs`, `…/doctor.rs` | the headless envelope, `--only-missing`, the `0/1/2` gate codes, and every state that makes a column unknown |
+| `crates/fathom/tests/index_store.rs`, `…/git_history.rs`, `…/diff_reader.rs`, `…/classify.rs` | the store's cost and repair, the git walk, the patch reader and its caps, the path classifier's shipped defaults |
+| `crates/fathom/tests/tui_keys.rs`, `…/tui_render.rs`, `…/tui_diff.rs`, `…/tui_detail*.rs`, `…/tui_bench.rs`, `…/tui_store.rs`, `…/tui_responsive.rs` | keys → state → drawn screen, whole-terminal goldens included, and the two loop promises (a key is never queued behind a slow source; a burst is drawn once) |
+
+### The whole-screen snapshots, and how to re-record one
+
+There is no `.snap` file. A golden is a raw string **inside** the test that draws it, and the
+comparison is cell-by-cell against a `TestBackend` after trimming trailing cells and blank edge lines.
+That is deliberate: the diff a reviewer needs is the screen, and it lives next to the fixture that
+produced it, so a golden cannot silently be re-recorded by a helper nobody reads.
+
+```sh
+cargo test -p fathom --test tui_render            # compare; a mismatch prints both screens
+FATHOM_SNAPSHOT_UPDATE=1 cargo test -p fathom --test tui_render -- --nocapture
+FATHOM_SNAPSHOT_UPDATE=1 cargo test -p fathom --test tui_diff -- --nocapture
+```
+
+With `FATHOM_SNAPSHOT_UPDATE=1` a mismatch prints `--- expected by this test ---` then
+`--- drawn now ---` and still fails: re-recording is a paste into the raw string, because a screen that
+changes is a decision and not a side effect. Only `tui_render.rs` and `tui_diff.rs` read that variable; the
+suites whose goldens are shorter fragments (`tui_bench.rs`, `tui_detail.rs`, `tui_store.rs`) print the drawn
+screen inside the assertion message, which is the same paste with one less step. Two rules when you do
+paste one: read every line you are committing, and never widen a golden to swallow a change you have not
+explained — the point of the screen is that it is the second opinion, not the rubber stamp.
+
+The machine-readable goldens are the other kind, and they *are* files:
+`crates/fathom/tests/golden/report.json` (hand-built: unknowns, gap codes, a mixed verdict) and
+`report-sample-tree.json` (the tree `scripts/sample_evidence.py` lays, re-stamped onto the fixture's
+commits). `FATHOM_UPDATE_GOLDEN=1 cargo test -p fathom --test report` rewrites them; path and
+temporary-root substitutions happen before the compare, so a golden never pins where it was unpacked.
+
+### Regenerating the evidence fixtures a fathom test reads
+
+| fixture | where | how it is regenerated |
+|---|---|---|
+| the sample evidence tree | built into `$TMPDIR` (`/tmp/act-mcp-evidence-demo`) from `crates/act-mcp/tests/e2e/testdata/expected/` | `scripts/sample_evidence.py [-o OUT] [-q]` — nothing to re-record; it is derived at run time from the e2e goldens (§5) |
+| ADR-0008's 16 vectors | `crates/act-mcp/tests/testdata/metrics/{fixtures,expected}` | the fixture trees are hand-built; the `expected/` side is the **oracle's** output: `python3 scripts/metric_model_reference.py --vectors --write`, then `--vectors --diff` to confirm, then `scripts/validate_metric_model.py` |
+| ADR-0007's MI vectors and aggregates | `crates/act-mcp/tests/testdata/mi/{src,vectors,aggregates}` | **by hand, and deliberately so**: the token tables are counted off the fixture file. `scripts/mi_reference.py --vector … --explain` re-derives every number in them; `scripts/validate_mi_definition.py` re-derives them again in 40-digit `decimal` and refuses a vector within `1e-6` of a rounding or band boundary |
+| a screen's drawn output | inline raw strings in `tests/tui_*.rs` | `FATHOM_SNAPSHOT_UPDATE=1`, above |
+| `fathom report`'s envelope | `crates/fathom/tests/golden/*.json` | `FATHOM_UPDATE_GOLDEN=1`, above |
+
+The asymmetry in that table is the whole point: `expected/` under `metrics/` is *generated* because the
+thing being graded is a policy and a second language can express the same policy honestly, while a MI
+vector is *hand-counted* because a second implementation of the arithmetic would agree with the first
+about everything except the definitions, which are what the vectors exist to pin (ADR-0007
+[section 9](adr/0007-maintainability-index.md#9-golden-vectors-and-the-tests-that-make-them-real) records
+the three times the hand count was wrong and the rules were not).
+
+### Which tests are the ADR-0008 semantics oracle
+
+Four things, and a change to a rule has to move all of them:
+
+* **[`scripts/metric_model_reference.py`](../scripts/metric_model_reference.py)** is the independent
+  implementation — it reads `schema/metric-model.json` and no Rust. It is the oracle.
+* **`crates/fathom/tests/metrics.rs`** is the grading: it runs the Rust reader and the oracle over the
+  same fixture tree and compares the two rows as JSON, so the claim under test is "two implementations,
+  one answer", not "the struct round-trips". It is the only test that covers all 18 drop reasons, all
+  four action states and every gap code at once.
+* **`scripts/validate_metric_model.py`** is CI's check of the documents: it diffs
+  [ADR-0008](adr/0008-per-commit-metric-model.md)'s pinned blocks against
+  `schema/metric-model.json`, re-derives all sixteen vectors through the oracle, re-checks the ADR's
+  worked example against a freshly built sample tree, and then diffs the Python against the **recorded
+  output of the jq recipes** in [docs/evidence-format.md §12](evidence-format.md#12-recipes).
+* **`crates/fathom/tests/evidence_recipes.rs`** runs those recipes with `jq` against the same tree the
+  reader reads, so the documented reader's view and the Rust reader cannot drift apart quietly.
+
+[ADR-0007](adr/0007-maintainability-index.md) has the same shape with its own pair:
+`scripts/mi_reference.py` as the oracle, `crates/fathom/tests/mi.rs` as the grading (compared at the
+*token table* level, not only the final MI, because a miscounting lexer can land on a plausible score),
+and `scripts/validate_mi_definition.py` as CI's check.
+
+The prose those tests are the semantics *of* is
+[docs/fathom-metrics.md](fathom-metrics.md) — the user-facing restatement — and its worked examples are
+quoted from these fixtures, so a fixture change moves the page. Whether the Fathom docs still describe
+the tool is itself checked: `scripts/validate_fathom_docs.py` asks `fathom --help` what it accepts and
+fails when a flag, a help-overlay key or an exit code is undocumented, documented twice, or named but
+nonexistent ([README: Fathom](../README.md#fathom)).

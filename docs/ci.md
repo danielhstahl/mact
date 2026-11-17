@@ -59,11 +59,12 @@ that needs a container daemon belongs behind `#[ignore]` with the reason in its
 2. `scripts/validate_tool_contract.py`, `scripts/validate_run_lifecycle.py`,
    `scripts/validate_isolation.py`, `scripts/validate_crate_layout.py`,
    `scripts/validate_fathom_layout.py`,
-   `scripts/validate_mi_definition.py` and
-   `scripts/validate_metric_model.py` — the seven
+   `scripts/validate_mi_definition.py`,
+   `scripts/validate_metric_model.py` and
+   `scripts/validate_fathom_docs.py` — the eight
    ADR↔contract checkers docs/testing.md calls CI's: ADR-0001's tool contract, ADR-0004's run
    lifecycle, ADR-0003's isolation protocol, ADR-0005's crate layout, ADR-0006's `.fathom`
-   workspace layout, ADR-0007's Maintainability Index and ADR-0008's per-commit metric model, each checked against the
+   workspace layout, ADR-0007's Maintainability Index, ADR-0008's per-commit metric model, each checked against the
    artifact that implements it (a `schema/*.json` for the first three, `Cargo.toml`/`Cargo.lock` for
    the fourth — ADR-0005's load-bearing form *is* the manifests, so that checker reads them instead of
    a fourth schema — and `.gitignore` plus `.fathom/LAYOUT.md` for the last, because ADR-0006's
@@ -78,7 +79,12 @@ that needs a container daemon belongs behind `#[ignore]` with the reason in its
    because what ADR-0008 pins is which records a commit's number is made of — that one additionally
    grades `scripts/metric_model_reference.py` against the recorded output of the jq recipes in
    `docs/evidence-format.md` §12, which is the only place this repo has the same question asked in two
-   languages). (ADR-0002's checker is
+   languages), plus the eighth, which checks documentation rather than a contract: it asks the built
+   `fathom --help` (bare, and each of the four subcommands) what the argv actually is and fails when a
+   flag, a help-overlay key or an exit code is undocumented, documented in two pages, or named in a page
+   and absent from the binary — the cross-check the Fathom runbook claims, made a check instead of a
+   rereading. It is why this step builds `fathom` as well as `act-mcp`: the checker reads the binary, not
+   clap's source. (ADR-0002's checker is
    `validate_evidence.py`, which is check (1) above and check (3) below.) Of these,
    `validate_tool_contract.py` is the one that keeps ADR-0001's error-code table, the run
    status vocabulary and the fixture index in
