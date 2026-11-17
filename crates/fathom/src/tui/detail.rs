@@ -1170,16 +1170,14 @@ impl Detail {
             }
         }
         if !marked.iter().any(|mark| *mark) {
+            // The whole path, not a prefix of it. [`short`] is seven *hex* (ADR-0008 §6.2), and seven
+            // characters of a path is `src/cal` for `src/calc.py` — a file that does not exist, in the
+            // one line whose whole job is to name a file. Fitting it to the column is the row's
+            // problem, and the width code below already owns it.
             let note = match (pane, &path) {
-                (Pane::Coverage, Some(path)) => {
-                    format!("no coverage record for {} here", short(path))
-                }
-                (Pane::Hotspots, Some(path)) => {
-                    format!("no MI entry for {} here", short(path))
-                }
-                (Pane::Diffstat, Some(path)) => {
-                    format!("this commit did not change {}", short(path))
-                }
+                (Pane::Coverage, Some(path)) => format!("no coverage record for {path} here"),
+                (Pane::Hotspots, Some(path)) => format!("no MI entry for {path} here"),
+                (Pane::Diffstat, Some(path)) => format!("this commit did not change {path}"),
                 (pane, None) => (match pane {
                     Pane::Coverage => "no file to select here",
                     Pane::Hotspots => "no file to select here",
@@ -1187,7 +1185,7 @@ impl Detail {
                 })
                 .to_owned(),
             };
-            cells.push([note.to_owned(), String::new(), String::new(), String::new()]);
+            cells.push([note, String::new(), String::new(), String::new()]);
             marked.push(true);
         }
         let empty = self.count(pane) == 0;

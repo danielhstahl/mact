@@ -422,6 +422,42 @@ fn a_pane_that_does_not_know_the_selected_file_says_so() {
     );
 }
 
+/// The sentence that names a file names *all* of it. Seven characters is ADR-0008 §6.2's display form
+/// for a SHA and a nonsense form for a path: `src/reg` is not a file, and a reader who cannot grep what
+/// the pane just told them has been handed a clue that is not one.
+#[test]
+fn a_note_about_a_file_the_pane_does_not_know_names_the_whole_path() {
+    let mut bare = snapshot();
+    bare.files.clear();
+    bare.mi.clear();
+    bare.pooled = Pooled {
+        percent: None,
+        gap: Some("no_evidence".to_owned()),
+        ..Pooled::default()
+    };
+    let mut view = Detail::read(bare);
+    view.set_height(detail::pane_height(30));
+    view.focus_pane(Pane::Diffstat);
+    view.jump(true);
+    let selected = view.path().unwrap_or_default();
+    assert_eq!(
+        selected, "src/registry.rs",
+        "the fixture's last diffstat row, in path order"
+    );
+    assert!(
+        selected.chars().count() > 7,
+        "and long enough that a SHA-sized truncation would bite"
+    );
+    for pane in [Pane::Coverage, Pane::Hotspots] {
+        let frame = view.frame(pane, 96, &palette());
+        let text: Vec<&str> = frame.rows.iter().map(|row| row.cells[0].as_str()).collect();
+        assert!(
+            text.iter().any(|line| line.contains(&selected)),
+            "the {pane:?} pane's note names {selected} in full: {text:?}"
+        );
+    }
+}
+
 /// `Tab` walks the panes forwards, `Shift-Tab` backwards, and both wrap: three panes is a ring, and a
 /// focus that sticks at one end teaches the reader to press the key twice to find out if it worked.
 #[test]
