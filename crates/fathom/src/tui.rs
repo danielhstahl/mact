@@ -390,13 +390,12 @@ pub fn run(
              table as text (and `fathom index --status` says what this build has indexed)"
         ))
     })?;
-    let engine = Engine::start(Arc::new(StoreWork::new(
-        boot.clone(),
-        config.clone(),
-        query,
-        arguments.limit,
-        limits,
-    )));
+    let engine = Engine::start(Arc::new(
+        StoreWork::new(boot.clone(), config.clone(), query, arguments.limit, limits)
+            // The screen's own first read carries the `git` identity the engine's polls must not lose; see
+            // [`StoreWork::with_identity`].
+            .with_identity(&app.reading),
+    ));
     let mut driver = TerminalDriver::new(terminal, engine, palette);
     let outcome = run_loop(&mut app, &mut driver);
     // Restore first, then report: a stderr line printed while the alternate screen is still up is a line

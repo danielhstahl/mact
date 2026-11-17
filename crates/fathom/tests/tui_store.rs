@@ -342,6 +342,54 @@ fn a_cancelled_index_leaves_a_usable_store_and_says_so() {
     );
 }
 
+/// The header's `branch@HEAD` is asked of `git` once per full read; the polls that fill an index run do
+/// not ask again, and must not lose what was already known. A `main@9f31a2c` that turns into `(none)@—`
+/// for the length of a re-index is the screen stating something it has no evidence for.
+#[test]
+fn a_reindex_never_loses_the_branch_and_head_in_the_header() {
+    let scratch = tempfile::tempdir().expect("scratch");
+    let fixture = Fixture::new(scratch.path(), "identity");
+    three_commits(&fixture.repo);
+    let head = fixture.repo.head();
+    let work = StoreWork::new(
+        fixture.boot(),
+        Config::default(),
+        Query::new(),
+        None,
+        fathom::diff::Limits::default(),
+    );
+
+    // The order the screen does it in: a full read, then the polls an index run publishes.
+    let full = work.read();
+    assert_eq!(full.branch, "main", "the fixture's own branch: {full:?}");
+    assert_eq!(full.head.as_deref(), Some(head.as_str()));
+    let polled = work.poll().expect("the engine can poll");
+    assert_eq!(polled.branch, full.branch, "a poll borrows the branch");
+    assert_eq!(polled.head, full.head, "and the head");
+
+    // A full read *after* a poll is the identity again — the ordering that used to poison it.
+    let again = work.read();
+    assert_eq!(again.branch, "main", "a poll may not overwrite the truth");
+    assert_eq!(again.head.as_deref(), Some(head.as_str()));
+
+    // And the cold start the seed exists for: the screen's first read happens before the engine has
+    // produced one of its own, so a poll before that would otherwise say `(none)@—`.
+    let cold = StoreWork::new(
+        fixture.boot(),
+        Config::default(),
+        Query::new(),
+        None,
+        fathom::diff::Limits::default(),
+    )
+    .with_identity(&full);
+    let first_poll = cold.poll().expect("the engine can poll");
+    assert_eq!(
+        first_poll.branch, "main",
+        "a seeded poll keeps the header it was seeded with"
+    );
+    assert_eq!(first_poll.head.as_deref(), Some(head.as_str()));
+}
+
 /// The benchmark panel's read path, end to end: a record act-mcp wrote, the row `fathom index` derived
 /// from it, the `Entry` the store hands the screen, and the panel built on top — with no fixture in
 /// between to disagree with the real row shape.

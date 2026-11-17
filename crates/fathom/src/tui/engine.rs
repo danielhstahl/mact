@@ -211,16 +211,42 @@ impl StoreWork {
         }
     }
 
-    /// Remember a reading so the cheap poll can reuse its git identity.
-    fn remember(&self, reading: &Reading) -> Reading {
+    /// Seed the git identity from a reading the screen already has.
+    ///
+    /// The first frame is read on the way in (`crate::tui::run`), before this handle has produced a
+    /// reading of its own. Without the seed, the first index run of a session has nothing to borrow an
+    /// identity from and the header loses `main@9f31a2c` for the length of the run.
+    #[must_use]
+    pub fn with_identity(self, reading: &Reading) -> Self {
+        if let Ok(mut guard) = self.last.lock() {
+            *guard = Some(reading.clone());
+        }
+        self
+    }
+
+    /// Keep the git identity straight between a full read and the polls that fill a screen.
+    ///
+    /// `full` says which kind of reading this is: [`store_view::read`] asks `git` what the branch and
+    /// `HEAD` are; [`store_view::rows_only`] deliberately does not, and so arrives with `(none)`/`None` in
+    /// those three fields. A full read *is* the identity and replaces it; a poll borrows it and never
+    /// overwrites it.
+    ///
+    /// The direction is the whole point. Patching first and storing whatever came out is how a header
+    /// goes from `main@9f31a2c` to `(none)@—` the moment the reader presses `R`: the first thing an index
+    /// run publishes is a poll, that poll is the first thing stored, and every full read afterwards
+    /// arrives wearing the placeholder it just poisoned.
+    fn remember(&self, reading: &Reading, full: bool) -> Reading {
         let mut copy = reading.clone();
+        if full {
+            if let Ok(mut guard) = self.last.lock() {
+                *guard = Some(copy.clone());
+            }
+            return copy;
+        }
         if let Some(previous) = self.last.lock().ok().and_then(|guard| guard.clone()) {
             copy.repo.clone_from(&previous.repo);
             copy.branch.clone_from(&previous.branch);
             copy.head.clone_from(&previous.head);
-        }
-        if let Ok(mut guard) = self.last.lock() {
-            *guard = Some(copy.clone());
         }
         copy
     }
@@ -229,13 +255,13 @@ impl StoreWork {
 impl Work for StoreWork {
     fn read(&self) -> Reading {
         let reading = store_view::read(&self.boot, self.limit);
-        self.remember(&reading)
+        self.remember(&reading, true)
     }
 
     fn poll(&self) -> Option<Reading> {
         // Rows only: no `git` subprocess on a poll, because a poll runs several times a second while a
         // `git log` subprocess is exactly the work the index is doing.
-        Some(self.remember(&store_view::rows_only(&self.boot, self.limit)))
+        Some(self.remember(&store_view::rows_only(&self.boot, self.limit), false))
     }
 
     fn progress(&self) -> Option<(String, u64, u64)> {
