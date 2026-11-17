@@ -116,7 +116,8 @@ pub fn diff(view: &super::diff_view::DiffView, palette: &Palette, width: usize) 
     // the screen keeps by the filter and the key.
     let mut view = view.clone();
     view.show_all = true;
-    let (left, right) = view.header(palette);
+    // No cursor counter: this dump prints every file, so the count is the count and not a position.
+    let (left, right) = view.header_with_cursor(palette, false);
     let _ = writeln!(out, "{}", prose(palette, &format!("{left}  {right}")));
     if let Some(notice) = view.notice() {
         let _ = writeln!(out, "{}", prose(palette, &notice));

@@ -511,6 +511,66 @@ fn turning_the_filter_off_from_a_file_it_just_hid_leaves_the_cursor_in_the_list(
     );
 }
 
+/// A commit whose every file the filters hide is ordinary — a lockfile bump, a vendored refresh — and it
+/// leaves the cursor nowhere to sit. Drawing a *hidden* file's patch there would contradict both the
+/// empty list beside it and the `—/0 files` above it, which is the disagreement `t` refuses elsewhere.
+#[test]
+fn when_the_filters_hide_every_file_the_patch_pane_says_what_it_is_hiding() {
+    let mut app = app_with(2);
+    let mut all_hidden = commit();
+    all_hidden.files.retain(|file| file.scope != Scope::Source);
+    recompute(&mut all_hidden);
+    assert!(
+        !all_hidden.files.is_empty(),
+        "the commit really did change something"
+    );
+    open(&mut app, all_hidden);
+
+    let pane = view(&app);
+    assert!(
+        pane.shown().is_empty(),
+        "and the default filter shows none of it"
+    );
+    let (_, right) = pane.header(&Palette::interactive());
+    assert!(
+        right.contains("0 files"),
+        "the header counts the list, not the commit: {right}"
+    );
+    let text: String = pane
+        .pane_lines()
+        .iter()
+        .map(|(_, line)| format!("{line}\n"))
+        .collect();
+    assert!(
+        !text.contains("Cargo.lock"),
+        "no patch of a hidden file is drawn under an empty list:\n{text}"
+    );
+    assert!(
+        text.contains("hidden by the filters"),
+        "the pane says why it is empty, and which key fills it:\n{text}"
+    );
+
+    // `t` is the whole point of the sentence: with the filter off the file is listed, selected, and its
+    // patch is the pane again.
+    press(&mut app, KeyCode::Char('t'));
+    let shown = view(&app);
+    assert_eq!(
+        shown.shown(),
+        vec![0],
+        "`t` shows the file the commit really did touch"
+    );
+    let text: String = shown
+        .pane_lines()
+        .iter()
+        .map(|(_, line)| format!("{line}\n"))
+        .collect();
+    assert!(
+        text.contains("Cargo.lock"),
+        "and the patch is there to read:\n{}",
+        text.lines().take(3).collect::<Vec<_>>().join("\n")
+    );
+}
+
 #[test]
 fn scroll_is_per_file_and_survives_the_walk_between_files() {
     let mut app = app_with(2);
@@ -1069,6 +1129,11 @@ fn the_plain_surface_prints_the_same_commit_and_every_file_of_it() {
     assert!(
         lines[0].contains("+98 -35") && lines[0].contains("(all)"),
         "the dump is the whole commit, so its totals are the whole commit's: {lines:?}"
+    );
+    assert!(
+        lines[0].contains("3 files (all)") && !lines[0].contains("/3 files"),
+        "the dump has no cursor, so the header counts the files instead of pointing at one of them: \
+         {lines:?}"
     );
     assert!(
         lines

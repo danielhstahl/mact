@@ -141,10 +141,21 @@ impl DiffView {
         self.shown().iter().position(|index| *index == self.file)
     }
 
-    /// The file the diff pane is drawing, if there is one.
+    /// The file the diff pane is drawing, if there is one — and "if there is one" includes whether the
+    /// filter still shows it.
+    ///
+    /// When `paths.*` hides *every* file in the commit there is nowhere for [`DiffView::settle`] to park
+    /// the cursor, and `file` goes on naming a hidden file. Drawing its patch there would put text on the
+    /// right that the empty list on the left and the `—/0 files` in the header both deny — the same
+    /// disagreement [`DiffView::set_show_all`] refuses one function up. With no shown file the pane says
+    /// what the filter is hiding instead, which is [`DiffView::status`]'s sentence.
     #[must_use]
     pub fn current(&self) -> Option<&FileDiff> {
-        self.all_files().get(self.file)
+        if self.shown().contains(&self.file) {
+            self.all_files().get(self.file)
+        } else {
+            None
+        }
     }
 
     /// The scroll offset for the selected file.
@@ -272,6 +283,15 @@ impl DiffView {
     /// `vs parent 8ac22d1 · +140 -310 · 1/7 files`.
     #[must_use]
     pub fn header(&self, palette: &Palette) -> (String, String) {
+        self.header_with_cursor(palette, true)
+    }
+
+    /// [`DiffView::header`] with the cursor counter turned off, which is what the text dump wants:
+    /// `7 files (all)` rather than `6/7 files (all)`. The dump prints every file's patch and has no
+    /// cursor to be the sixth of seven, so the counter there reads as "this dump is missing a file" —
+    /// the opposite of what `(all)` is saying two words later.
+    #[must_use]
+    pub fn header_with_cursor(&self, palette: &Palette, cursor: bool) -> (String, String) {
         let Some(diff) = self.diff.as_ref() else {
             let left = format!("DIFF  {} \u{2014}", short(&self.sha));
             let right = if let Some(error) = &self.error {
@@ -282,16 +302,21 @@ impl DiffView {
             return (left, right);
         };
         let (add, del, files) = diff.totals.shown(self.show_all);
-        let position = self
-            .shown_position()
-            .map_or_else(|| "\u{2014}".to_owned(), |index| (index + 1).to_string());
         let shown = self.shown().len();
+        let files = files.max(shown);
+        let counter = if cursor {
+            let position = self
+                .shown_position()
+                .map_or_else(|| "\u{2014}".to_owned(), |index| (index + 1).to_string());
+            format!("{position}/{files} files")
+        } else {
+            format!("{files} files")
+        };
         let right = format!(
-            "{} \u{b7} +{} -{} \u{b7} {position}/{files} files{of}",
+            "{} \u{b7} +{} -{} \u{b7} {counter}{of}",
             self.base(),
             add,
             del,
-            files = files.max(shown),
             of = if self.show_all {
                 " (all)".to_owned()
             } else {
