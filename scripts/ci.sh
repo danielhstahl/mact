@@ -126,7 +126,8 @@ Options:
                       or the default of both. Repeatable, and cd.yml uses it to build, smoke and
                       upload each artefact in its own step so a fathom that will not build cannot
                       hold up the server (ADR-0005 §3).
-  -q, --quiet         only the step headers, the failures and the summary
+  -q, --quiet         only the step headers, the failures (with the output that caused them) and
+                      the summary
 
 Environment:
   CARGO_TARGET_DIR    honoured as always. On a bind-mounted checkout rustc can take SIGBUS
@@ -653,12 +654,25 @@ for step in "${SELECTED[@]}"; do
     # failing check in the middle of a step fall on the floor. So each step runs in a
     # subshell that turns errexit back on and is not a condition.
     set +e
+    # `-q` means "do not make me read this on a green run", not "throw the evidence away". In quiet mode
+    # the step's output goes to a temporary file and is printed when — and only when — the step fails. A
+    # quiet log that says `test FAILED (11s)` and nothing else sends someone into a 65-second rerun to
+    # find one test name, which is how a flake stays a mystery forever.
+    step_log=""
     if [[ "$QUIET" == 1 ]]; then
-        ( set -e; "$step_fn" ) >/dev/null 2>&1
+        step_log=$(mktemp 2>/dev/null || true)
+        if [[ -n "$step_log" ]]; then
+            ( set -e; "$step_fn" ) >"$step_log" 2>&1
+            status=$?
+        else
+            # No scratch file, no capture: the old discard-everything behaviour beats no build at all.
+            ( set -e; "$step_fn" ) >/dev/null 2>&1
+            status=$?
+        fi
     else
         ( set -e; "$step_fn" )
+        status=$?
     fi
-    status=$?
     set -e
     elapsed=$(( $(date +%s) - step_start ))
 
@@ -677,9 +691,20 @@ for step in "${SELECTED[@]}"; do
         if [[ -n "$hint" ]]; then
             fix "$hint"
         fi
+        # The evidence last: the step header and the fix line are what a reader acts on, and the output
+        # is what they then want. Tail-first, because a cargo or python failure ends with the thing that
+        # failed.
+        if [[ -n "$step_log" && -s "$step_log" ]]; then
+            printf '  ---- %s output, last 200 of %s lines ----\n' "$step" "$(wc -l <"$step_log")"
+            tail -n 200 "$step_log"
+            printf '  ---- end of %s output ----\n' "$step"
+        fi
         if [[ -n "$in_gh_actions" ]]; then
             printf '::error::ci step %s failed\n' "$step"
         fi
+    fi
+    if [[ -n "$step_log" ]]; then
+        rm -f "$step_log"
     fi
     group_end
 
