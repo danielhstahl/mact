@@ -8,7 +8,10 @@ pipeline, one `scripts/ci.sh`, three crates, two binaries.
 
 | file | what it is |
 |---|---|
-| `scripts/ci.sh` | the whole check: `fmt`, `clippy`, `build`, `doc`, `test`, `tui-snapshot`, `fathom-report`, `fathom-doctor`, `schema`, `supply-chain`, `release-workspace`, `release`. Run it bare for everything, or name steps. `--help` is the reference |
+| `scripts/ci.sh` | the whole check: `fmt`, `clippy`, `build`, `doc`, `test`, `tui-snapshot`, `fathom-report`, `fathom-doctor`, `coverage`, `benchmark`, `mcp-driver`, `schema`, `supply-chain`, `release-workspace`, `release`. Run it bare for everything, or name steps. `--help` is the reference |
+| `scripts/coverage.sh` | the coverage collector: `cargo llvm-cov` over the workspace into an lcov tracefile at `$ACTMCP_EVIDENCE_OUT/lcov.info` (ADR-0002 §3.2's first path), the totals printed the way the contract reads them, and `--check` for the parsing/path/floor logic that needs no toolchain |
+| `scripts/bench.sh` | the benchmark producer: cold, warm, store-open and index timings over a throwaway fixture, published as an ADR-0002 §3.3 `benchmark.json` that it validates against every bound the contract states before it claims success |
+| `scripts/mcp_run.sh` | the runner driver one job calls: asks a live `act-mcp serve` to run a task and fails unless the runner advertised it, ran it to `success`, and published a record — `--check` proves all four outcomes against a stub server, no act required |
 | `scripts/smoke_binary.sh` | proves a built `act-mcp` is a runnable binary (used by `ci.sh release` and by the release job) |
 | `scripts/smoke_fathom.sh` | proves a built `fathom` is a runnable binary, and that `report`/`doctor` keep their 0/1/2 promise on a real evidence tree (`--check artefact\|report\|doctor\|all`) |
 | `scripts/check_dependency_firewalls.sh` | the two dependency-graph promises `deny.toml` cannot make: ADR-0005's forbidden edges are absent *transitively*, and no crate in any shipped target's graph needs a C toolchain |
@@ -16,6 +19,9 @@ pipeline, one `scripts/ci.sh`, three crates, two binaries.
 | `scripts/ci_drill.sh` | injects one violation per step into a throwaway copy and asserts the step fails — proof that each check can fail |
 | `.github/workflows/ci.yml` | the pipeline: `check` (all of the above, one matrix-free job) and `release` (per-platform supply-chain gate, workspace release build, one artefact each for `act-mcp` and `fathom`) |
 | `.github/workflows/cd.yml` | the release train: one tag sets one version, then `mact-<target>.tar.gz` and `fathom-<target>.tar.gz` are built, smoke-tested and uploaded as separate steps |
+| `.github/workflows/coverage.yml` | the coverage *producer*, hand-triggered because the runner runs it (`act -j coverage`); writes the tracefile to `$ACTMCP_EVIDENCE_OUT` |
+| `.github/workflows/benchmarks.yml` | the benchmark *producer*, same shape (`act -j benchmark`); writes `benchmark.json` to `$ACTMCP_EVIDENCE_OUT` |
+| `.github/workflows/mcp-evidence.yml` | the evidence jobs: on every push and PR, starts `act-mcp serve`, asks it over MCP to run each producer, and fails unless the run was advertised, succeeded and published a record. §3a is why this exists and why the producers are elsewhere |
 
 ## 1. Running it locally
 
@@ -26,6 +32,10 @@ scripts/ci.sh --keep-going          # what CI's check job runs, plus the release
 scripts/ci.sh --help                # steps, flags, environment, exit codes
 scripts/ci.sh tui-snapshot          # just the screens, drawn: ~2s once it is built
 scripts/ci.sh fathom-report         # the report goldens, then the artefact over a sample tree
+scripts/ci.sh coverage benchmark mcp-driver   # the evidence jobs' own logic, no act, no docker
+scripts/coverage.sh --check         # the lcov rules alone; drop --check to actually collect coverage
+scripts/bench.sh --check            # the §3.3 payload rules alone
+scripts/mcp_run.sh --check          # the runner driver, against a stub MCP on loopback
 scripts/smoke_fathom.sh --check all target/debug/fathom    # the headless contract, alone
 scripts/check_dependency_firewalls.sh                      # the graph's shape, alone
 ```
@@ -55,6 +65,9 @@ matters on boxes where `pip` and `python3` disagree about where packages live.
 | `tui-snapshot` | `cargo test -p fathom --test tui_render --test tui_detail --test tui_detail_store --test tui_diff --test tui_bench --test tui_store` | the fathom screens, drawn into ratatui's `TestBackend` and compared against a golden written out in the test file. A mismatch is a *design* change wearing a test failure's clothes: read the diff, and re-record only what you meant to change (there is no `--accept` step here — the goldens are string literals in the test, so the diff is the review). Colour is asserted where it is decided, never in a snapshot |
 | `fathom-report` | `cargo test -p fathom --test report`, then `scripts/smoke_fathom.sh --check report <fathom>` | first the two envelope goldens (`report.json`, and `report-sample-tree.json`, which is `scripts/sample_evidence.py`'s tree re-stamped onto the fixture's commits): a renamed, dropped or re-typed field is a failing test, not a broken dashboard downstream. Then the *artefact*: the same binary over the sample tree, checking the envelope's shape, that the tsv header is still the columns a `cut -f` is written against, that `fathom index` lands where the report reads, and that `--fail-on` exits 1 exactly when its own `gate.status` says `findings` |
 | `fathom-doctor` | `scripts/smoke_fathom.sh --check doctor <fathom>` | `fathom doctor --json`'s exit code is derived from its own checks (0 all ok, 1 worst is warn, 2 something failed), every documented check is present, and a directory that is not a work tree is exit 2 — "could not run", never "nothing to report". `doctor` is a command whose whole output is a status, so the status is smoke-tested rather than trusted |
+| `coverage` | `scripts/coverage.sh --check` | the lcov arithmetic (a tracefile whose `LF`/`LH`/`BF`/`BH` totals are known by hand), the three output-path rules, and the `--fail-under` comparison — including that an empty tracefile is *absence* and not a 0% score. The instrumented run is not here: it needs a container and an evidence directory, so it lives in `coverage.yml` (§3a) |
+| `benchmark` | `scripts/bench.sh --check` | the ADR-0002 §3.3 payload rules in both directions: a conforming payload accepted, and each refusal stated by the contract — missing `name`/`value`, a non-finite `value` (null means *failed*, not zero), the 16-character unit bound, eight flat string labels, 2000 bytes per record, 64 metrics, both accepted top-level shapes — shown refusing. Plus the median, including the even-count middle pair, because a mean of five samples is a benchmark one slow container can move |
+| `mcp-driver` | `scripts/mcp_run.sh --check` | the four outcomes of the script `mcp-evidence.yml` trusts its exit code to: published, failed, succeeded-with-nothing, not-advertised — four real MCP calls to a stub server on loopback through `scripts/mcp_call.sh`. This is the check that the driver *fails* when evidence is missing, which is the only reason a green evidence job means anything |
 | `schema` | see below | the JSON Schema of both accepted contracts — ADR-0001's tool contract and ADR-0002's evidence format — and ADR↔schema drift |
 | `supply-chain` | `cargo deny check licenses bans sources` + `... advisories`, then a `cargo tree -d` note, then `scripts/check_dependency_firewalls.sh` | licences, duplicate/wildcard policy, dependency provenance, RUSTSEC — over **all three crates**, since one lockfile is one policy — and then the two things `deny.toml` cannot say: that ADR-0005's forbidden edges stay absent *transitively* (`cargo tree`, because `fathom` acquiring `schemars` through `act-evidence`'s `json-schema` feature is invisible in its manifest), and that no crate in any shipped target's graph invokes a C compiler (the refusal ADR-0003, ADR-0006 §5 and ADR-0007 §6 each made) |
 | `release-workspace` | `cargo build --release --workspace` | the release profile over every member, before anything is packaged: an optimisation-time failure or a `cfg(not(debug_assertions))` arm is red here rather than in the middle of an artefact build |
@@ -174,6 +187,65 @@ a cold cache is under ten minutes for `check`, and `release` runs after it. The 
 add seconds, not minutes: `tui-snapshot` is the drawn-screen suite (about a second once built),
 `fathom-report` is one test binary plus one run of the CLI over a three-commit tree, and
 `fathom-doctor` does not compile anything the report step did not already build.
+
+## 3a. The evidence jobs: coverage and benchmark, through the runner
+
+ADR-0006 §10 asks for one row no other check in this repository fills:
+
+> | Evidence production (coverage, benchmark) | one job per category through act-mcp | act installed,
+> network to the endpoint, a commit to run |
+
+`fathom doctor` can answer "does a coverage job exist?" by reading `.github/workflows`, and before
+`coverage.yml` existed it answered no. That question is worth one warning and not much else. The question
+a repository actually needs an answer to is whether a job ran, through the runner, and produced a record
+for the commit — because fathom's columns come from `.evidence/<category>/<commit>/*.jsonl` and nothing
+else, so a workflow that exists and produces nothing leaves the timeline exactly as empty as no workflow
+at all.
+
+Three files, split on purpose:
+
+| file | who runs it | what it is for |
+|---|---|---|
+| `coverage.yml` | the runner (`act -j coverage`), or a human with `workflow_dispatch` | run `scripts/coverage.sh`, which writes `$ACTMCP_EVIDENCE_OUT/lcov.info` |
+| `benchmarks.yml` | the runner (`act -j benchmark`), or a human | run `scripts/bench.sh`, which writes `$ACTMCP_EVIDENCE_OUT/benchmark.json` |
+| `mcp-evidence.yml` | GitHub, on every push and pull request | start `act-mcp serve`, ask it over MCP to run each producer, assert what came back |
+
+* **Why the producers are separate files.** A job that starts a runner must not be a job a runner runs.
+  `run_workflow` refuses the nested case itself with `act_in_container` (ADR-0006 §10.1), and the
+  `if: ${{ !env.ACT }}` guard on each driver job means that if someone does ask for one, it exits in
+  seconds instead of after a release build. The producers are `workflow_dispatch`-only for the mirror
+  image of the same reason: GitHub never runs them on a push, so the act run is the only run, and the
+  evidence it writes is the evidence the commit gets.
+* **Why the job names are not free-form.** ADR-0002 §3.1 derives a job's category from the *whole words*
+  in the job id and its `name:` — `coverage`, and `benchmark` in the singular. So `name: Coverage` and
+  `name: Benchmark` are load-bearing: rename the benchmark job to `Benchmarks` and the plural is not the
+  marker, the runner files the job as `other`, its payload is not extracted, `list_tasks` stops
+  advertising it as a benchmark, and the column goes empty without a word of complaint from anyone. The
+  same rule is why the driver passes `--category` explicitly and why `mcp_run.sh` compares it against
+  `category_hint` instead of trusting it.
+* **What "it ran against the MCP" means concretely.** `mcp_run.sh` speaks the same protocol the
+  inspector does, through `scripts/mcp_call.sh`, and it names its own four failures: `unreachable` (the
+  endpoint never answered `list_tasks`), `not-advertised` (`list_tasks` does not offer that job, or
+  offers it with a different `category_hint`), `not-success` (the run reached a terminal state that was
+  not `success`, with `log_tail` and `.evidence/runs/<run_id>/act.jsonl` printed), and `no-evidence`
+  (the run succeeded and published no record for the commit it executed). The last one is the point. A
+  green job that published nothing is the failure this whole arrangement exists to make impossible, and
+  the driver is the only place it can be caught — the run itself cannot see whether anyone read its
+  output.
+* **Then fathom reads it.** Each driver job ends with `fathom report` and `fathom doctor`, read-only and
+  non-gating, over the tree that now contains the evidence. That is the loop the ADR describes: run →
+  publish → read, with no step in the middle that has to be remembered.
+
+Reproducing one locally, with no docker and no act — the same stub `act` the e2e suite drives (see
+docs/testing.md §7), pointed at a throwaway checkout:
+
+```sh
+export PATH=$PWD/tests-stub:$PATH            # a `docker` stub: `info --format …` must exit 0
+STUB_PAYLOAD=all act-mcp serve --workspace /tmp/ws \
+  --act-binary crates/act-mcp/tests/e2e/testdata/bin/act --bind 127.0.0.1:8080 &
+scripts/mcp_run.sh --workflow coverage.yml --task coverage --category coverage \
+  --commit "$(git -C /tmp/ws rev-parse HEAD)" --evidence-kind coverage
+```
 
 ## 4. Toolchain policy
 

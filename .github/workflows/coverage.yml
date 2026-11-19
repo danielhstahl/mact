@@ -1,0 +1,74 @@
+name: Coverage
+on:
+  workflow_dispatch:
+
+# The coverage producer, in its own hand-triggered file for one reason: the runner runs this job
+# (`act -j coverage`), and a job that starts a runner must never be a job a runner runs. The job that
+# asks for it is `.github/workflows/mcp-evidence.yml`, and the split is the same one `dogfood.yml`
+# implies by keeping its act-run job separate from the workflows that start a server.
+#
+# Two things must be true for this file to count, and CI checks both of them rather than assuming them.
+# `list_tasks` has to advertise the `coverage` job with `category_hint: coverage` — that is what makes it
+# discoverable to any MCP client, and what stops `fathom doctor` answering "coverage not found" — and a
+# run through the runner has to publish `lcov.info`, so a commit gains a coverage row by existing
+# (ADR-0002 §3.2).
+#
+# The job's name is load-bearing, not decorative. ADR-0002 §3.1 derives the category from the whole words
+# in the job id and its `name:`, and `coverage` is one of the two words the rule recognises. Rename this
+# job to `cov` and it silently stops being a coverage job to every reader, act included: the runner will
+# file it under `other`, its payload will not be extracted as coverage, and nothing downstream will say
+# why the column went empty. The workflow's display name is free to be anything.
+jobs:
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-
+
+      ## act doesn't have rust installed (the same reason dogfood.yml installs it)
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      # The self-test first: it needs no toolchain and no run, and it is the half of this check that
+      # would otherwise only ever be exercised inside the run it drives. It covers the lcov totals parser,
+      # the three output-path rules and the `--fail-under` comparison, and it is also what
+      # `scripts/ci.sh coverage` runs on a runner with no container at all.
+      - name: Self-test the coverage collector
+        run: scripts/coverage.sh --check
+
+      # One line, because the logic belongs to the script. It installs `cargo-llvm-cov` when the image has
+      # none (there is no tarball for it, unlike the pinned tools `install_ci_tools.sh` fetches), runs the
+      # instrumented test run over the workspace, and writes the tracefile to
+      # `$ACTMCP_EVIDENCE_OUT/lcov.info` — the path ADR-0002 §3.2 names first, and the only path by which
+      # this run becomes a number attached to a commit instead of a log nobody parses. Outside a run
+      # `$ACTMCP_EVIDENCE_OUT` is unset and the same command writes `./lcov.info`, which is the second
+      # place the extractor looks, so a human running this on a laptop produces the same artefact.
+      #
+      # No `--fail-under` here on purpose. The producer reports; a floor belongs to whoever decides to
+      # gate on it, and `scripts/coverage.sh --fail-under N` exists so that decision is explicit and in
+      # one place.
+      - name: Collect coverage
+        run: scripts/coverage.sh
+
+      - name: Show what the run published
+        run: |
+          set -euo pipefail
+          out=$(scripts/coverage.sh --print-out-path)
+          ls -l "$out"
+          awk -F: '/^LF:/ { f += $2 } /^LH:/ { h += $2 } /^BF:/ { bf += $2 } /^BH:/ { bh += $2 }
+            END { printf "lines %d/%d, branches %d/%d\n", h, f, bh, bf }' "$out"

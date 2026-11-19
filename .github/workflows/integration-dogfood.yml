@@ -45,8 +45,14 @@ jobs:
             --tool-name list_tasks \
             http://localhost:8080/mcp  2>/dev/null)
           result=$(echo $list_tasks | jq '.structuredContent.workflow_count')
-          if [ $result != "6" ]; then
-            echo "Assertion failed: $result"
+          # Counted against the directory rather than a literal, because what this assertion is for is
+          # "the runner sees every workflow file that is here", and a hardcoded number answers a
+          # different question: it goes red the day anyone adds a workflow for an unrelated reason, and
+          # it goes green the day someone deletes one. `coverage.yml`, `benchmarks.yml` and
+          # `mcp-evidence.yml` are the reason this changed from 6, and they will not be the last.
+          expected=$(find .github/workflows -maxdepth 1 \( -name '*.yml' -o -name '*.yaml' \) -type f | wc -l | tr -d ' ')
+          if [ "$result" != "$expected" ]; then
+            echo "Assertion failed: list_tasks reported $result workflow(s), the directory holds $expected"
             exit 1
           fi
 

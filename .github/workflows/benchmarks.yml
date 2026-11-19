@@ -1,0 +1,71 @@
+name: Benchmarks
+on:
+  workflow_dispatch:
+
+# The benchmark producer, in its own hand-triggered file for the same reason `coverage.yml` is: the
+# runner runs this job (`act -j benchmark`), and a job that starts a runner must never be a job a runner
+# runs. The job that asks for it is `.github/workflows/mcp-evidence.yml`.
+#
+# The job's `name:` is singular — `Benchmark`, not `Benchmarks` — deliberately. ADR-0002 §3.1 derives the
+# category from whole words, and the rule refuses the plural `benchmarks` on purpose, because the plural
+# is what a sentence about benchmarks looks like and not a job that runs them. So the workflow's display
+# name is the plural and the job's is not, and every reader — act included — files this job as
+# `benchmark`. Rename the job to `benchmarks` and it becomes `other` silently: no extraction, no doctor
+# finding, no explanation, just an empty column.
+#
+# What the numbers mean lives in `scripts/bench.sh`: cold report latency (the ADR-0006 §9.1 budget), warm
+# report latency, the TUI's first frame, and full-index throughput, each labelled with the OS, the rustc
+# version, the profile and the fixture size, and published as an ADR-0002 §3.3 `benchmark.json`.
+jobs:
+  benchmark:
+    name: Benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-
+
+      ## act doesn't have rust installed (the same reason dogfood.yml installs it)
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      # First, and for the same reason as everywhere else: the payload rules are pure logic, so they are
+      # checked without building anything, and a rule that broke is reported as a rule breaking instead of
+      # as four minutes of measurement that produced a file no runner would keep.
+      - name: Self-test the benchmark driver
+        run: scripts/bench.sh --check
+
+      # Release, because a timing taken on a debug build is a different fact, and ADR-0006 §9.2 says a
+      # benchmark has to say what it is; `bench.sh` labels every metric with the profile, the rustc
+      # version, the OS and the fixture size, and refuses to publish a payload that would be refused.
+      #
+      # No `--budget` here. ADR-0006 §9.2 is explicit that the budget is not a pre-merge gate in the shape
+      # it currently ships, so this job publishes the cold first-screen number and lets a reader — or a
+      # dispatched run with `--budget 1000` — decide what to do about it. The driver asserts the one thing
+      # that is a fact rather than a judgement: that the run produced numbers at all.
+      - name: Measure
+        run: scripts/bench.sh --iterations 3 --commits 40
+
+      - name: Show what the run published
+        run: |
+          set -euo pipefail
+          out=$(scripts/bench.sh --print-out-path)
+          # The same rules the runner applied when it extracted the records. If the payload would be
+          # refused, this job says so; a runner that drops a payload is a run that published nothing.
+          scripts/bench.sh --validate "$out"
+          python3 -c 'import json,sys
+          for m in json.load(open(sys.argv[1]))["metrics"]:
+              print("%-40s %12.2f %s  %s" % (m["name"], m["value"], m.get("unit", ""), m.get("labels", {})))' "$out"

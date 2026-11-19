@@ -43,6 +43,27 @@
 #                directory that is not a work tree is refused with 2. `doctor` is a command whose
 #                whole output is a status code, so the code is the contract and it is smoke-tested,
 #                not trusted.
+#   coverage     `scripts/coverage.sh --check`: the lcov parser, the three output-path rules and the
+#                `--fail-under` comparison, on a fixture tracefile whose answer is known by hand. The
+#                instrumented run itself is deliberately not here — docs/testing.md §1 keeps this script
+#                docker-free, and an instrumented workspace build belongs to the job that has a container
+#                and an evidence directory to write into (`.github/workflows/coverage.yml`, which
+#                `.github/workflows/mcp-evidence.yml` asks the runner to run). What is here is the logic
+#                that decides whether a tracefile means anything, which needs no toolchain and so can be
+#                checked on every commit.
+#   benchmark    `scripts/bench.sh --check`: the ADR-0002 §3.3 payload rules in both directions — every
+#                bound the contract states (required `name`/`value`, a finite number, the unit and label
+#                bounds, the 2000-byte record budget, the 64-metric cap, and both accepted top-level
+#                shapes) is shown accepting a conforming payload and refusing a broken one. Measuring is
+#                the benchmark job's business (`.github/workflows/benchmarks.yml`); this is the half that
+#                says the payload a run publishes is one a runner will keep rather than drop, plus the
+#                median, because a mean of five samples is a benchmark one slow container can move.
+#   mcp-driver   `scripts/mcp_run.sh --check`: the runner-driver's own four outcomes, against a stub MCP
+#                server on loopback — ran-and-published, a run that failed, a run that succeeded and
+#                published nothing, and a job the runner does not advertise. Four real MCP calls through
+#                `scripts/mcp_call.sh`, no act and no container. This is the check that the assertion
+#                `mcp-evidence.yml` relies on fails when the evidence is missing, which is the only reason
+#                that workflow's green means anything.
 #   schema       the JSON Schema contract, both accepted contracts. ADR-0002 first: every file
 #                in schema/ has to be a legal schema for the dialect it declares,
 #                `schema/evidence.schema.json` has to compile in the engine the binary
@@ -89,7 +110,7 @@
 #
 # Usage and the full flag list: `scripts/ci.sh --help`. CI runs
 # `scripts/ci.sh --keep-going fmt clippy build doc test tui-snapshot fathom-report fathom-doctor
-# schema supply-chain` in the check job; the release job runs
+# coverage benchmark mcp-driver schema supply-chain` in the check job; the release job runs
 # `scripts/ci.sh --keep-going supply-chain release-workspace` and then `scripts/ci.sh release` per
 # target.
 
@@ -100,8 +121,11 @@ set -o errexit -o nounset -o pipefail
 # fathom steps sit after `test` (whose suite contains them) so a fathom regression names the step it
 # belongs to; `release-workspace` precedes `release` because the artefacts are packaged from a tree
 # that already survived the release profile.
-STEPS_ALL=(fmt clippy build doc test tui-snapshot fathom-report fathom-doctor schema
-           supply-chain release-workspace release)
+# The three new steps sit after `fathom-doctor` and before `schema` because they are the checks whose
+# subject is the evidence pipeline rather than the binaries: what they assert is about a tracefile, a
+# payload and a driver, and none of them needs act.
+STEPS_ALL=(fmt clippy build doc test tui-snapshot fathom-report fathom-doctor coverage benchmark
+           mcp-driver schema supply-chain release-workspace release)
 
 usage() {
     cat <<'USAGE'
@@ -109,7 +133,8 @@ Usage: scripts/ci.sh [OPTIONS] [STEP ...]
 
 Runs the act-mcp workspace's checks — the server, the contract crate and fathom. With no STEP,
 runs every step in the canonical order (fmt clippy build doc test tui-snapshot fathom-report
-fathom-doctor schema supply-chain release-workspace release). With STEPs, runs exactly those,
+fathom-doctor coverage benchmark mcp-driver schema supply-chain release-workspace release).
+With STEPs, runs exactly those,
 in canonical order.
 
 Options:
@@ -381,6 +406,34 @@ step_fathom_doctor() {
     "$script_dir/smoke_fathom.sh" --check doctor "$fbin"
 }
 
+step_coverage() {
+    # The collector is `scripts/coverage.sh`; the instrumented run is `coverage.yml`'s job, which runs
+    # inside act and writes `$ACTMCP_EVIDENCE_OUT/lcov.info` for act-mcp to extract (ADR-0002 §3.2).
+    # What runs here is the part that is logic rather than compilation: summing LF/LH/BF/BH out of a
+    # tracefile, deciding where the tracefile goes (`--output`, then `$ACTMCP_EVIDENCE_OUT`, then the
+    # repository), and the floor comparison — plus the rule that an empty tracefile is *absence* and not
+    # a 0% score, which is the difference between "unknown" and "terrible" in the report.
+    "$script_dir/coverage.sh" --check
+}
+
+step_benchmark() {
+    # A benchmark payload the runner's extractor refuses is a green job that published nothing, and the
+    # extractor's rules are exact: `name` and `value` required, a finite number (null means *failed*,
+    # not zero), unit 1-16 characters, at most eight flat string labels, 2000 bytes per record, 64
+    # metrics per payload, and either an object with a `metrics` array or a bare array. `bench.sh
+    # --check` proves each bound bites, in both directions.
+    "$script_dir/bench.sh" --check
+}
+
+step_mcp_driver() {
+    # `mcp-evidence.yml` asks a real runner to run the coverage and benchmark jobs and then trusts this
+    # script's exit code. So this step trusts nothing: it points the driver at a stub MCP server on
+    # loopback and requires all four outcomes — published, failed, succeeded-with-nothing, not advertised
+    # — to come out the right way, over real HTTP through `scripts/mcp_call.sh`. No act, no docker, no
+    # network, and the same code path the workflow runs.
+    "$script_dir/mcp_run.sh" --check
+}
+
 step_schema() {
     # The engine that matters is the one the binary embeds: `schema/evidence.schema.json`
     # is `include_str!`-ed into act-mcp, so checking those bytes is what
@@ -619,6 +672,9 @@ step_fix_hint() {
         tui-snapshot) echo "cargo test -p fathom --test tui_render; a mismatch is a screen you changed on purpose or a bug in the screen — read the diff, never re-record blind" ;;
         fathom-report) echo "cargo test -p fathom --test report, then scripts/smoke_fathom.sh --check report <bin>; FATHOM_UPDATE_GOLDEN=1 rewrites the goldens and you must read what it wrote" ;;
         fathom-doctor) echo "scripts/smoke_fathom.sh --check doctor <bin> prints every check and the code it derived from them; crates/fathom/src/exit.rs is the table" ;;
+        coverage)   echo "scripts/coverage.sh --check; the real collection is scripts/coverage.sh, which is what coverage.yml runs inside act" ;;
+        benchmark)  echo "scripts/bench.sh --check; ADR-0002 §3.3 is the payload contract and scripts/bench.sh --validate <file> checks one file against it" ;;
+        mcp-driver) echo "scripts/mcp_run.sh --check; it drives a stub MCP server on loopback, so a failure here is the driver and not the runner" ;;
         schema)       echo "act-mcp validate-evidence <path> prints every finding; ADR-0002 §7 is the contract" ;;
         supply-chain) echo "scripts/install_ci_tools.sh installs cargo-deny; deny.toml holds the policy, and scripts/check_dependency_firewalls.sh --help says which firewall broke" ;;
         release-workspace) echo "cargo build --release --workspace" ;;
