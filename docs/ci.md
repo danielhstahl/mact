@@ -11,7 +11,7 @@ pipeline, one `scripts/ci.sh`, three crates, two binaries.
 | `scripts/ci.sh` | the whole check: `fmt`, `clippy`, `build`, `doc`, `test`, `tui-snapshot`, `fathom-report`, `fathom-doctor`, `coverage`, `benchmark`, `mcp-driver`, `schema`, `supply-chain`, `release-workspace`, `release`. Run it bare for everything, or name steps. `--help` is the reference |
 | `scripts/coverage.sh` | the coverage collector: `cargo llvm-cov` over the workspace into an lcov tracefile at `$ACTMCP_EVIDENCE_OUT/lcov.info` (ADR-0002 §3.2's first path), the totals printed the way the contract reads them, and `--check` for the parsing/path/floor logic that needs no toolchain |
 | `scripts/bench.sh` | the benchmark producer: cold, warm, store-open and index timings over a throwaway fixture, published as an ADR-0002 §3.3 `benchmark.json` that it validates against every bound the contract states before it claims success |
-| `scripts/mcp_run.sh` | the runner driver one job calls: asks a live `act-mcp serve` to run a task and fails unless the runner advertised it, ran it to `success`, and published a record — `--check` proves all four outcomes against a stub server, no act required |
+| `scripts/mcp_run.sh` | the runner driver one job calls: asks a live `act-mcp serve` to run a task and fails unless the runner advertised it, ran it to `success` on a `runs-on` label act could actually map, and published a record — `--check` proves all five outcomes against a stub server, no act required |
 | `scripts/smoke_binary.sh` | proves a built `act-mcp` is a runnable binary (used by `ci.sh release` and by the release job) |
 | `scripts/smoke_fathom.sh` | proves a built `fathom` is a runnable binary, and that `report`/`doctor` keep their 0/1/2 promise on a real evidence tree (`--check artefact\|report\|doctor\|all`) |
 | `scripts/check_dependency_firewalls.sh` | the two dependency-graph promises `deny.toml` cannot make: ADR-0005's forbidden edges are absent *transitively*, and no crate in any shipped target's graph needs a C toolchain |
@@ -67,7 +67,7 @@ matters on boxes where `pip` and `python3` disagree about where packages live.
 | `fathom-doctor` | `scripts/smoke_fathom.sh --check doctor <fathom>` | `fathom doctor --json`'s exit code is derived from its own checks (0 all ok, 1 worst is warn, 2 something failed), every documented check is present, and a directory that is not a work tree is exit 2 — "could not run", never "nothing to report". `doctor` is a command whose whole output is a status, so the status is smoke-tested rather than trusted |
 | `coverage` | `scripts/coverage.sh --check` | the lcov arithmetic (a tracefile whose `LF`/`LH`/`BF`/`BH` totals are known by hand), the three output-path rules, and the `--fail-under` comparison — including that an empty tracefile is *absence* and not a 0% score. The instrumented run is not here: it needs a container and an evidence directory, so it lives in `coverage.yml` (§3a) |
 | `benchmark` | `scripts/bench.sh --check` | the ADR-0002 §3.3 payload rules in both directions: a conforming payload accepted, and each refusal stated by the contract — missing `name`/`value`, a non-finite `value` (null means *failed*, not zero), the 16-character unit bound, eight flat string labels, 2000 bytes per record, 64 metrics, both accepted top-level shapes — shown refusing. Plus the median, including the even-count middle pair, because a mean of five samples is a benchmark one slow container can move |
-| `mcp-driver` | `scripts/mcp_run.sh --check` | the four outcomes of the script `mcp-evidence.yml` trusts its exit code to: published, failed, succeeded-with-nothing, not-advertised — four real MCP calls to a stub server on loopback through `scripts/mcp_call.sh`. This is the check that the driver *fails* when evidence is missing, which is the only reason a green evidence job means anything |
+| `mcp-driver` | `scripts/mcp_run.sh --check` | the five outcomes of the script `mcp-evidence.yml` trusts its exit code to: published, failed, succeeded-with-nothing, not-advertised, succeeded-with-the-leg-skipped — five real MCP calls to a stub server on loopback through `scripts/mcp_call.sh`. This is the check that the driver *fails* when evidence is missing or when act ran no steps at all, which is the only reason a green evidence job means anything |
 | `schema` | see below | the JSON Schema of both accepted contracts — ADR-0001's tool contract and ADR-0002's evidence format — and ADR↔schema drift |
 | `supply-chain` | `cargo deny check licenses bans sources` + `... advisories`, then a `cargo tree -d` note, then `scripts/check_dependency_firewalls.sh` | licences, duplicate/wildcard policy, dependency provenance, RUSTSEC — over **all three crates**, since one lockfile is one policy — and then the two things `deny.toml` cannot say: that ADR-0005's forbidden edges stay absent *transitively* (`cargo tree`, because `fathom` acquiring `schemars` through `act-evidence`'s `json-schema` feature is invisible in its manifest), and that no crate in any shipped target's graph invokes a C compiler (the refusal ADR-0003, ADR-0006 §5 and ADR-0007 §6 each made) |
 | `release-workspace` | `cargo build --release --workspace` | the release profile over every member, before anything is packaged: an optimisation-time failure or a `cfg(not(debug_assertions))` arm is red here rather than in the middle of an artefact build |
@@ -223,12 +223,25 @@ Three files, split on purpose:
   advertising it as a benchmark, and the column goes empty without a word of complaint from anyone. The
   same rule is why the driver passes `--category` explicitly and why `mcp_run.sh` compares it against
   `category_hint` instead of trusting it.
+* **What a job has to look like for act to run it at all.** act starts a container for the labels in its
+  own platform table, plus whatever `-P`/`--platform` entries the operator's actrc carries — and act-mcp
+  never adds a `-P` of its own, because the operator's mapping is the operator's. Two shapes therefore do
+  not run: a `runs-on` label act has no image for on that host (`ubuntu-24.04` on Apple silicon, whose
+  image is amd64-only), and a `runs-on` that is an expression (`${{ matrix.runner }}`), which act reads
+  as a literal. Both fail *open*: act exits 0 having skipped every leg, and the only trace is the
+  `act_runs_on_unmapped` warning — which is why `mcp_run.sh` refuses it, and why `dogfood-local.yml` is a
+  plain `ubuntu-latest` job with no matrix. For the same reason no act-runnable job pins
+  `CARGO_BUILD_TARGET`: act starts a Linux container on a Mac too, and a Darwin triple there makes every
+  step that links die in `cc` rather than tell anyone the OS was wrong.
 * **What "it ran against the MCP" means concretely.** `mcp_run.sh` speaks the same protocol the
   inspector does, through `scripts/mcp_call.sh`, and it names its own four failures: `unreachable` (the
   endpoint never answered `list_tasks`), `not-advertised` (`list_tasks` does not offer that job, or
   offers it with a different `category_hint`), `not-success` (the run reached a terminal state that was
-  not `success`, with `log_tail` and `.evidence/runs/<run_id>/act.jsonl` printed), and `no-evidence`
-  (the run succeeded and published no record for the commit it executed). The last one is the point. A
+  not `success`, with `log_tail` and `.evidence/runs/<run_id>/act.jsonl` printed), `no-evidence`
+  (the run succeeded and published no record for the commit it executed), and `runs-on-unmapped` (the
+  run succeeded but act had no image for the job's `runs-on` label and skipped the leg, so the green
+  status describes a container that never ran a step — `--allow-unmapped-runs-on` accepts it anyway).
+  The last two are the point. A
   green job that published nothing is the failure this whole arrangement exists to make impossible, and
   the driver is the only place it can be caught — the run itself cannot see whether anyone read its
   output.
@@ -245,6 +258,15 @@ STUB_PAYLOAD=all act-mcp serve --workspace /tmp/ws \
   --act-binary crates/act-mcp/tests/e2e/testdata/bin/act --bind 127.0.0.1:8080 &
 scripts/mcp_run.sh --workflow coverage.yml --task coverage --category coverage \
   --commit "$(git -C /tmp/ws rev-parse HEAD)" --evidence-kind coverage
+```
+
+With a real `act` and a reachable container runtime, the same driver runs the whole CI payload:
+`dogfood-local.yml` is ci.yml's check step list shaped for a container act can start (§3a above), and
+GitHub never runs it.
+
+```sh
+scripts/mcp_run.sh --workflow dogfood-local.yml --task check --category other \
+  --commit "$(git rev-parse HEAD)" --timeout-secs 3600
 ```
 
 ## 4. Toolchain policy

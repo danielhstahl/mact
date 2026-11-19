@@ -1,4 +1,8 @@
-# Testing for integration
+# The CI payload, run under act on a developer machine through act-mcp: the same step list as
+# ci.yml's check job, shaped for a container act can actually start. GitHub is never supposed to run
+# this file (every branch filter names a branch that does not exist); `scripts/mcp_run.sh --workflow
+# dogfood-local.yml --task check --category other --commit "$(git rev-parse HEAD)"` does, and it is
+# the only way to watch the real CI payload run outside CI.
 name: dogfood
 
 on:
@@ -37,11 +41,14 @@ permissions:
 jobs:
   check:
     name: check
-    #runs-on: ubuntu-24.04
-    runs-on: macos-latest
+    # A label act's own platform table knows. `ubuntu-24.04` is not one on an Apple-silicon host —
+    # its image is amd64-only, so act skips the leg, exits 0, and the run proves nothing; that is
+    # what `scripts/mcp_run.sh`'s `runs-on-unmapped` guard refuses. `${{ matrix.runner }}` is worse:
+    # act reads it as a literal label, which is why ci.yml's matrix cannot be run here at all and why
+    # this file exists instead.
+    runs-on: ubuntu-latest
     timeout-minutes: 25
-    env:
-      CARGO_BUILD_TARGET: aarch64-apple-darwin #x86_64-unknown-linux-gnu
+    # No CARGO_BUILD_TARGET, on purpose; see the toolchain step.
     steps:
       - uses: actions/checkout@v4
 
@@ -61,16 +68,19 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-cargo-
       ## act doesn't have rust installed
+      # And no target: input: build whatever triple the runner has, because under act that is the
+      # container's triple and not the host's. Naming one here — `aarch64-apple-darwin` on a Mac
+      # included, since act starts a Linux container on a Mac — asks a Linux `cc` to link a Mach-O
+      # binary and every step that links dies on `cc: error: unrecognized command-line option
+      # '-framework'`, which is a confusing way to discover that CI ran a different OS.
       - uses: actions-rust-lang/setup-rust-toolchain@v2
-        with:
-          target: aarch64-apple-darwin #x86_64-unknown-linux-gnu
-      #- name: target
-      #  run: rustup target add x86_64-unknown-linux-gnu
-      # No toolchain action: rustup reads rust-toolchain.toml, which is the pin, and
-      # installs the components (clippy, rustfmt) listed in it. `rustup show` is what
-      # triggers that resolution, and prints what CI actually built with.
-      #- name: toolchain
-      #  run: rustup show
+
+      # ci.yml has no toolchain action at all: rustup reads rust-toolchain.toml, which is the pin,
+      # and installs the components (clippy, rustfmt) listed in it. act's image has no rustup, so
+      # this job is where that difference gets paid for, and `rustup show` is what prints the
+      # toolchain the run actually used.
+      - name: toolchain
+        run: rustup show
 
       - name: tools
         run: scripts/install_ci_tools.sh

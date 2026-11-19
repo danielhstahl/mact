@@ -19,7 +19,7 @@
 #                      --commit "$(git rev-parse HEAD)" --evidence-kind coverage
 #   scripts/mcp_run.sh --check        # self-test against a stub; needs python3 and nothing else
 #
-# The four things it fails on, each named in its own line:
+# The five things it fails on, each named in its own line:
 #
 #   unreachable     the endpoint never answered `list_tasks`
 #   not-advertised  `list_tasks` does not offer that workflow/task with that `category_hint`. This is
@@ -30,6 +30,12 @@
 #   no-evidence     the run succeeded and published no records of the requested kind — a green job
 #                   with no numbers is the exact state `fathom doctor` warns about ("the run existed
 #                   and the columns stay unknown"), so the job asserts it instead
+#   runs-on-unmapped
+#                   the run succeeded, but act stamped `act_runs_on_unmapped`: it had no image for the
+#                   job's `runs-on` label and skipped that leg, exiting 0 having run nothing. Observed
+#                   on an Apple-silicon host with a `ubuntu-24.04` matrix: all five legs skipped, exit
+#                   code 0, zero steps run. `--allow-unmapped-runs-on` accepts it when the skipped legs
+#                   are the point.
 #
 # Exit status: 0 everything above passed; 1 any of them failed; 2 bad usage or a missing dependency.
 #
@@ -52,6 +58,7 @@ WAIT_SECS=120
 TIMEOUT_SECS=2400
 POLL_SECS=15
 SELF_CHECK=0
+ALLOW_UNMAPPED=0
 
 usage() {
     cat <<'USAGE'
@@ -65,6 +72,9 @@ Runs one workflow job through a running `act-mcp serve` and asserts it published
   --commit SHA           7..40 hex commit to run (default: HEAD of the current repository)
   --evidence-kind KIND   coverage | benchmark | none (default none): require at least one record of
                          this kind under the evidence root for the commit the run executed
+      --allow-unmapped-runs-on
+                         accept a successful run that act stamped act_runs_on_unmapped, i.e. one whose
+                         runs-on label act has no image for and therefore skipped (default: refuse)
   --url URL              MCP endpoint (default http://127.0.0.1:8080/mcp, or $MCP_URL)
   --evidence-dir PATH    evidence root to look in (default <repo>/.evidence, or $EVIDENCE_DIR)
   --wait-secs N          how long to wait for the endpoint to answer (default 120)
@@ -73,7 +83,8 @@ Runs one workflow job through a running `act-mcp serve` and asserts it published
       --check            self-test against a stub server: no act, no docker, no network
   -h, --help             this text
 
-Exit: 0 ran and published; 1 unreachable / not advertised / not success / no evidence; 2 usage.
+Exit: 0 ran and published; 1 unreachable / not advertised / not success / no evidence /
+     runs-on unmapped; 2 usage.
 USAGE
 }
 
@@ -97,6 +108,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --check)
             SELF_CHECK=1
+            shift
+            ;;
+        --allow-unmapped-runs-on)
+            ALLOW_UNMAPPED=1
             shift
             ;;
         --workflow)
@@ -342,6 +357,18 @@ run_and_wait() {
     fi
     printf '  success    %s (%s ms)\n' "$RUN_ID" \
         "$(json_get result.structuredContent.run.duration_ms <<<"$VIEW")"
+
+    # A successful run is not the same as a run that executed steps. act answers 0 when it skipped
+    # every matrix leg because no image matches the job's `runs-on` label — which is what a label
+    # act's own platform table (plus its actrc `-P` entries) does not know reads like, including
+    # `${{ matrix.runner }}`, which act reads as a literal. `act_runs_on_unmapped` is the only place
+    # that is visible, and a green evidence job with no steps behind it is worse than a red one.
+    local warns
+    warns=$(view_field warnings)
+    if [[ -n $warns && $warns != "[]" ]]; then printf '  warnings   %s\n' "$warns"; fi
+    if [[ $warns == *act_runs_on_unmapped* ]] && ((ALLOW_UNMAPPED == 0)); then
+        die "runs-on-unmapped: $RUN_ID succeeded, but act had no image for the job's runs-on label and skipped that leg — a success here can mean zero steps ran. Give the job a label act maps out of the box (ubuntu-latest, macos-latest), map one in actrc with '-P ubuntu-24.04=...', or pass --allow-unmapped-runs-on when skipping them is the point."
+    fi
 }
 
 # view_field FIELD — the run view lives at `.run` in a run_status answer and at the top level in a
@@ -419,9 +446,14 @@ def run_view(terminal=True):
         "evidence_record_count": 0,
         "log_tail": "step exited 1\n",
     }
-    if SCENARIO in ("success", "no-evidence-on-disk"):
+    if SCENARIO in ("success", "no-evidence-on-disk", "runs-on-unmapped"):
         view["evidence_files"] = ["/evidence/coverage/%s/%s.jsonl" % (COMMIT, RUN_ID)]
         view["evidence_record_count"] = 3
+    if SCENARIO == "runs-on-unmapped":
+        # The shape act gives a job whose runs-on label it cannot map: terminal success, and the
+        # skip only in the warnings. The run published its records — the leg that published them
+        # may be the one you meant, or none of them.
+        view["warnings"] = ["act_runs_on_unmapped"]
     return view
 
 
@@ -477,7 +509,7 @@ PY
     # this script and an e2e suite that also binds loopback — should not collide.
     local port=$((12000 + (RANDOM % 20000)))
     local scenario
-    for scenario in success failed no-evidence-on-disk not-advertised; do
+    for scenario in success failed no-evidence-on-disk not-advertised runs-on-unmapped; do
         STUB_SCENARIO=$scenario python3 "$dir/stub.py" "$port" &
         local stub=$!
         sleep 1
@@ -486,7 +518,10 @@ PY
         # An evidence tree that matches the scenario, so `assert_evidence` has something real to
         # count — or deliberately nothing to count.
         mkdir -p "$dir/$scenario/.evidence/coverage/$commit"
-        if [[ $scenario == success ]]; then
+        if [[ $scenario == success || $scenario == runs-on-unmapped ]]; then
+            # runs-on-unmapped gets a real evidence tree on purpose: the guard under test is the
+            # warning, and a scenario that also failed the evidence check would pass for the
+            # wrong reason.
             for n in 1 2 3; do
                 printf '{"schema_version":1,"kind":"coverage"}\n' \
                     >"$dir/$scenario/.evidence/coverage/$commit/record-$n.jsonl"
@@ -504,11 +539,25 @@ PY
             --commit "$commit" --evidence-kind coverage \
             --evidence-dir "$dir/$scenario/.evidence" \
             --wait-secs 15 --timeout-secs 30 --poll-secs 1 2>&1) || code=$?
+
+        # The opt-out has to work, or the guard is a wall instead of a switch: same stub, same
+        # refusal available, one extra flag, and the run is accepted.
+        local opt_note=""
+        if [[ $scenario == runs-on-unmapped ]]; then
+            MCP_URL="http://127.0.0.1:$port/mcp" \
+                "$script_dir/mcp_run.sh" \
+                --workflow dogfood.yml --task coverage --category coverage \
+                --commit "$commit" --evidence-kind coverage \
+                --evidence-dir "$dir/$scenario/.evidence" --allow-unmapped-runs-on \
+                --wait-secs 15 --timeout-secs 30 --poll-secs 1 >/dev/null 2>&1 ||
+                opt_note="--allow-unmapped-runs-on did not accept it"
+        fi
         kill "$stub" 2>/dev/null || true
         wait "$stub" 2>/dev/null || true
 
         local note=""
         [[ $code -eq $want ]] || note="expected exit $want, got $code"
+        [[ -z $opt_note ]] || note="$note; $opt_note"
         case $scenario in
             success)
                 grep -q 'advertised' <<<"$out" || note="no advertised line: $out"
@@ -520,6 +569,10 @@ PY
                 ;;
             not-advertised)
                 grep -q 'not-advertised' <<<"$out" || note="did not name not-advertised: $out"
+                ;;
+            runs-on-unmapped)
+                grep -q 'runs-on-unmapped' <<<"$out" ||
+                    note="did not name runs-on-unmapped: $out"
                 ;;
         esac
         if [[ -n $note ]]; then
@@ -535,7 +588,7 @@ PY
         printf 'mcp_run --check: %s scenario(s) failed\n' "$failures" >&2
         return 1
     }
-    printf 'mcp_run --check: 4 scenarios went through a real MCP call and answered as designed\n'
+    printf 'mcp_run --check: 5 scenarios went through a real MCP call and answered as designed\n'
 }
 
 # ------------------------------------------------------------------ main
@@ -575,4 +628,10 @@ if [[ $EVIDENCE_KIND != none ]]; then
     executed=$(view_field commit)
     assert_evidence "${executed:-$COMMIT}"
 fi
-printf 'mcp_run OK %s/%s ran through the MCP runner and published evidence\n' "$WORKFLOW" "$TASK"
+if [[ $EVIDENCE_KIND == none ]]; then
+    printf 'mcp_run OK %s/%s ran to success through the MCP runner (this job publishes no evidence)\n' \
+        "$WORKFLOW" "$TASK"
+else
+    printf 'mcp_run OK %s/%s ran through the MCP runner and published %s evidence\n' \
+        "$WORKFLOW" "$TASK" "$EVIDENCE_KIND"
+fi
