@@ -877,6 +877,17 @@ fn an_unwritable_cache_root_is_a_warning_that_says_the_columns_will_not_fill_in(
     let fx = workspace("read-only-cache");
     std::fs::create_dir_all(&fx.cache).expect("create the cache root");
     std::fs::set_permissions(&fx.cache, std::fs::Permissions::from_mode(0o555)).expect("read-only");
+    // A 0555 directory only refuses root's writes in prose: as root — the uid of every act job
+    // container — the mode is skipped and the store is simply writable. Probe it, and say so when
+    // the environment cannot express the condition; see the same probe in cli.rs and boot.rs.
+    if std::fs::write(fx.cache.join("probe"), b"x").is_ok() {
+        let _ = std::fs::remove_file(fx.cache.join("probe"));
+        std::fs::set_permissions(&fx.cache, std::fs::Permissions::from_mode(0o755))
+            .expect("restore");
+        eprintln!("note: skipping; this uid can write to a 0555 directory");
+        return;
+    }
+
     let report = fx.doctor();
     let check = report.check("cache").expect("the check ran");
     assert_eq!(check.status, Status::Warn, "{check:?}");

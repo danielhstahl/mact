@@ -392,6 +392,17 @@ fn an_unwritable_cache_root_refuses_index_and_warns_everyone_else() {
     std::fs::create_dir_all(&cache).expect("cache dir");
     std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o555)).expect("read-only");
 
+    // Root overrides directory modes, and a container runs this test as root (act's job container
+    // did, and this assertion was red there for no reason but its uid). Probe the precondition
+    // rather than name a uid: if a 0555 directory still takes a file, there is no unwritable cache
+    // root here to make a claim about. Same probe as boot.rs's unit test for the same §10.1 rule.
+    if std::fs::write(cache.join("probe"), b"x").is_ok() {
+        let _ = std::fs::remove_file(cache.join("probe"));
+        std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o755)).expect("restore");
+        eprintln!("note: skipping; this uid can write to a 0555 directory");
+        return;
+    }
+
     let report = fathom(&["report", &repo.display().to_string()]);
     // A read-only workspace is a build agent, and it may read a store someone else wrote (ADR-0006
     // §10.1): the cache root is a *warning* for a reader, where `index` refuses outright. This fixture
