@@ -20,3 +20,9 @@ __pycache__/
 
 # cargo build artefacts
 /target
+
+# what `scripts/coverage.sh` and `scripts/bench.sh` write when they are run by hand: inside a run
+# $ACTMCP_EVIDENCE_OUT is set and they write into the evidence tree instead (ADR-0002 §3.2, §3.3)
+/lcov.info
+/benchmark.json
+.pi/*
