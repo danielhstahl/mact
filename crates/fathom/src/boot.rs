@@ -670,6 +670,21 @@ mod tests {
         std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o555))
             .expect("make the cache read-only");
 
+        // That mode is a request, not a guarantee: root overrides directory modes, and root is the
+        // uid every container runs `cargo test` as — act's job container included, where this test
+        // failed for no reason but its uid. So probe the precondition instead of naming a uid: if a
+        // file can still be created in a 0555 directory, this environment cannot express §10.1's
+        // refusal, and asserting anyway would grade the caller's privileges rather than Fathom.
+        if std::fs::write(cache.join("probe"), b"x").is_ok() {
+            let _ = std::fs::remove_file(cache.join("probe"));
+            std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o755))
+                .expect("restore, so TempDir can clean up");
+            eprintln!(
+                "note: skipping; this uid can write to a 0555 directory, so the unwritable cache \n                root of ADR-0006 §10.1 cannot be produced here"
+            );
+            return;
+        }
+
         let reader = Boot::validate(&repo, &default_arguments(), Access::Read)
             .expect("a reader proceeds read-only (§10.1)");
         assert!(!reader.cache.writable);
