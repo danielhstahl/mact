@@ -953,7 +953,9 @@ fn a_config_this_build_does_not_understand_is_a_failed_check_not_a_refusal() {
 #[test]
 fn a_foreign_file_in_the_cache_root_is_named_and_left_alone() {
     // ADR-0006 §4.2: Fathom does not read, write or delete anything it did not write, and it lists what
-    // it found rather than pretending the root is its own.
+    // it found rather than pretending the root is its own. §10.4 sets the severity: naming is the duty,
+    // and the note is advisory, because §4.2 also decides the entry stays. A `warn` here would be a
+    // finding nobody reading the report can act on — and the exit code is the contract.
     let fx = workspace("foreign");
     fx.index();
     std::fs::write(fx.cache.join("index.sqlite3"), b"someone else's database")
@@ -969,13 +971,14 @@ fn a_foreign_file_in_the_cache_root_is_named_and_left_alone() {
         "{:?}",
         check.details
     );
+    assert_eq!(check.status, Status::Ok, "{check:?}");
     assert!(
         check
-            .fixes
+            .details
             .iter()
-            .any(|fix| fix.contains("shared cache root")),
-        "{:?}",
-        check.fixes
+            .any(|detail| detail.contains("shared cache root")),
+        "the note has to say why this is not a finding: {:?}",
+        check.details
     );
     assert!(
         fx.cache.join("index.sqlite3").is_file(),

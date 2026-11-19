@@ -15,7 +15,7 @@
 //! | `evidence` | does the evidence root exist, is it readable, does it pass `validate-evidence` |
 //! | `runs` | advisory: runs that happened and published nothing (ADR-0008 §5.5), and the difference between a silent run that owed a column and a silent run in a category that has no extractor |
 //! | `workflows` | is there anything to run — a coverage or benchmark job, discovered locally |
-//! | `cache` | the store: version, writability, row and block counts, last index age and hit ratio, foreign files |
+//! | `cache` | the store: version, writability, row and block counts, last index age and hit ratio, and — advisories, not findings — the cache-root entries this program did not write (ADR-0006 §10.4) |
 //! | `languages` | which paths were not analysed, and which config key would change that |
 //! | `config` | `fathom.toml`: a key this build does not know, a glob that matches nothing |
 //!
@@ -898,16 +898,22 @@ fn cache(boot: &Boot, head: Option<&str>) -> Check {
         );
     }
     // Foreign entries (§4.2): everything under the root that this program did not write, listed and
-    // left alone.
+    // left alone — and listed as an advisory, because §4.2 also decides it stays. Another program's live
+    // state in a shared cache root is legal, Fathom will not read or delete it, and a `warn` that nobody
+    // reading the report can clear turns the exit code into wallpaper, which is the mystery §10.4 exists
+    // to remove. A foreign entry that *obstructs* a path Fathom needs (a regular file where `index`
+    // belongs) is a different matter, and the check that tries to use that path is the one that says so.
     for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         if ["LAYOUT.md", "fathom.lock", "index"].contains(&name.as_str()) {
             continue;
         }
-        check = check.cause(
-            Status::Warn,
-            format!("`{name}` is not written by Fathom; Fathom neither reads nor deletes it"),
-            "nothing, unless you know it is dead: a shared cache root is legal (ADR-0006 §4.2)",
+        check = check.note(
+            Status::Ok,
+            format!(
+                "`{name}` is not written by Fathom; Fathom neither reads nor deletes it — advisory: a \
+                 shared cache root is legal (ADR-0006 §4.2)"
+            ),
         );
     }
     if let Some(lock) = store::lock::read_body(root) {

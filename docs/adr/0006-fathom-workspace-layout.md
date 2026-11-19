@@ -261,9 +261,15 @@ gives for the evidence root.
   symlink out of the root — Fathom refuses at boot with the path and the fix (§10.4). Symlinks are
   refused for every path Fathom writes, exactly as ADR-0002 §6.3 refuses them for evidence paths: a
   store that escapes its root through a symlink is not disposable any more.
-- `fathom doctor` lists every entry in the cache root it does not own, as `warn`, with the line
-  "not written by Fathom; Fathom neither reads nor deletes it". That is the anti-mystery mechanism:
-  the ticket's complaint is not that a foreign file exists, it is that nothing said what it was.
+- `fathom doctor` lists every entry in the cache root it does not own, as an **advisory note on an `ok`
+  `cache` check**, with the line "not written by Fathom; Fathom neither reads nor deletes it". That is the
+  anti-mystery mechanism: the ticket's complaint is not that a foreign file exists, it is that nothing said
+  what it was. It is deliberately not a `warn`: §4.2 already decided the entry stays — it is another
+  program's live state, Fathom neither reads nor deletes it, and a shared cache root is legal — so a `warn`
+  would be a finding that nobody reading the report can act on, and `doctor`'s exit code *is* its worst
+  check, which is what CI gates on. A foreign entry earns a status only by **obstructing** something Fathom
+  needs — `index` a regular file, `blocks/xx` a symlink out of the root — and those are already reported by
+  the checks that try to use the path.
 
 ### 4.3 What is deliberately not here
 
@@ -746,9 +752,9 @@ whose holder is gone is simply unlocked: `flock` died with it, so there is no st
 and the same shape for `index` being a file, `blocks` being a symlink out of the root, `LAYOUT.md`
 being a directory, or `meta.json` failing to parse. The rule that generates these messages: Fathom
 never guesses about a path it owns but did not write, and never deletes a path it did not write.
-`doctor` separately lists foreign entries as `warn` (§4.2) — including the two this repository
-actually has, `index.sqlite3` and `objects/`, so the answer to "what is this 2 MB file" is a command
-away rather than a git blame.
+`doctor` separately names foreign entries (§4.2) — including the two this repository actually has,
+`index.sqlite3` and `objects/` — as an advisory note rather than a finding (§10.4), so the answer to "what
+is this 2 MB file" is a command away rather than a git blame.
 
 ### 10.5 A damaged store
 

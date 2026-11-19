@@ -680,7 +680,8 @@ mod tests {
             std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o755))
                 .expect("restore, so TempDir can clean up");
             eprintln!(
-                "note: skipping; this uid can write to a 0555 directory, so the unwritable cache \n                root of ADR-0006 §10.1 cannot be produced here"
+                "note: skipping; this uid can write to a 0555 directory, so the unwritable cache \
+                 root of ADR-0006 §10.1 cannot be produced here"
             );
             return;
         }
