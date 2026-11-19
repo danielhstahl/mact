@@ -48,6 +48,15 @@ jobs:
     # this file exists instead.
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      # Build into the container's own filesystem, not into the checkout. Two reasons, and the second
+      # is what this file used to get wrong: act-mcp runs a HEAD commit in place (ADR-0003 §4), so an
+      # unpinned target directory (a) writes the run's artefacts into the developer's real ./target,
+      # and (b) is the mount rustc takes SIGBUS linking into — docs/ci.md §1: "on a bind-mounted
+      # checkout rustc can take SIGBUS while linking into ./target". `scripts/ci.sh` honours this
+      # variable (its §1 note is the same advice), so every step follows it, including the snapshot
+      # and report steps that find the binary rather than rebuild it.
+      CARGO_TARGET_DIR: /var/tmp/ci-target
     # No CARGO_BUILD_TARGET, on purpose; see the toolchain step.
     steps:
       - uses: actions/checkout@v4
@@ -63,7 +72,7 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            target/
+            ${{ env.CARGO_TARGET_DIR }}/
           key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-cargo-
