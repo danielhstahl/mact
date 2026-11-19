@@ -81,6 +81,14 @@ use self::state::{App, Command, Key};
 /// repaints zero times.
 pub const FRAME_MS: u64 = 66;
 
+/// How often the loop asks the engine whether the checkout has moved out from under the store.
+///
+/// Two seconds is "automatic" to a human — commit in the other half of a split terminal and the
+/// timeline catches up before you have looked at it — while the question it asks is one
+/// `git rev-parse` and nothing else unless the answer is yes ([`engine::Work::head_moved`]). A store
+/// parse every 66 ms would be smoother and pointless: a commit is not a mouse movement.
+pub const REFRESH_MS: u64 = 2_000;
+
 /// What the driver found to say, with a name for "nothing yet".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Input {
@@ -118,14 +126,24 @@ pub trait Driver {
 pub fn run_loop(app: &mut App, driver: &mut dyn Driver) -> io::Result<usize> {
     let frame = Duration::from_millis(FRAME_MS);
     let tick = Duration::from_millis(engine::TICK_MS);
+    let refresh = Duration::from_millis(REFRESH_MS);
     let mut paints = 0_usize;
     let mut last_paint: Option<Instant> = None;
+    let mut last_check = Instant::now();
     let mut dirty = true;
 
     let (width, height) = driver.size();
     app.set_size(width, height);
 
     while !app.quit {
+        // The refresh tick, asked before the drain so an answer that arrives here is this frame's
+        // business. It is the loop's own initiative rather than a key's, which is why it goes straight
+        // to the driver and never through `App::on_key`: the state machine still owns the decision to
+        // index, and it makes it when the reading it is handed says the store is behind.
+        if last_check.elapsed() >= refresh {
+            last_check = Instant::now();
+            driver.execute(&[Command::Check]);
+        }
         // Drain before input so a burst of index events is applied (and coalesced into one frame)
         // before anything is drawn.
         for event in driver.events() {
@@ -210,6 +228,7 @@ impl Driver for TerminalDriver {
         for command in commands {
             match command {
                 Command::Read => self.engine.request_read(),
+                Command::Check => self.engine.request_check(),
                 Command::Index => self.engine.request_index(),
                 Command::Cancel => self.engine.cancel(),
                 Command::Diff(sha) => self.engine.request_diff(sha),
@@ -349,6 +368,10 @@ pub fn run(
     let reading = store_view::read(boot, arguments.limit);
     let mut app = App::new(reading, now);
     app.bench_band = config.benchmarks.regression_band_percent;
+    // The screen may index on its own when it is behind, and only when it can write ([ADR-0006 §10.1]:
+    // a read-only cache root is a reader, and it is told the store is stale rather than refused).
+    // `--plain` never gets here: printing a table is not a reason to write a store.
+    app.auto_index = !arguments.no_auto_index && boot.cache.writable;
     if let Some(notice) = app.reading.notice.take() {
         app.message = Some(notice);
     }
@@ -397,6 +420,13 @@ pub fn run(
             .with_identity(&app.reading),
     ));
     let mut driver = TerminalDriver::new(terminal, engine, palette);
+    // Handed to the driver rather than run here, so the automatic index is the same command `R` produces
+    // and travels the same thread: the first frame shows the run it started, not a stale picture of it.
+    let opening = app.startup();
+    if !opening.is_empty() {
+        info!("the store is behind the checkout; indexing it on the screen's own initiative");
+    }
+    driver.execute(&opening);
     let outcome = run_loop(&mut app, &mut driver);
     // Restore first, then report: a stderr line printed while the alternate screen is still up is a line
     // the user never sees.
@@ -416,9 +446,12 @@ pub fn now() -> i64 {
 }
 
 /// Whether a cache root is being indexed by anyone right now (§9 L3's advisory lock).
+///
+/// The present-tense form, not "does `fathom.lock` have a body": the file is never unlinked, so a body
+/// outlives every run and a reader that stopped there would report an index in progress forever.
 #[must_use]
 pub fn index_in_progress(boot: &Boot) -> Option<store::lock::LockBody> {
-    store::lock::read_body(&boot.cache.path)
+    store::lock::live_body(&boot.cache.path)
 }
 
 /// A detail view that already holds its snapshot, for `--plain --detail REV`.

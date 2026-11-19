@@ -643,6 +643,13 @@ against the commit's **first parent**, which needs both sides — a root commit 
 the twelve caveat codes behind the `*` are tabulated in
 [docs/fathom-metrics.md §6](docs/fathom-metrics.md#6-glyphs-caveats-and-gaps).
 
+The picture keeps itself current. Opening the screen on a store whose newest row is older than `HEAD`
+starts an index straight away — the same run `R` starts, with the same `Esc` — and while the screen is
+open `HEAD` is re-checked every two seconds, so a commit made in another terminal appears by itself
+(`HEAD` moving is one `git rev-parse`; nothing else is read unless it moved). `--no-auto-index` turns
+both halves off, and a cache root this build cannot write is never attempted: that screen says `stale` in
+the header and waits, because a reader that fails loudly beats one that writes somewhere unexpected.
+
 ### The diff view, the detail view and the bench panel
 
 `d` opens the selected commit's patch — file list on the left, patch on the right, first parent
@@ -689,7 +696,7 @@ straight from the command line, and each prints as text when stdout is not a ter
 | `Home` / `End`, `g` / `G` | all | first / last row of the list |
 | `/` | timeline | filter by sha, author or message; `enter` applies, `Esc` clears |
 | `Backspace` | timeline filter | delete one filter character (any printable character appends) |
-| `R` | timeline | re-index now; `Esc` cancels a run in flight |
+| `R` | timeline | re-index now; the screen also re-indexes itself when `HEAD` has no row (`--no-auto-index` turns that off) · `Esc` cancels a run in flight |
 | `enter` | timeline, detail | open the commit detail view; from detail, back to the timeline |
 | `d` | all | open this commit's diff; from the diff, back to the timeline |
 | `b` | timeline, detail, bench | open the benchmark panel; from the panel, back |
@@ -722,6 +729,7 @@ and a refusal to parse one of them is clap's, never re-implemented.
 | `--max-diff-bytes <BYTES>` | | `1048576` | stop reading a commit's patch after this many bytes |
 | `--max-diff-bytes-per-file <BYTES>` | | `131072` | stop reading one file's patch after this many bytes, so one generated file cannot hide the others |
 | `--plain` | | a TTY is assumed | print the table instead of drawing a TUI; implied by a non-tty stdout or `TERM=dumb` |
+| `--no-auto-index` | | automatic on | stop the TUI from re-indexing a store that is behind the checkout on its own; `R` still indexes, and a read-only cache root is never written |
 | `--no-color` | `NO_COLOR` | colour on | no colour, unicode glyphs kept — every state is in the glyph, so nothing is lost |
 | `-v`, `--verbose` | `RUST_LOG` | warnings and errors | raise the log level on stderr: `-v` info, `-vv` trace |
 | `fathom index --status` | | index | print store and configuration state as `key<TAB>value` and write nothing |

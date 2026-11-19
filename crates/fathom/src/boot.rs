@@ -383,10 +383,12 @@ impl Boot {
                     "present".to_owned()
                 },
             ),
-            // The store itself is mact-by1.10's; saying `absent` here is honest, and the line is
-            // already the shape `fathom index --status` will answer with once `index/meta.json`
-            // exists (ADR-0006 §6.2).
-            ("store".to_owned(), "absent".to_owned()),
+            // Deliberately no `store` line here. Boot can only answer where the cache root is and whether
+            // it can be written; whether `index/` holds a store this build reads is `store_status`'s
+            // answer (and `store.rows`/`store.layout`/… come from the store itself). A placeholder here
+            // used to print `store<TAB>absent` above the real `store<TAB>present`, and a `--status` that
+            // contradicts itself in its own first column is how a reader concludes the cache never
+            // updated — one question, one answering line.
         ]
     }
 }
@@ -538,6 +540,7 @@ mod tests {
             plain: false,
             no_color: false,
             limit: None,
+            no_auto_index: false,
             diff: None,
             bench: None,
             detail: None,
@@ -726,13 +729,13 @@ mod tests {
         assert!(keys.contains(&"workspace"));
         assert!(keys.contains(&"evidence_state"));
         assert!(keys.contains(&"cache_state"));
+        // `store` is the store's own line, printed by `fathom index --status` out of the opened store
+        // (or as `absent` when there is none). Two lines claiming to answer it, one of them a hardcoded
+        // guess, is a `--status` that contradicts itself.
         assert_eq!(
-            lines
-                .iter()
-                .find(|(key, _)| key == "store")
-                .map(|(_, value)| value.as_str()),
-            Some("absent"),
-            "no metric store exists until mact-by1.10 lands"
+            keys.iter().filter(|key| **key == "store").count(),
+            0,
+            "boot does not answer the store question"
         );
     }
 }

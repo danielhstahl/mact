@@ -40,6 +40,7 @@ use std::time::Duration;
 use crate::boot::Boot;
 use crate::config::Config;
 use crate::diff::{self, CommitDiff};
+use crate::git::Git;
 use crate::history::Query;
 use crate::store::{self, Run};
 
@@ -107,6 +108,8 @@ pub enum Event {
 pub enum Job {
     /// Read the store and the git identity again.
     Read,
+    /// Ask whether `HEAD` moved, and read only if it did (the screen's own refresh tick).
+    Check,
     /// Index, then read.
     Index,
     /// Read one commit's patch (`d` on the timeline).
@@ -143,6 +146,16 @@ pub trait Work: Send + Sync + 'static {
     /// A cheaper read, called on each poll while an index runs. `None` means "nothing new to show".
     fn poll(&self) -> Option<Reading> {
         None
+    }
+
+    /// Has `HEAD` moved since the last full read this handle produced?
+    ///
+    /// The only question the screen's refresh tick asks, and it is asked on purpose instead of re-reading
+    /// the store: the tick fires whether or not anything happened, and a full read is two `git` calls and
+    /// a parse of every row file. A source with no git to ask (a stub) answers `false` and the tick costs
+    /// nothing.
+    fn head_moved(&self) -> bool {
+        false
     }
 
     /// Who holds the cache lock right now, as `(phase, done, total)`.
@@ -264,6 +277,24 @@ impl Work for StoreWork {
         Some(self.remember(&store_view::rows_only(&self.boot, self.limit), false))
     }
 
+    fn head_moved(&self) -> bool {
+        // One `git rev-parse`, and no row files touched. Unknown answers `false`: a workspace whose git
+        // just stopped resolving is not a new commit, and the screen already carries the notice the
+        // failed read left on it.
+        let Ok(git) = Git::open(&self.boot.workspace) else {
+            return false;
+        };
+        let Ok(head) = git.resolve("HEAD") else {
+            return false;
+        };
+        self.last
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().and_then(|reading| reading.head.clone()))
+            .as_deref()
+            != Some(head.as_str())
+    }
+
     fn progress(&self) -> Option<(String, u64, u64)> {
         let body = store::lock::read_body(&self.boot.cache.path)?;
         // The lock body carries `commits_done` and no total (§9 L3: it is a progress line, not a
@@ -341,6 +372,13 @@ impl Engine {
                 match job {
                     Job::Read => {
                         let _ = event_tx.send(Event::Read(Box::new(work.read())));
+                    }
+                    Job::Check => {
+                        // The refresh tick: one subprocess to ask the question, and only a moved `HEAD`
+                        // buys a full read. Silently doing nothing is the common case and the point.
+                        if work.head_moved() {
+                            let _ = event_tx.send(Event::Read(Box::new(work.read())));
+                        }
                     }
                     Job::Index => {
                         worker_busy.store(true, Ordering::Relaxed);
@@ -444,6 +482,11 @@ impl Engine {
     /// Ask for a read. Idempotent: an unread `Read` in the queue is not made worse by a second one.
     pub fn request_read(&self) {
         let _ = self.jobs.send(Job::Read);
+    }
+
+    /// Ask the tick's question: has the checkout moved out from under the store?
+    pub fn request_check(&self) {
+        let _ = self.jobs.send(Job::Check);
     }
 
     /// Ask for an index run.

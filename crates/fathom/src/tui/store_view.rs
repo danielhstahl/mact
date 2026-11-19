@@ -74,7 +74,12 @@ pub struct Reading {
     pub evidence_present: bool,
     /// The evidence root, for the empty-state line.
     pub evidence_path: PathBuf,
-    /// A live index in someone's lock file, with its phase and counter (§9 L3).
+    /// The body of someone's `fathom.lock`, with its phase and counter (§9 L3).
+    ///
+    /// Read straight out of the lock file, which is never unlinked: the body of a run that finished (or
+    /// died) is still there, so this is "who wrote here last and how far they got", not proof that a
+    /// run is in flight. Nobody draws a present-tense conclusion from it; the engine's own progress
+    /// events are what the header's live counter comes from.
     pub live_index: Option<LockBody>,
     /// A one-line refusal to show rather than a blank screen.
     pub notice: Option<String>,

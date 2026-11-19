@@ -976,7 +976,10 @@ fn draw_help(app: &App, frame: &mut Frame, palette: &Palette, area: Rect) {
             "/",
             "filter by sha, author or message; enter applies, esc clears",
         ),
-        ("R", "re-index now; esc cancels a running index"),
+        (
+            "R",
+            "re-index now; esc cancels; a store behind HEAD indexes itself",
+        ),
         ("d", "the selected commit's diff; d or esc comes back"),
         (
             "enter",

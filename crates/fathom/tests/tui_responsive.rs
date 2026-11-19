@@ -217,6 +217,7 @@ impl Driver for Scripted {
         for command in commands {
             match command {
                 Command::Read => engine.request_read(),
+                Command::Check => engine.request_check(),
                 Command::Index => engine.request_index(),
                 Command::Cancel => engine.cancel(),
                 Command::Diff(sha) => engine.request_diff(sha),

@@ -297,6 +297,24 @@ fn read_body_at(path: &Path) -> Option<LockBody> {
     LockBody::read(path)
 }
 
+/// The body of a run that may still be going, and `None` for the body a finished run left behind.
+///
+/// `read_body` answers "who last wrote here", not "who is writing now" — `fathom.lock` is never
+/// unlinked (§9 L3), so every cache root ever indexed carries a body forever, and a reader that took it
+/// at face value would claim an index in progress for the rest of the session. This is §10.3's own
+/// definition of a stale body used the other way round: ours, local, and no longer running is history.
+/// A body from another host cannot be probed from here and stays live, which is the conservative answer
+/// on a shared mount and the one `acquire` gives when it reports a dead holder.
+///
+/// A present-tense `flock` probe would answer more exactly and is deliberately not used: a reader that
+/// briefly takes `LOCK_SH` to look can turn a writer's `index_busy` refusal true, and a reader must
+/// never be able to cause that.
+#[must_use]
+pub fn live_body(root: &Path) -> Option<LockBody> {
+    let body = read_body(root)?;
+    (!body.names_dead_local_pid()).then_some(body)
+}
+
 /// Whether a pid exists. `kill(pid, 0)` is the probe: `ESRCH` means no such process, `EPERM` means it
 /// exists and is not ours to break. Pids below 2 are never fathom.
 #[must_use]
@@ -373,6 +391,31 @@ mod tests {
         drop(held);
         assert!(path.is_file(), "§9 L3: never unlinked");
         assert!(acquire(dir.path()).is_ok(), "and free again immediately");
+    }
+
+    #[test]
+    fn a_finished_run_leaves_a_body_but_not_a_live_index() {
+        let dir = tempfile::tempdir().expect("scratch");
+        let held = acquire(dir.path()).expect("take").0;
+        assert!(
+            live_body(dir.path()).is_some(),
+            "held now, so it is a live index now"
+        );
+        drop(held);
+        // The same body, from a pid that is this test process: §10.3 calls a *dead* local pid stale,
+        // and a reader that read the body as present tense would say "indexing" for the rest of the
+        // session. `read_body` keeps its meaning (who wrote here last); `live_body` is the ask.
+        let dead = LockBody {
+            pid: u32::MAX - 1,
+            ..LockBody::now(Phase::Rows, 7)
+        };
+        std::fs::write(dir.path().join(LOCK_FILE_NAME), dead.to_text().as_bytes())
+            .expect("plant a dead holder");
+        assert!(read_body(dir.path()).is_some(), "the body is still there");
+        assert!(
+            live_body(dir.path()).is_none(),
+            "and it is not a run in progress"
+        );
     }
 
     #[test]

@@ -644,10 +644,45 @@ fn index_is_wired_and_a_work_tree_that_is_not_a_repository_is_a_typed_refusal() 
         );
     }
 
+    // What `--status` says about this store now. The failed `index` above still created the store and
+    // published its own failure on the way out (§10.2: an index that did not finish reports itself), so
+    // the honest answer is a present store with no rows and the error it ran into — not an absent one.
+    // (This assertion used to pass on a hardcoded `store<TAB>absent` line that boot printed above the
+    // store's own answer, which is how a reader with 112 rows in the cache was told it had none.)
     assert!(
-        status.stdout.contains("store\tabsent"),
-        "a workspace nobody has indexed yet reports the store as absent, not as an error:\n{}",
+        status.stdout.contains("store\tpresent"),
+        "a store that never reached a commit still reports itself:\n{}",
         status.stdout
+    );
+    assert!(
+        status.stdout.contains("\nrows\t0\n"),
+        "and says how many rows it reached:\n{}",
+        status.stdout
+    );
+    assert!(
+        status.stdout.contains("last_index.status\terror"),
+        "the run that failed is the run `--status` reports:\n{}",
+        status.stdout
+    );
+
+    // A cache root nobody has ever written is the other answer, and still not an error.
+    let untouched = fathom(&[
+        "index",
+        "--status",
+        "--cache-dir",
+        &scratch.path().join("never-written").display().to_string(),
+        &repo.display().to_string(),
+    ]);
+    untouched.assert_code(0);
+    assert!(
+        untouched.stdout.contains("store\tabsent"),
+        "a workspace nobody has indexed yet reports the store as absent, not as an error:\n{}",
+        untouched.stdout
+    );
+    assert!(
+        !untouched.stdout.contains("store\tpresent"),
+        "one line answers the store question, and it is the store's own:\n{}",
+        untouched.stdout
     );
     assert!(
         status.stdout.lines().all(|line| line.contains('\t')),

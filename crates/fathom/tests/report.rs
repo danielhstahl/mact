@@ -517,6 +517,45 @@ fn nothing_in_the_report_depends_on_the_clock() {
     t.fx.cleanup();
 }
 
+/// The same fact as that test, told out loud on stderr by the real binary.
+///
+/// A stale store is not a failure and the report must not start behaving like one: exit 0, the document
+/// intact on stdout, and one line on stderr naming `fathom index` — which is what a CI log needs to be
+/// actionable when every cell of the newest row is a dash.
+#[test]
+fn a_store_behind_the_checkout_warns_on_stderr_and_still_exits_zero() {
+    let t = three_commits("stale-warn");
+    t.fx.index();
+    let fourth =
+        t.fx.commit("fourth", "src/d.py", "def d():\n    return 4\n");
+
+    let output = t.fx.run(&["report", "--format", "tsv"]);
+    assert!(output.status.success(), "behind is a warning, not a gate");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("has no row"), "{stderr}");
+    assert!(
+        stderr.contains("fathom index"),
+        "and names the fix: {stderr}"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with("sha\tage\tmessage"), "{stdout}");
+    assert_eq!(
+        stdout.lines().count(),
+        5,
+        "the header and four rows: {stdout}"
+    );
+    assert!(
+        stdout.contains(&fourth[..7]),
+        "the new commit is a row: {stdout}"
+    );
+    assert!(
+        !stdout.contains("fix:"),
+        "stderr is where advice goes: {stdout}"
+    );
+    t.fx.cleanup();
+}
+
 #[test]
 fn a_commit_the_index_never_reached_is_a_row_of_unknowns_that_says_so() {
     // Git is the source of truth for which commits exist (ADR-0008 §2.4), so a commit with no row is a

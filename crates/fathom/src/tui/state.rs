@@ -13,6 +13,12 @@
 //! * **Selection is over the filtered list**, and every movement clamps rather than wrapping. The
 //!   ticket asks for "selection clamp at both ends": a timeline where `G` overshoots is a timeline that
 //!   draws an empty row.
+//! * **The screen asks to index itself, but never indexes.** A reading whose `HEAD` has no row is a
+//!   picture of the wrong commit graph, so [`App::startup`] and every [`Event::Read`] answer with
+//!   [`Command::Index`] as well — the same command `R` returns, so the auto path and the key path are
+//!   one path, and a test can still decide that no index runs. [`App::auto_index`] is the switch, and
+//!   the SHA last auto-indexed is remembered so a store that *cannot* catch up (a `--to` behind `HEAD`,
+//!   a read-only root that slipped through) indexes once and then only reports.
 //! * **Nothing in here can block.** No git, no store, no `SystemTime` read that matters — the state
 //!   machine's idea of time is the `now` the caller passes in, which is also what makes the `age`
 //!   column testable to the second.
@@ -95,6 +101,9 @@ pub enum Key {
 pub enum Command {
     /// Read the store again (the first frame, and after an index).
     Read,
+    /// Ask whether `HEAD` moved, and re-read only if it did — the loop's refresh tick
+    /// ([`crate::tui::REFRESH_MS`]), never a key, and cheaper than [`Command::Read`] by design.
+    Check,
     /// Start an index run.
     Index,
     /// Ask a running index to stop.
@@ -178,6 +187,20 @@ pub struct App {
     pub quit: bool,
     /// Which screen is up: the timeline, the diff of one named commit, or a commit's bench panel.
     pub screen: Screen,
+    /// Whether this screen may ask for an index without being asked (the `--no-auto-index` off switch).
+    ///
+    /// Off by default here, because the state machine does not decide policy for its own sake: the
+    /// caller (`crate::tui::run`) turns it on for the interactive screen when the cache root is
+    /// writable, and leaves it off for `--plain`, for a pipe and for every test that never meant to
+    /// index. A read-only workspace cannot index, so nothing is lost by asking.
+    pub auto_index: bool,
+    /// The `HEAD` this screen has already auto-indexed, so one new commit costs one run.
+    ///
+    /// A counter's job, not a clock's: it is the guard against the loop where an index cannot make the
+    /// store stop being stale (`--to HEAD~5`, a commit outside the walk, a refused write) and every
+    /// re-read therefore asks for another run. `R` deliberately does not consult or set it — a key
+    /// typed twice means it should run twice.
+    auto_indexed: Option<String>,
     /// The bench panel, if one is open.
     ///
     /// One panel rather than a cache of them, because building it costs nothing: every number in it came
@@ -227,6 +250,8 @@ impl App {
             now,
             quit: false,
             screen: Screen::Timeline,
+            auto_index: false,
+            auto_indexed: None,
             bench: None,
             bench_band: bench::DEFAULT_BAND_PERCENT,
             diffs: std::collections::BTreeMap::new(),
@@ -237,6 +262,67 @@ impl App {
         };
         app.recompute();
         app
+    }
+
+    /// The commands the screen asks for the moment it opens.
+    ///
+    /// One question, answered without waiting for a keypress: is the store behind this checkout, and is
+    /// this a screen allowed to fix that? A reader who commits, opens `fathom`, and sees yesterday's
+    /// numbers with a `stale` mark in the header has been handed a chore, so the chore is started here
+    /// and says what it is on the status line. `R` still works, and still means "again, right now".
+    #[must_use]
+    pub fn startup(&mut self) -> Vec<Command> {
+        self.auto_index_now()
+    }
+
+    /// Whether this reading is behind the checkout in a way this screen may repair.
+    ///
+    /// The three refusals, in the order they are cheap to answer:
+    ///
+    /// * the switch is off (`--no-auto-index`, `--plain`, a test that asked for nothing);
+    /// * a run of this screen's is already going — `R` says "an index is already running" and Esc
+    ///   cancels, and an automatic second ask would only be the same refusal spelled harder;
+    /// * the store is not *behind*: absent (nothing has ever been indexed here, which is a bigger
+    ///   decision and stays an explicit `R`) or already current ([`is_stale`]'s narrow answer).
+    ///
+    /// Then one guard: this very `HEAD` was already auto-indexed and did not catch up, so it will not be
+    /// tried again until the checkout moves or someone presses `R`.
+    ///
+    /// A cache root another Fathom is writing is not refused here: the run itself answers that, fast
+    /// and in the lock file's own words, and asking twice a second whether somebody else is holding a
+    /// lock would be a second protocol over the same `flock`.
+    #[must_use]
+    fn auto_index_now(&mut self) -> Vec<Command> {
+        if !self.auto_index || self.index.is_running() || !is_stale(&self.reading) {
+            return Vec::new();
+        }
+        let Some(head) = self.reading.head.clone() else {
+            return Vec::new();
+        };
+        if self.auto_indexed.as_deref() == Some(head.as_str()) {
+            return Vec::new();
+        }
+        self.auto_indexed = Some(head.clone());
+        self.begin_index(Some(format!(
+            "HEAD {} is newer than the store — re-indexing (Esc cancels, --no-auto-index turns this \
+             off)",
+            bench::short(&head)
+        )))
+    }
+
+    /// Put the screen in "our run" and ask the engine for it. The one door both `R` and the automatic
+    /// path walk through, so the header, the progress line and the cancellation behave identically.
+    fn begin_index(&mut self, why: Option<String>) -> Vec<Command> {
+        self.index = IndexState::Running {
+            phase: "starting".to_owned(),
+            done: 0,
+            total: 0,
+            ours: true,
+        };
+        if why.is_some() {
+            self.message = why;
+        }
+        vec![Command::Index]
     }
 
     /// The size the table may use, from a frame's inner area.
@@ -684,13 +770,7 @@ impl App {
                 if self.index.is_running() {
                     self.message = Some("an index is already running — Esc cancels it".to_owned());
                 } else {
-                    self.index = IndexState::Running {
-                        phase: "starting".to_owned(),
-                        done: 0,
-                        total: 0,
-                        ours: true,
-                    };
-                    commands.push(Command::Index);
+                    commands.extend(self.begin_index(None));
                 }
             }
             Key::Escape => {
@@ -1054,7 +1134,10 @@ impl App {
                         panel.set_show_excluded(excluded);
                     }
                 }
-                Vec::new()
+                // A re-read is also the moment a new commit becomes visible: `git commit` in the other
+                // half of a split terminal moves `HEAD`, the tick notices, the reading arrives, and the
+                // store catches up without anyone remembering to press `R`.
+                self.auto_index_now()
             }
             Event::IndexStarted => {
                 if !self.index.is_running() {

@@ -66,7 +66,7 @@ use crate::metrics::Model;
 use crate::store::now_utc;
 use crate::tui::cells;
 use crate::tui::entry::{age, Delta, Entry};
-use crate::tui::store_view::{self, Reading, StoreState};
+use crate::tui::store_view::{self, is_stale, Reading, StoreState};
 use crate::{warn, FathomError};
 
 /// The version of **this envelope** — not the evidence contract's (ADR-0002 v1) and not the store's
@@ -580,6 +580,21 @@ pub fn build(
         ),
         StoreState::Refused(reason) => {
             warn!("the metric store refused to open: {}", one_line(reason));
+        }
+        // A store that is behind the checkout is the case the `indexed`/`gaps` columns already answer
+        // row by row, so this is only a headline for it: the newest commit in the window is unknown, and
+        // a report that says so column-by-column but never in words is the one people mistake for
+        // missing evidence. `fathom doctor` names the same fact; `fathom index` fixes it.
+        StoreState::Present { .. } if is_stale(&reading) => {
+            if let Some(head) = &reading.head {
+                warn!(
+                    "HEAD {} has no row in {} (the store is behind the checkout)\n  fix: run `fathom \
+                     index {}` and then run this again",
+                    short(head),
+                    boot.cache.path.display(),
+                    boot.workspace.display()
+                );
+            }
         }
         StoreState::Present { .. } => {}
     }

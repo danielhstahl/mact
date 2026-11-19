@@ -507,3 +507,116 @@ fn benchmark_record(sha: &str, run_id: &str, status: &str, value: f64, sample: u
     });
     format!("{record}\n")
 }
+
+// ---------------------------------------------------------------- the automatic re-index
+
+/// The screen indexes a store that is behind the checkout, without being asked twice.
+///
+/// The complaint this file's last two tests exist to keep honest: commit, open `fathom`, and the newest
+/// row was unknown until you remembered `R`. Opening the screen is the ask.
+#[test]
+fn a_store_behind_the_checkout_is_indexed_when_the_screen_opens() {
+    let scratch = tempfile::tempdir().expect("scratch");
+    let fixture = Fixture::new(scratch.path(), "auto-open");
+    three_commits(&fixture.repo);
+    fixture.index();
+
+    fixture.repo.write("src/new.rs", "pub fn new() {}\n");
+    fixture.repo.commit("library: one more file");
+
+    let mut app = App::new(fixture.read(), FIXED_EPOCH_SECONDS);
+    app.auto_index = true;
+    assert_eq!(
+        app.startup(),
+        vec![fathom::tui::state::Command::Index],
+        "a stale store is indexed on open"
+    );
+    assert!(
+        app.startup().is_empty(),
+        "and only once per commit: the second ask would be a second run of the same thing"
+    );
+
+    // A screen that may not write does not ask.
+    let mut quiet = App::new(fixture.read(), FIXED_EPOCH_SECONDS);
+    assert!(
+        quiet.startup().is_empty(),
+        "auto-index is off unless the caller turns it on"
+    );
+    quiet.auto_index = false;
+    assert!(quiet.startup().is_empty());
+}
+
+/// A re-read that finds a new `HEAD` is the other door: the commit happened in the other half of a
+/// split terminal, and the tick noticed.
+#[test]
+fn a_new_head_arriving_by_re_read_starts_one_index_and_not_a_second() {
+    use fathom::tui::engine::Event;
+    use fathom::tui::state::Command;
+
+    let scratch = tempfile::tempdir().expect("scratch");
+    let fixture = Fixture::new(scratch.path(), "auto-head");
+    three_commits(&fixture.repo);
+    fixture.index();
+
+    let mut app = App::new(fixture.read(), FIXED_EPOCH_SECONDS);
+    app.auto_index = true;
+    assert!(app.startup().is_empty(), "the store is current at open");
+
+    fixture.repo.write("src/new.rs", "pub fn new() {}\n");
+    let newest = fixture.repo.commit("library: one more file");
+    let reading = fixture.read();
+    assert_eq!(reading.head.as_deref(), Some(newest.as_str()));
+    assert_eq!(
+        app.apply(Event::Read(Box::new(reading.clone()))),
+        vec![Command::Index],
+        "the reading that is behind asks for the run"
+    );
+    assert!(
+        app.apply(Event::Read(Box::new(reading))).is_empty(),
+        "the same HEAD is not indexed twice over"
+    );
+
+    // While a run is going — this screen's or another fathom's — nobody asks for another.
+    let mut running = App::new(fixture.read(), FIXED_EPOCH_SECONDS);
+    running.auto_index = true;
+    running.index = fathom::tui::state::IndexState::Running {
+        phase: "rows".to_owned(),
+        done: 1,
+        total: 3,
+        ours: true,
+    };
+    assert!(running.startup().is_empty(), "a run in flight is enough");
+}
+
+/// The tick's question, answered against a real repository: one `git rev-parse`, and `true` only when
+/// the checkout actually moved.
+#[test]
+fn the_refresh_tick_only_asks_git_whether_head_moved() {
+    use fathom::tui::engine::{StoreWork, Work};
+
+    let scratch = tempfile::tempdir().expect("scratch");
+    let fixture = Fixture::new(scratch.path(), "tick");
+    three_commits(&fixture.repo);
+    fixture.index();
+
+    let boot = fixture.boot();
+    let work = StoreWork::new(
+        boot.clone(),
+        Config::default(),
+        Query::new(),
+        None,
+        fathom::diff::Limits::default(),
+    )
+    .with_identity(&fixture.read());
+    assert!(
+        !work.head_moved(),
+        "nothing has happened, so the tick costs one subprocess and no re-read"
+    );
+
+    fixture.repo.write("src/new.rs", "pub fn new() {}\n");
+    fixture.repo.commit("library: one more file");
+    assert!(
+        work.head_moved(),
+        "a new commit is what the tick exists to notice"
+    );
+}

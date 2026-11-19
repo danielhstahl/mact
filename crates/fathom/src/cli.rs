@@ -191,6 +191,14 @@ pub struct CommonArgs {
     )]
     pub detail: Option<String>,
 
+    /// Turn the TUI's automatic re-index off.
+    #[arg(
+        long,
+        global = true,
+        help = "Do not re-index on the TUI's own initiative: a store behind the checkout stays as it is and says so, and R indexes it (the TUI is the only command this affects — `fathom report` and `fathom doctor` never write)"
+    )]
+    pub no_auto_index: bool,
+
     /// The whole-commit patch cap, in bytes.
     #[arg(
         long,
