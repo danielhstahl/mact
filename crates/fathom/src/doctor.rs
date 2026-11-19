@@ -13,7 +13,7 @@
 //! |---|---|
 //! | `workspace` | is this a git work tree, does it have commits, does `HEAD` resolve |
 //! | `evidence` | does the evidence root exist, is it readable, does it pass `validate-evidence` |
-//! | `runs` | advisory: runs that happened and published nothing (ADR-0008 §5.5) |
+//! | `runs` | advisory: runs that happened and published nothing (ADR-0008 §5.5), and the difference between a silent run that owed a column and a silent run in a category that has no extractor |
 //! | `workflows` | is there anything to run — a coverage or benchmark job, discovered locally |
 //! | `cache` | the store: version, writability, row and block counts, last index age and hit ratio, foreign files |
 //! | `languages` | which paths were not analysed, and which config key would change that |
@@ -35,6 +35,14 @@
 //! Anything derived from `runs/<run_id>/meta.json` is labelled **advisory** and never changes a
 //! column (ADR-0008 §5.5): that file is outside the cross-commit contract, may be missing, and may
 //! disagree with the evidence. Where they disagree the evidence wins, and this says so.
+//!
+//! Advisory also means *not a finding*, and the line has to be drawn somewhere honest. Two places do
+//! that work. A run that published nothing is only a finding when it owed a column: a run in a category
+//! with no extractor (ADR-0002 §3.1 — `coverage` and `benchmark` are the two that have one) had nothing
+//! to publish, and act-mcp already said so with `unknown_category`. And `fathom.lock`'s body is never
+//! unlinked (ADR-0006 §9 L3), so a body whose run published its own finish in `run.json` is the trace
+//! of a finished index, not a live one — the case a shared cache root produces constantly, where the
+//! pid belongs to a machine this process cannot ask.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -682,7 +690,9 @@ fn runs(boot: &Boot) -> Check {
         );
     };
     let mut directories = 0_usize;
-    let mut notes: Vec<String> = Vec::new();
+    // (status, note), because two silences are not the same fact: one owes a column and one never could
+    // have filled one. Only the first is a finding.
+    let mut notes: Vec<(Status, String)> = Vec::new();
     for entry in entries.filter_map(Result::ok) {
         if !entry.path().is_dir() {
             continue;
@@ -695,13 +705,16 @@ fn runs(boot: &Boot) -> Check {
             .take(24)
             .collect();
         let Ok(text) = std::fs::read_to_string(entry.path().join("meta.json")) else {
-            notes.push(format!(
-                "{name}: no readable meta.json — act-mcp died mid-run, so there is nothing to read"
+            notes.push((
+                Status::Warn,
+                format!(
+                    "{name}: no readable meta.json — act-mcp died mid-run, so there is nothing to read"
+                ),
             ));
             continue;
         };
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-            notes.push(format!("{name}: meta.json does not parse"));
+            notes.push((Status::Warn, format!("{name}: meta.json does not parse")));
             continue;
         };
         let status = value
@@ -713,15 +726,50 @@ fn runs(boot: &Boot) -> Check {
             .get("evidence")
             .and_then(serde_json::Value::as_array)
             .map_or(0, Vec::len);
+        // ADR-0002 §3.1: only `coverage` and `benchmark` have an extractor, so only a silent run in one
+        // of those two leaves a column unexplained. A run in any other category has no extractor to
+        // write a record, and act-mcp says so with the `unknown_category` warning — warning about the
+        // silence of a run that could never have published anything is how a check becomes wallpaper.
+        let category = value
+            .get("category")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        let flagged_unknown = value
+            .get("warnings")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|warnings| {
+                warnings
+                    .iter()
+                    .any(|warning| warning.as_str() == Some("unknown_category"))
+            });
+        let never_published_anything = match category.as_deref() {
+            Some(name) => !matches!(name, "coverage" | "benchmark"),
+            // No category at all: older meta, or a writer that did not say. Stay loud — "unknown
+            // provenance" is not the same claim as "this category publishes nothing". The one thing
+            // that can settle it is the server's own `unknown_category` warning.
+            None => flagged_unknown,
+        };
         // One line per run, not one per observation: a run that failed *and* published nothing is one
         // fact, and repeating it twice is how a nine-run directory turns into twenty lines.
-        if published == 0 {
-            notes.push(format!(
-                "{name}: status `{status}`, published no evidence — the run existed and the columns \
-                 stay unknown"
+        if published == 0 && never_published_anything {
+            notes.push((
+                Status::Ok,
+                format!(
+                    "{name}: status `{status}`, published no evidence, and category `{}` publishes \
+                     none — advisory, not a gap",
+                    category.as_deref().unwrap_or("unknown")
+                ),
+            ));
+        } else if published == 0 {
+            notes.push((
+                Status::Warn,
+                format!(
+                    "{name}: status `{status}`, published no evidence — the run existed and the \
+                     columns stay unknown",
+                ),
             ));
         } else if status != "success" {
-            notes.push(format!("{name}: status `{status}` (advisory)"));
+            notes.push((Status::Ok, format!("{name}: status `{status}` (advisory)")));
         }
     }
     let mut check = Check::ok(
@@ -732,8 +780,8 @@ fn runs(boot: &Boot) -> Check {
             directory.display()
         ),
     );
-    for note in notes {
-        check = check.note(Status::Warn, note);
+    for (status, note) in notes {
+        check = check.note(status, note);
     }
     if check.status != Status::Ok {
         check = check.fix(
@@ -866,12 +914,28 @@ fn cache(boot: &Boot, head: Option<&str>) -> Check {
         // The body is advisory and the file is never unlinked (§9 L3), so a body whose pid is gone on
         // this host is a trace of a finished or killed run, not a live one. Saying "an index is
         // running" about a dead pid is exactly the mystery §4.2's list exists to remove.
+        //
+        // The other half of that mystery is a holder on *another* host — a shared cache root, or the
+        // same checkout mounted into a container — where the pid is alive or dead somewhere this
+        // process cannot ask. `index/run.json` is the answer: the writer publishes it when a run ends,
+        // so a body no newer than that finish is the finished run's own trace, not a live index.
+        let last_finished =
+            Runbook::read(&root.join(store::INDEX_DIR)).map(|book| book.last.finished_utc);
         if lock.names_dead_local_pid() {
             check = check.note(
                 Status::Ok,
                 format!(
                     "fathom.lock's last holder (pid {} on {}, phase `{}`, {} commit(s)) is gone: an \
                      advisory trace of a run that ended, not a live index",
+                    lock.pid, lock.hostname, lock.phase, lock.commits_done
+                ),
+            );
+        } else if lock.names_finished_run(last_finished) {
+            check = check.note(
+                Status::Ok,
+                format!(
+                    "fathom.lock's last holder (pid {} on {}, phase `{}`, {} commit(s)) reported its \
+                     run finished: an advisory trace of a run that ended, not a live index",
                     lock.pid, lock.hostname, lock.phase, lock.commits_done
                 ),
             );

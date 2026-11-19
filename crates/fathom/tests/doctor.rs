@@ -562,6 +562,10 @@ fn a_directory_of_workflows_that_produce_nothing_is_a_warning_that_says_so() {
 fn a_run_that_published_nothing_is_reported_as_advisory() {
     // ADR-0008 §5.5: a run directory that published no JSONL is not a failure and not silence. It is
     // the most common reason a column stays unknown after someone "just ran it".
+    //
+    // This meta carries no `category`, so nothing says the run was never an evidence run: unknown
+    // provenance stays a finding (`a_silent_run_in_a_category_with_no_extractor_is_advisory_and_not_a_
+    // finding` is the case that is not).
     let fx = workspace("runs");
     let meta = fx.evidence.join("runs/20260101T000000Z-aaaaaa");
     std::fs::create_dir_all(&meta).expect("create the run directory");
@@ -588,6 +592,160 @@ fn a_run_that_published_nothing_is_reported_as_advisory() {
             .any(|detail| detail.contains("advisory"))
             || check.summary.contains("advisory"),
         "the check says it is advisory: {:?}",
+        check.details
+    );
+    fx.cleanup();
+}
+
+/// A healthy workspace by the `cache` check's own standards: a workflow that can produce evidence, one
+/// contract-valid record for HEAD, and an index that has caught up. Everything a planted `fathom.lock`
+/// then says is on its own.
+fn healthy(name: &str) -> Fixture {
+    let fx = workspace(name);
+    fx.write(
+        ".github/workflows/quality.yml",
+        "name: Quality\non: push\njobs:\n  coverage:\n    name: Coverage\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo llvm-cov\n",
+    );
+    fx.coverage(&fx.repo.head());
+    fx.index();
+    fx
+}
+
+/// The Unix second the last index run finished, from the store's own `run.json`.
+fn last_finished(fx: &Fixture) -> i64 {
+    let text = std::fs::read_to_string(fx.cache.join("index/run.json")).expect("run.json");
+    serde_json::from_str::<serde_json::Value>(&text)
+        .expect("run.json parses")
+        .pointer("/last/finished_utc")
+        .and_then(serde_json::Value::as_i64)
+        .expect("a finished_utc")
+}
+
+/// Plant a lock body as if written by a fathom on another machine. A foreign hostname is what makes
+/// this the interesting case: the pid cannot be checked here, so nothing but `run.json` says whether
+/// that run is over (ADR-0006 §9 L3–L4).
+fn plant_foreign_body(fx: &Fixture, started_utc: i64) {
+    std::fs::write(
+        fx.cache.join("fathom.lock"),
+        format!(
+            "{{\"phase\":\"prune\",\"commits_done\":114,\"pid\":63040,\"hostname\":\"elsewhere.local\",\"started_utc\":{started_utc}}}\n"
+        ),
+    )
+    .expect("plant the body");
+}
+
+#[test]
+fn a_lock_body_whose_run_reported_itself_finished_is_a_trace_not_a_live_index() {
+    // The shared-mount case this repository actually has: a laptop's TUI indexes the checkout, and a
+    // container reading the same `.fathom` cannot ask that laptop about pid 63040. Saying "an index is
+    // running here right now" about a run that published its own finish is a warning nobody can act on,
+    // which is the thing §9 L3's "the body is the diagnosis" is meant to prevent.
+    let fx = healthy("lock-finished");
+    let finished = last_finished(&fx);
+    plant_foreign_body(&fx, finished);
+    let report = fx.doctor();
+    let cache = report.check("cache").expect("the check ran");
+    assert_eq!(cache.status, Status::Ok, "{cache:?}");
+    assert!(
+        cache
+            .details
+            .iter()
+            .any(|detail| detail.contains("reported its run finished")),
+        "{:?}",
+        cache.details
+    );
+    assert!(
+        !cache
+            .details
+            .iter()
+            .any(|detail| detail.contains("right now")),
+        "{:?}",
+        cache.details
+    );
+    fx.cleanup();
+}
+
+#[test]
+fn a_lock_body_newer_than_the_last_finished_run_is_still_reported_as_live() {
+    // The other side of the same rule, so the fix above cannot become a mute button: a body that
+    // post-dates every finished run describes a run that has not reported an end, and a second writer
+    // would only be told `index_busy`.
+    let fx = healthy("lock-live");
+    let finished = last_finished(&fx);
+    plant_foreign_body(&fx, finished + 3_600);
+    let report = fx.doctor();
+    let cache = report.check("cache").expect("the check ran");
+    assert_eq!(cache.status, Status::Warn, "{cache:?}");
+    assert!(
+        cache
+            .details
+            .iter()
+            .any(|detail| detail.contains("an index is running here right now")),
+        "{:?}",
+        cache.details
+    );
+    assert!(
+        cache.fixes.iter().any(|fix| fix.contains("let it finish")),
+        "a live index comes with what to do: {:?}",
+        cache.fixes
+    );
+    fx.cleanup();
+}
+
+#[test]
+fn a_silent_run_in_a_category_with_no_extractor_is_advisory_and_not_a_finding() {
+    // ADR-0002 §3.1: only `coverage` and `benchmark` have an extractor. A `test` run that published
+    // nothing had no column to fill — act-mcp said so itself with `unknown_category` — so holding the
+    // exit code for it is wallpaper, not a diagnosis. ADR-0008 §5.5's word is advisory, and this is
+    // where that word does work.
+    let fx = workspace("silent-other");
+    let meta = fx.evidence.join("runs/20260101T000000Z-bbbbbb");
+    std::fs::create_dir_all(&meta).expect("create the run directory");
+    std::fs::write(
+        meta.join("meta.json"),
+        "{\"run_id\":\"20260101T000000Z-bbbbbb\",\"status\":\"success\",\"evidence\":[],\"category\":\"test\",\"warnings\":[\"unknown_category\"]}\n",
+    )
+    .expect("write the run meta");
+    let report = fx.doctor();
+    let check = report.check("runs").expect("the check ran");
+    assert_eq!(check.status, Status::Ok, "{check:?}");
+    assert!(
+        check
+            .details
+            .iter()
+            .any(|detail| detail.contains("category `test` publishes none")),
+        "{:?}",
+        check.details
+    );
+    assert!(
+        check.fixes.is_empty(),
+        "nothing to act on: {:?}",
+        check.fixes
+    );
+    fx.cleanup();
+}
+
+#[test]
+fn a_silent_coverage_run_still_warns_because_it_owed_a_column() {
+    // The boundary the rule above has to keep: a coverage run that published nothing is exactly why a
+    // coverage column is unknown, and that is a finding.
+    let fx = workspace("silent-coverage");
+    let meta = fx.evidence.join("runs/20260101T000000Z-cccccc");
+    std::fs::create_dir_all(&meta).expect("create the run directory");
+    std::fs::write(
+        meta.join("meta.json"),
+        "{\"run_id\":\"20260101T000000Z-cccccc\",\"status\":\"success\",\"evidence\":[],\"category\":\"coverage\"}\n",
+    )
+    .expect("write the run meta");
+    let report = fx.doctor();
+    let check = report.check("runs").expect("the check ran");
+    assert_eq!(check.status, Status::Warn, "{check:?}");
+    assert!(
+        check
+            .details
+            .iter()
+            .any(|detail| detail.contains("columns stay unknown")),
+        "{:?}",
         check.details
     );
     fx.cleanup();

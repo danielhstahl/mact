@@ -122,6 +122,19 @@ impl LockBody {
         self.hostname == hostname() && !process_is_alive(self.pid)
     }
 
+    /// Whether the run this body describes has already reported itself finished.
+    ///
+    /// `index/run.json` is written when an index run *ends*, so a body no newer than the last finished
+    /// run is that run's own trace: the file is never unlinked (L3), and for a holder on another host
+    /// this is the only proof available — §9 L4 forbids a reader from taking the lock, and `ps` cannot
+    /// see a foreign pid, so [`Self::names_dead_local_pid`] cannot answer. The comparison is at second
+    /// granularity, so a run that starts in the same second an earlier one finishes is called finished
+    /// a few seconds early; the cost of that is a note where a warning was due, never the reverse.
+    #[must_use]
+    pub fn names_finished_run(&self, last_finished_utc: Option<i64>) -> bool {
+        last_finished_utc.is_some_and(|finished| finished >= self.started_utc)
+    }
+
     /// The §10.3 line a busy refusal prints.
     #[must_use]
     pub fn busy_message(&self, path: &Path) -> String {
@@ -415,6 +428,39 @@ mod tests {
         assert!(
             live_body(dir.path()).is_none(),
             "and it is not a run in progress"
+        );
+    }
+
+    #[test]
+    fn a_body_from_a_foreign_host_is_only_a_trace_once_that_run_finished() {
+        // The shared-mount case: the holder's pid lives on a machine this process cannot query, so
+        // `names_dead_local_pid` cannot answer and `run.json` is the only proof there is. This is the
+        // shape a real cache root has when a laptop's TUI indexed the tree a container is reading.
+        let body = LockBody {
+            pid: 63040,
+            hostname: "somewhere-else.local".to_owned(),
+            started_utc: 1_700_000_000,
+            ..LockBody::now(Phase::Prune, 114)
+        };
+        assert!(
+            !body.names_dead_local_pid(),
+            "a foreign pid is not a dead local pid: the host differs"
+        );
+        assert!(
+            body.names_finished_run(Some(1_700_000_000)),
+            "same second: the run that wrote this body published its finish"
+        );
+        assert!(
+            body.names_finished_run(Some(1_700_000_060)),
+            "finished later, so it is the same run and it is over"
+        );
+        assert!(
+            !body.names_finished_run(Some(1_699_999_940)),
+            "the last finish predates the body: a run is in progress"
+        );
+        assert!(
+            !body.names_finished_run(None),
+            "no run.json is not evidence of a finish; stay loud"
         );
     }
 
