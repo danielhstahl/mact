@@ -1,15 +1,5 @@
 {
-  "$comment": [
-    "ADR-0007's normative constants: the Maintainability Index definition act-mcp/Fathom measures.",
-    "This file is the machine-readable form of docs/adr/0007-maintainability-index.md. It is the ONE",
-    "spelling of the numbers and the closed enumerations: scripts/mi_reference.py loads it and is the",
-    "oracle scripts/validate_mi_definition.py checks the golden vectors in tests/testdata/mi/ against,",
-    "and the ADR's fenced blocks are diffed against it by that same checker. Prose that disagrees with",
-    "this file is a bug in the prose.",
-    "Changing anything here is a semantic change to every MI number ever written: bump the analyzer",
-    "version(s) named in `analyzer` in the same commit (ADR-0006 section 6.3), or the cache will serve",
-    "old numbers under new keys."
-  ],
+  "$comment": "ADR-0007's normative constants: the Maintainability Index definition act-mcp/Fathom measures. This file is the machine-readable form of docs/adr/0007-maintainability-index.md. It is the ONE spelling of the numbers and the closed enumerations: scripts/mi_reference.py loads it and is the oracle scripts/validate_mi_definition.py checks the golden vectors in tests/testdata/mi/ against, and the ADR's fenced blocks are diffed against it by that same checker. Prose that disagrees with this file is a bug in the prose. Changing anything here is a semantic change to every MI number ever written: bump the analyzer version(s) named in `analyzer` in the same commit (ADR-0006 section 6.3), or the cache will serve old numbers under new keys.",
   "definition_version": 1,
   "adr": "ADR-0007",
   "ticket": "mact-by1.3",

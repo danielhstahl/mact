@@ -1,18 +1,5 @@
 {
-  "$comment": [
-    "ADR-0008's normative rules: what one Fathom commit row's numbers mean.",
-    "This file is the machine-readable form of docs/adr/0008-per-commit-metric-model.md. It is the ONE",
-    "spelling of the selection pipeline, the drop-reason vocabulary, the aggregation arithmetic, the",
-    "action-success state machine and the glyph table. scripts/metric_model_reference.py loads it and is",
-    "the oracle mact-by1.6's Rust reader is graded against, and the ADR's fenced blocks are diffed",
-    "against it by scripts/validate_metric_model.py. Prose that disagrees with this file is a bug in the",
-    "prose.",
-    "Changing anything here changes the meaning of every row already in every .fathom cache: bump the",
-    "evidence-derivation analyzer version (ADR-0006 section 6.3) in the same commit, and if the change",
-    "alters a row field's meaning rather than adding a field, bump `row_version` (ADR-0006 section 6.4).",
-    "The evidence contract itself does not change here: ADR-0002 stays normative about records, this",
-    "file is normative about what a reader derives from them."
-  ],
+  "$comment": "ADR-0008's normative rules: what one Fathom commit row's numbers mean. This file is the machine-readable form of docs/adr/0008-per-commit-metric-model.md. It is the ONE spelling of the selection pipeline, the drop-reason vocabulary, the aggregation arithmetic, the action-success state machine and the glyph table. scripts/metric_model_reference.py loads it and is the oracle mact-by1.6's Rust reader is graded against, and the ADR's fenced blocks are diffed against it by scripts/validate_metric_model.py. Prose that disagrees with this file is a bug in the prose. Changing anything here changes the meaning of every row already in every .fathom cache: bump the evidence-derivation analyzer version (ADR-0006 section 6.3) in the same commit, and if the change alters a row field's meaning rather than adding a field, bump `row_version` (ADR-0006 section 6.4). The evidence contract itself does not change here: ADR-0002 stays normative about records, this file is normative about what a reader derives from them.",
   "model_version": 1,
   "adr": "ADR-0008",
   "ticket": "mact-by1.4",
