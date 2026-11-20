@@ -21,7 +21,9 @@
 //!   a read-only root that slipped through) indexes once and then only reports.
 //! * **Nothing in here can block.** No git, no store, no `SystemTime` read that matters — the state
 //!   machine's idea of time is the `now` the caller passes in, which is also what makes the `age`
-//!   column testable to the second.
+//!   column testable to the second. The caller is the loop ([`super::run_loop`]), which moves that
+//!   clock on its own initiative ([`App::set_now`]) and repaints only when a drawn row's age text
+//!   actually changed ([`App::age_deadline`]); this module still never reads a clock itself.
 
 use crate::metrics::Model;
 
@@ -182,6 +184,9 @@ pub struct App {
     /// Columns the table may draw.
     pub width: u16,
     /// The clock the age column counts back from, supplied by the caller each frame.
+    ///
+    /// Read it, do not write it: [`App::set_now`] is the door, because moving the clock without asking
+    /// whether the text changed is how a screen ends up painting a frame a minute for nothing.
     pub now: i64,
     /// Whether the loop should stop.
     pub quit: bool,
@@ -592,6 +597,48 @@ impl App {
     #[must_use]
     pub fn visible(&self) -> &[usize] {
         &self.visible
+    }
+
+    /// Move the clock the `age` column counts back from, and answer whether the table has to be drawn
+    /// again because of it.
+    ///
+    /// `true` means some row on the page would now print a different age than it printed at the last
+    /// frame — a minute rolled over, or a day did — and `false` that the clock moved less than the text
+    /// can show. The screen is old (mact-s1p): a `now` read once when the process started froze the
+    /// column, so the commit landed at 14:00 was still `5m` old at 19:00, however long the tab was open.
+    #[must_use]
+    pub fn set_now(&mut self, now: i64) -> bool {
+        if now == self.now {
+            return false;
+        }
+        let changed = self.age_deadline().is_some_and(|at| now >= at);
+        self.now = now;
+        changed
+    }
+
+    /// The next instant at which a row this screen is drawing would print a different `age`.
+    ///
+    /// `None` when there is nothing on the screen for a clock to move: a diff, a bench panel or a detail
+    /// view draws no age cell ([`super::render::draw`] draws the table for [`Screen::Timeline`] and for
+    /// nothing else), and a page with no rows — no store, no commits, a filter with no match — has none
+    /// either. Only the drawn page is asked, because repainting for a row the reader cannot see buys an
+    /// invisible frame; scrolling dirties the screen by itself.
+    #[must_use]
+    pub fn age_deadline(&self) -> Option<i64> {
+        if self.screen != Screen::Timeline {
+            return None;
+        }
+        let page = usize::from(self.height.max(1));
+        self.visible
+            .iter()
+            .skip(self.offset)
+            .take(page)
+            .filter_map(|index| self.reading.entries.get(*index))
+            .map(|entry| {
+                super::entry::age_next_change(self.now.saturating_sub(entry.author_utc))
+                    .saturating_add(self.now)
+            })
+            .min()
     }
 
     /// The selected entry, if there is one.

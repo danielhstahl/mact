@@ -24,10 +24,12 @@
 //! and never render a frame per record — and they are separated here instead of traded: input is polled
 //! on a short tick ([`engine::TICK_MS`]) so a keypress is handled within one tick, and painting is gated
 //! separately by [`FRAME_MS`] and by a dirty flag, so 500 published rows become a handful of frames and
-//! 500 keypresses become at most ~15 frames a second. The loop is one pass of *drain → one input → drain
-//! → maybe paint*; there is no `select`, because the runtime `select` needs is forbidden in this crate
-//! (ADR-0005 §6: no tokio, ever) and a thread plus two channels is exactly what that ADR says the TUI's
-//! synchronous file and git reads deserve instead.
+//! 500 keypresses become at most ~15 frames a second. The loop is one pass of *drain → one input →
+//! drain → clock → maybe paint*; there is no `select`, because the runtime `select` needs is forbidden
+//! in this crate (ADR-0005 §6: no tokio, ever) and a thread plus two channels is exactly what that ADR
+//! says the TUI's synchronous file and git reads deserve instead. The clock half is what keeps the
+//! `age` column live: the loop reads the driver's clock every pass and owes a frame only when the text
+//! a drawn row prints actually changed ([`App::set_now`]).
 //!
 //! ## The rules this module keeps
 //!
@@ -116,6 +118,14 @@ pub trait Driver {
     fn paint(&mut self, app: &App) -> io::Result<()>;
     /// The current terminal size.
     fn size(&self) -> (u16, u16);
+    /// The wall clock the `age` column counts back from, Unix seconds.
+    ///
+    /// The real one by default, because that is what a terminal has behind it. A driver may hand out a
+    /// clock the test winds instead, which is what makes "the age column keeps up with the clock"
+    /// (mact-s1p) an ordinary assertion rather than a wait.
+    fn now(&self) -> i64 {
+        now_utc()
+    }
 }
 
 /// One pass of the loop, as a function so a test can call it with a scripted driver.
@@ -171,6 +181,16 @@ pub fn run_loop(app: &mut App, driver: &mut dyn Driver) -> io::Result<usize> {
         for event in driver.events() {
             let commands = app.apply(event);
             driver.execute(&commands);
+            dirty = true;
+        }
+
+        // The clock, moved on the loop's own initiative rather than a key's: a commit does not change
+        // but its age does, and `now` read once when the screen opened froze the whole column (mact-s1p
+        // — the row landed at 14:00 still read `5m` at 19:00). Reading a wall clock costs nothing, so it
+        // is read every pass; `App::set_now` is what knows that a frame is owed only when a drawn row's
+        // text actually changed, which is how this coexists with the promise that an idle screen paints
+        // nothing.
+        if app.set_now(driver.now()) {
             dirty = true;
         }
 

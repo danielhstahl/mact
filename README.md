@@ -649,6 +649,9 @@ open `HEAD` is re-checked every two seconds, so a commit made in another termina
 (`HEAD` moving is one `git rev-parse`; nothing else is read unless it moved). `--no-auto-index` turns
 both halves off, and a cache root this build cannot write is never attempted: that screen says `stale` in
 the header and waits, because a reader that fails loudly beats one that writes somewhere unexpected.
+The `age` column ages too, with nothing pressed: the loop reads the clock on its own initiative and
+repaints the rows whose spelling actually changed, so the commit that read `5m` when you opened the
+screen reads `1h` an hour later — and a screen with nothing new to say still paints no frames at all.
 
 ### The diff view, the detail view and the bench panel
 

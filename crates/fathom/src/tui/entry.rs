@@ -348,6 +348,41 @@ impl Entry {
     }
 }
 
+/// One minute in seconds — the step the `age` column counts in under an hour.
+const MINUTE: i64 = 60;
+/// One hour in seconds — the step between one hour and 48 hours.
+const HOUR: i64 = 60 * MINUTE;
+/// One day in seconds — the step between two days and a week.
+const DAY: i64 = 24 * HOUR;
+/// One week in seconds — the step between one week and 52 weeks.
+const WEEK: i64 = 7 * DAY;
+/// A year as the `age` column counts it: 365 days, because the column is a rough statement of an age
+/// and never a calendar calculation.
+const YEAR: i64 = 365 * DAY;
+
+/// How many seconds one step of [`age`]'s text is at this delta — the width of the unit it spells.
+///
+/// This is [`age`]'s unit table and nothing else, spelled once so that the two cannot disagree about
+/// where a unit starts: [`age_next_change`] is only a true deadline while the step it reads is the
+/// step `age` counted in.
+#[must_use]
+pub const fn age_step(delta_seconds: i64) -> i64 {
+    // Clamped by hand rather than with `.max(0)`: `Ord::max` is not const, and this is a `const fn` so
+    // the step table can be read from a `const` context.
+    let seconds = if delta_seconds < 0 { 0 } else { delta_seconds };
+    if seconds < HOUR {
+        MINUTE
+    } else if seconds < 48 * HOUR {
+        HOUR
+    } else if seconds < WEEK {
+        DAY
+    } else if seconds < 52 * WEEK {
+        WEEK
+    } else {
+        YEAR
+    }
+}
+
 /// Format a duration as the `age` column spells it: minutes, hours, days, weeks, years.
 ///
 /// Monotone and total: any `delta` ≥ 0 has exactly one spelling, and a future-dated commit (clock
@@ -355,22 +390,45 @@ impl Entry {
 #[must_use]
 pub fn age(delta_seconds: i64) -> String {
     let seconds = delta_seconds.max(0);
-    if seconds < 3_600 {
-        return format!("{}m", seconds / 60);
-    }
-    if seconds < 48 * 3_600 {
-        return format!("{}h", seconds / 3_600);
-    }
-    if seconds < 7 * 86_400 {
-        return format!("{}d", seconds / 86_400);
-    }
-    if seconds < 52 * 7 * 86_400 {
-        return format!("{}w", seconds / (7 * 86_400));
-    }
+    let step = age_step(seconds);
+    let unit = match step {
+        MINUTE => 'm',
+        HOUR => 'h',
+        DAY => 'd',
+        WEEK => 'w',
+        _ => 'y',
+    };
     // Past 52 weeks the unit is years, floored — and never `0y`, which would be a unit that lies twice
     // over: a commit 364 days old is a year old for a reader's purposes, and `52w` is the last thing
     // the week column ever says. Monotone either way: the spelling only ever moves forward with `delta`.
-    format!("{}y", (seconds / (365 * 86_400)).max(1))
+    let count = if unit == 'y' {
+        (seconds / step).max(1)
+    } else {
+        seconds / step
+    };
+    format!("{count}{unit}")
+}
+
+/// How long a row of age `delta_seconds` still has before [`age`] would print something else.
+///
+/// The text is a step function whose steps are exactly [`age_step`] wide, and every unit boundary in
+/// `age` falls on a step boundary, so the next change is the end of the current step: never more than
+/// one step away, and the reason the screen can repaint once a minute for a fresh commit and once a
+/// year for an old one instead of once a second for both. Two edges are worth naming:
+///
+/// * a **future-dated** commit (`delta` < 0) prints `0m` and keeps printing it until the clock reaches
+///   it, so its next change is that moment plus one minute, not one minute from now — otherwise a
+///   clock ahead of the repository would repaint a frame a minute forever.
+/// * **entering the years unit** is the one deadline that can fire without the text changing: 52 weeks
+///   and 365 days are both spelled `1y`, because of `age`'s floor. One frame a year draws what the
+///   frame before it drew, which is a rounding error nobody has to be protected from.
+#[must_use]
+pub const fn age_next_change(delta_seconds: i64) -> i64 {
+    if delta_seconds < 0 {
+        return -delta_seconds + MINUTE;
+    }
+    let step = age_step(delta_seconds);
+    step - (delta_seconds % step)
 }
 
 /// A number at four significant digits (ADR-0008 §4.5's "render its value at 4 significant digits").
@@ -428,7 +486,7 @@ pub const fn delta_of(now: f64, parent: f64) -> Delta {
 
 #[cfg(test)]
 mod tests {
-    use super::{age, delta_of, four_significant, Delta, Metric};
+    use super::{age, age_next_change, age_step, delta_of, four_significant, Delta, Metric};
 
     #[test]
     fn age_uses_the_largest_unit_under_100() {
@@ -442,6 +500,52 @@ mod tests {
         assert_eq!(age(51 * 7 * 86_400), "51w");
         assert_eq!(age(52 * 7 * 86_400), "1y");
         assert_eq!(age(-30), "0m", "a future-dated commit is new, not negative");
+    }
+
+    #[test]
+    fn the_age_step_is_the_unit_the_column_spells_in() {
+        assert_eq!(age_step(-10), 60);
+        assert_eq!(age_step(59 * 60), 60);
+        assert_eq!(age_step(3_600), 3_600);
+        assert_eq!(age_step(47 * 3_600), 3_600);
+        assert_eq!(age_step(48 * 3_600), 86_400);
+        assert_eq!(age_step(6 * 86_400), 86_400);
+        assert_eq!(age_step(7 * 86_400), 7 * 86_400);
+        assert_eq!(age_step(51 * 7 * 86_400), 7 * 86_400);
+        assert_eq!(age_step(52 * 7 * 86_400), 365 * 86_400);
+    }
+
+    /// The deadline is what lets the loop owe a frame to the clock only when the text a reader is
+    /// looking at changes, and never more often than that.
+    #[test]
+    fn the_next_spelling_arrives_at_the_end_of_the_step() {
+        assert_eq!(age_next_change(0), 60);
+        assert_eq!(
+            age_next_change(59),
+            1,
+            "59 seconds in: one second left of `0m`"
+        );
+        assert_eq!(
+            age_next_change(60),
+            60,
+            "`1m` has its whole minute to itself"
+        );
+        assert_eq!(age_next_change(2 * 3_600 + 1_800), 1_800);
+        // Every unit boundary in `age` is also a step boundary, so crossing one needs no special case.
+        assert_eq!(
+            age_next_change(59 * 60 + 59),
+            1,
+            "minutes hand over to hours here"
+        );
+        assert_eq!(
+            age_next_change(47 * 3_600 + 3_599),
+            1,
+            "and hours to days here"
+        );
+        assert_eq!(age_next_change(6 * 86_400 + 43_200), 43_200);
+        assert_eq!(age_next_change(51 * 7 * 86_400 + 3 * 86_400), 4 * 86_400);
+        // Future-dated: `0m` until the clock arrives, then a minute of it.
+        assert_eq!(age_next_change(-600), 660);
     }
 
     #[test]
