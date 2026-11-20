@@ -1,0 +1,29 @@
+{
+  "case": "vacuous_only",
+  "model_version": 1,
+  "notes": "lines_found == 0 makes the ratio undefined, not 0 %: coverage is absent, the gap is vacuous, the row carries the vacuous caveat, and the commit is excluded from any window average rather than dragging it to zero.",
+  "rows": {
+    "1111111111111111111111111111111111111111": {
+      "action_detail": [
+        {
+          "category": "coverage",
+          "kind": "coverage",
+          "ok": true,
+          "run_id": "20261110T040000Z-dd0001",
+          "status": "success",
+          "task": "coverage",
+          "workflow": "coverage"
+        }
+      ],
+      "action_success": "success",
+      "caveats": [
+        "vacuous"
+      ],
+      "commit": "1111111111111111111111111111111111111111",
+      "gaps": {
+        "benchmarks": "no_records",
+        "coverage": "vacuous"
+      }
+    }
+  }
+}

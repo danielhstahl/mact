@@ -1,0 +1,53 @@
+{
+  "case": "mixed_action",
+  "model_version": 1,
+  "notes": "Coverage succeeded and the benchmark job failed: two groups, one verdict each, so the state is mixed - and the benchmark column stays unknown, because an excluded run never becomes a number.",
+  "rows": {
+    "1111111111111111111111111111111111111111": {
+      "action_detail": [
+        {
+          "category": "benchmark",
+          "kind": "benchmark",
+          "ok": false,
+          "run_id": "20261110T060500Z-ee0002",
+          "status": "failed",
+          "task": "hyperfine-bench",
+          "workflow": "benchmark"
+        },
+        {
+          "category": "coverage",
+          "kind": "coverage",
+          "ok": true,
+          "run_id": "20261110T060000Z-ee0001",
+          "status": "success",
+          "task": "coverage",
+          "workflow": "coverage"
+        }
+      ],
+      "action_success": "mixed",
+      "caveats": [
+        "run_excluded"
+      ],
+      "commit": "1111111111111111111111111111111111111111",
+      "coverage": {
+        "found": 1000,
+        "hit": 800,
+        "measure": "lines",
+        "percent": 80.0,
+        "runs": [
+          "20261110T060000Z-ee0001"
+        ]
+      },
+      "excluded_runs": [
+        {
+          "reason": "run_status_excluded",
+          "run_id": "20261110T060500Z-ee0002",
+          "status": "failed"
+        }
+      ],
+      "gaps": {
+        "benchmarks": "all_runs_excluded"
+      }
+    }
+  }
+}

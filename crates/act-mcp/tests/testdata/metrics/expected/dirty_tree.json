@@ -1,0 +1,38 @@
+{
+  "case": "dirty_tree",
+  "model_version": 1,
+  "notes": "One good record among a non-JSON line, a record whose commit field names a different directory, a run_id that cannot be sorted, a schema_version this reader cannot read, and a .tmp file from a crashed publish. The good record still gives 810/900 = 90.0; the four unusable ones are counted and caveated rather than silently skipped.",
+  "rows": {
+    "1111111111111111111111111111111111111111": {
+      "action_detail": [
+        {
+          "category": "coverage",
+          "kind": "coverage",
+          "ok": true,
+          "run_id": "20261110T130000Z-cc0007",
+          "status": "success",
+          "task": "coverage",
+          "workflow": "coverage"
+        }
+      ],
+      "action_success": "success",
+      "caveats": [
+        "unreadable"
+      ],
+      "commit": "1111111111111111111111111111111111111111",
+      "coverage": {
+        "found": 900,
+        "hit": 810,
+        "measure": "lines",
+        "percent": 90.0,
+        "runs": [
+          "20261110T130000Z-cc0007"
+        ]
+      },
+      "gaps": {
+        "benchmarks": "no_records"
+      },
+      "unreadable_records": 4
+    }
+  }
+}

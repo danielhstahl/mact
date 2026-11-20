@@ -1,0 +1,62 @@
+{
+  "fixture": "weighted_versus_per_file_mean",
+  "notes": "The case the ticket names: a 12-line module that measures 95.0 next to a 900-line module that measures 61.0. A per-file mean would report 78.0 and let the 12-line file speak for the repository; the LOC-weighted mean reports 61.4. Nothing else about the two commits differs, and neither number is rounded differently: (95*12 + 61*900)/912 = 61.4473.",
+  "files": [
+    {
+      "path": "src/mod.rs",
+      "status": "ok",
+      "loc": 12,
+      "mi": 95.0
+    },
+    {
+      "path": "src/big.rs",
+      "status": "ok",
+      "loc": 900,
+      "mi": 61.0
+    }
+  ],
+  "parent_files": [
+    {
+      "path": "src/mod.rs",
+      "status": "ok",
+      "loc": 12,
+      "mi": 95.0
+    },
+    {
+      "path": "src/big.rs",
+      "status": "ok",
+      "loc": 900,
+      "mi": 60.0
+    },
+    {
+      "path": "src/gone.rs",
+      "status": "ok",
+      "loc": 40,
+      "mi": 12.0
+    }
+  ],
+  "expect": {
+    "aggregate": 61.4,
+    "band": "green",
+    "loc": 912,
+    "files": 2,
+    "hotspots": [
+      {
+        "path": "src/big.rs",
+        "mi": 61.0,
+        "loc": 900
+      },
+      {
+        "path": "src/mod.rs",
+        "mi": 95.0,
+        "loc": 12
+      }
+    ],
+    "sub_threshold_set": [],
+    "sub_threshold_added": [],
+    "sub_threshold_removed": [
+      "src/gone.rs"
+    ],
+    "delta_vs_parent": 3.0
+  }
+}

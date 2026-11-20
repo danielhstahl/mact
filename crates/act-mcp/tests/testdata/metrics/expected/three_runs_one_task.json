@@ -1,0 +1,41 @@
+{
+  "case": "three_runs_one_task",
+  "model_version": 1,
+  "notes": "Three successful runs of one (kind=coverage, workflow=coverage, task=coverage). run_id sorts chronologically (ADR-0002 1.2), so the newest is the number and the two older ones are superseded, not averaged: 1000/1200 = 83.333... -> 83.3. The losers would have said 80.0 and 77.8, which is exactly why supersession is named in the row instead of being silent.",
+  "rows": {
+    "1111111111111111111111111111111111111111": {
+      "action_detail": [
+        {
+          "category": "coverage",
+          "kind": "coverage",
+          "ok": true,
+          "run_id": "20261110T030000Z-cccccc",
+          "status": "success",
+          "task": "coverage",
+          "workflow": "coverage"
+        }
+      ],
+      "action_success": "success",
+      "caveats": [
+        "superseded_runs"
+      ],
+      "commit": "1111111111111111111111111111111111111111",
+      "coverage": {
+        "found": 1200,
+        "hit": 1000,
+        "measure": "lines",
+        "percent": 83.3,
+        "runs": [
+          "20261110T030000Z-cccccc"
+        ]
+      },
+      "gaps": {
+        "benchmarks": "no_records"
+      },
+      "superseded_runs": [
+        "20261110T010000Z-aaaaaa",
+        "20261110T020000Z-bbbbbb"
+      ]
+    }
+  }
+}

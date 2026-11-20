@@ -16,7 +16,7 @@ date: 2026-11-10
   `run_status_args` / `run_status_result`, `cancel_run_args` / `cancel_run_result`, plus `tool_error` and the
   shared `run_view`), with the error-code registry in the same file's `x-error-codes` member
 - **Checked by:** [`scripts/validate_tool_contract.py`](../../scripts/validate_tool_contract.py) against the
-  fixtures under [`tests/e2e/testdata/tool-io`](../../tests/e2e/testdata/tool-io)
+  fixtures under [`tests/e2e/testdata/tool-io`](../../crates/act-mcp/tests/e2e/testdata/tool-io)
 - **Reference for implementers and the e2e test:** [`docs/tool-contract.md`](../tool-contract.md)
 - **Related:** ADR-0002 (evidence JSONL contract — accepted), ADR-0003 (commit isolation / serialization),
   ADR-0004 (run lifecycle)

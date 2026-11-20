@@ -18,11 +18,26 @@ cargo test -- --ignored       # the runner_pdeathsig tests (they wait on wall-cl
                               # a container runtime: run it as §7 describes, not by reflex
 ```
 
+`cargo test` at the repository root is the whole workspace: `act-mcp`'s unit tests and every
+integration suite, `act-evidence`'s tests (including the schema-fixture matrix), and `fathom`'s
+CLI contract tests. One crate at a time when you are working in it:
+
+```sh
+cargo test -p act-mcp                   # one crate's tests
+cargo test -p fathom --test cli         # fathom's argv/exit-code contract suite
+cargo test -p act-mcp --test run_status_tool
+```
+
+What each of those covers, and the order to run them in when something is red, is the rest of this
+page; the crate boundaries themselves are [ADR-0005](adr/0005-fathom-crate-layout-and-dependencies.md).
+
 `scripts/ci.sh` is the one command CI runs, and it is this section as a script: fmt, clippy
-`-D warnings`, rustdoc, `cargo test --all-features`, the schema checkers, `cargo deny`, and
-a release build that is then run to prove it works. `scripts/ci.sh --help` lists the steps;
-[docs/ci.md](ci.md) documents them, including the `rust-toolchain.toml` pin that makes a
-local run and a CI run the same claim.
+`-D warnings`, a workspace build of both binaries, rustdoc, `cargo test --all-features`, the
+fathom steps (the drawn-screen snapshots, the `report` envelope goldens, and a `report`/`doctor`
+exit-code smoke run against the built binary), the schema checkers, `cargo deny` plus the
+dependency firewalls, and a release build per artefact that is then run to prove it works.
+`scripts/ci.sh --help` lists the steps; [docs/ci.md](ci.md) documents them, including the
+`rust-toolchain.toml` pin that makes a local run and a CI run the same claim.
 
 A few environment quirks worth knowing before the first red build:
 
@@ -42,7 +57,7 @@ A few environment quirks worth knowing before the first red build:
 * "act dies with act-mcp" is a different mechanism per platform, and they are not scoped the
   same way: Linux arms the child with `PR_SET_PDEATHSIG`, which is tied to the spawning
   **thread**, while macOS has no such option and `runner::process::watcher` forks a helper
-  that `kevent`s for the server's exit — a net scoped to the **process**. `tests/runner_pdeathsig.rs`
+  that `kevent`s for the server's exit — a net scoped to the **process**. `crates/act-mcp/tests/runner_pdeathsig.rs`
   (`--ignored`) retires a thread on Linux and a process on both, because a mechanism that is
   process-scoped is not proved by a thread vanishing and vice versa. Anything that changes
   `die_with_parent` gets run there **on both platforms**: a watcher that misidentifies its own
@@ -51,25 +66,44 @@ A few environment quirks worth knowing before the first red build:
   that never booted, not like a signal bug.
 * `scripts/validate_evidence.py` needs the `jsonschema` Python package. If the interpreter and
   `pip` on your box disagree (they do here), use the built-in checker instead:
-  `cargo run -- validate-evidence <workspace>`.
+  `cargo run -p act-mcp -- validate-evidence <workspace>`.
 
 The shell checkers under `scripts/` (`validate_tool_contract.py`, `validate_run_lifecycle.py`,
-`validate_isolation.py`) are CI's, and each one's Rust counterpart is named in the file it
-guards.
+`validate_isolation.py`, `validate_crate_layout.py`, `validate_fathom_layout.py`,
+`validate_mi_definition.py`, `validate_metric_model.py`, `validate_fathom_docs.py`) are CI's, and each
+one's Rust counterpart is named in the file it guards. The first three read `schema/*.json` against
+the ADR that wrote it; the fourth reads `Cargo.toml`, because what ADR-0005 pins is which crate may
+depend on which; the fifth reads `.gitignore` and `.fathom/LAYOUT.md`, because what ADR-0006 pins is
+which paths inside the cache root exist, which are ignored, and which belong to somebody else's tool;
+the sixth reads `schema/mi-definition.json`, the golden vectors under `crates/act-mcp/tests/testdata/mi` and
+`deny.toml`, because what ADR-0007 pins is arithmetic and enumerations — and it re-derives every
+vector twice, once through `scripts/mi_reference.py` (the oracle mact-by1.7's Rust port is graded
+against) and once in 40-digit `decimal` inside the checker, so a future Rust implementation has
+something to be wrong against before a trend line is; and the seventh reads
+`schema/metric-model.json` plus the fixture trees under `crates/act-mcp/tests/testdata/metrics`, because what
+ADR-0008 pins is *which records a commit's number is built from* — it re-derives all sixteen vectors
+through `scripts/metric_model_reference.py` (the oracle mact-by1.6 is graded against), re-checks the
+worked example in the ADR against a freshly built sample tree, and then diffs that Python
+implementation against the **recorded output of the jq recipes** in `docs/evidence-format.md` §12, so
+the reader and the documented reader's-view of the contract cannot drift apart quietly.
 
 | suite | what it pins |
 |---|---|
-| `src/**` unit tests | argument shapes, argv construction, error vocabularies, extraction, the evidence writer |
-| `tests/boot.rs` | CLI flags, the boot gates, refusing a routable bind, what gets logged |
-| `tests/hardening.rs` | `Host`/`Origin` allowlists, body cap, redaction, run-dir cap |
-| `tests/protocol.rs` | the smallest useful protocol surface: a stock client can list tools, `/mcp` is the only route |
-| **`tests/protocol_conformance.rs`** | **the full MCP Streamable HTTP conformance matrix for both revisions — see §3** |
-| `tests/tool_schema_parity.rs` | advertised `inputSchema`/`outputSchema` == `schema/tool-contract.schema.json` |
-| `tests/list_tasks.rs`, `tests/run_status_tool.rs`, `tests/cancel_run_tool.rs`, `tests/run_workflow.rs` | one tool each, end to end through a real `tools/call` |
-| `tests/run_supervisor.rs`, `tests/runner_execution.rs`, `tests/runner_pdeathsig.rs` | run lifecycle, the act process group, process teardown |
-| `tests/e2e/main.rs` | the shipped binary + stub `act` + stub `docker`: call → `.evidence` files on disk, goldens included |
-| `tests/realdata_smoke.rs` | the real-act smoke script's own plumbing (stub), and — `#[ignore]`d — the real act + runtime run of it (**§7**) |
-| `tests/evidence_*.rs`, `tests/*_extraction.rs` | the `.evidence` JSONL contract and the extractors |
+| `crates/act-mcp/src/**` unit tests | argument shapes, argv construction, error vocabularies, extraction, the evidence writer |
+| `crates/act-mcp/tests/boot.rs` | CLI flags, the boot gates, refusing a routable bind, what gets logged |
+| `crates/act-mcp/tests/hardening.rs` | `Host`/`Origin` allowlists, body cap, redaction, run-dir cap |
+| `crates/act-mcp/tests/protocol.rs` | the smallest useful protocol surface: a stock client can list tools, `/mcp` is the only route |
+| **`crates/act-mcp/tests/protocol_conformance.rs`** | **the full MCP Streamable HTTP conformance matrix for both revisions — see §3** |
+| `crates/act-mcp/tests/tool_schema_parity.rs` | advertised `inputSchema`/`outputSchema` == `schema/tool-contract.schema.json` |
+| `crates/act-mcp/tests/list_tasks.rs`, `crates/act-mcp/tests/run_status_tool.rs`, `crates/act-mcp/tests/cancel_run_tool.rs`, `crates/act-mcp/tests/run_workflow.rs` | one tool each, end to end through a real `tools/call` |
+| `crates/act-mcp/tests/run_supervisor.rs`, `crates/act-mcp/tests/runner_execution.rs`, `crates/act-mcp/tests/runner_pdeathsig.rs` | run lifecycle, the act process group, process teardown |
+| `crates/act-mcp/tests/e2e/main.rs` | the shipped binary + stub `act` + stub `docker`: call → `.evidence` files on disk, goldens included |
+| `crates/act-mcp/tests/realdata_smoke.rs` | the real-act smoke script's own plumbing (stub), and — `#[ignore]`d — the real act + runtime run of it (**§7**) |
+| `crates/act-mcp/tests/evidence_*.rs`, `crates/act-mcp/tests/*_extraction.rs` | the `.evidence` JSONL contract and the extractors |
+| `crates/fathom/tests/cli.rs` | Fathom's argv and exit-code contract, asserted from outside the process |
+| `crates/fathom/tests/metrics.rs`, `crates/fathom/tests/mi.rs` | **the two semantics oracles — see §8** |
+| `crates/fathom/tests/tui_*.rs` | the screens: keys, state, whole-terminal goldens, responsiveness |
+| `crates/fathom/tests/{report,doctor,index_store,git_history,diff_reader,classify}.rs` | the headless surface, the store, the git and patch readers, the path classifier |
 
 ## 2. Before trusting a green run
 
@@ -79,7 +113,7 @@ changes a byte:
 
 * **Assertions are observations.** Nothing reads a private constant to prove a behaviour; the
   protocol tests ask the endpoint over HTTP and check what came back. Removing a pin in
-  `src/server.rs` must therefore fail a test — if it does not, the test is the bug.
+  `crates/act-mcp/src/server.rs` must therefore fail a test — if it does not, the test is the bug.
 * **Where the answer is `rmcp`'s, say so.** Several refusals in the conformance suite are the
   SDK's status code and message, not ours. They are still pinned (that is how a silent SDK
   change shows up as a diff instead of a client bug report), and the comment over each one names
@@ -97,15 +131,15 @@ changes a byte:
 * **A release bump changes no golden.** Every record carries `tool.version`, stamped from
   `env!("CARGO_PKG_VERSION")` (ADR-0002 §2.2), so a golden that pinned those bytes would go
   red on a `Cargo.toml` edit and say nothing about behaviour. Both golden styles route that
-  one field through `tests/common/mod.rs::replace_tool_version`: the byte-exact suites
+  one field through `crates/act-mcp/tests/common/mod.rs::replace_tool_version`: the byte-exact suites
   (`evidence_golden`, `*_extraction`) re-pin the *fixture's* stamp to the current version and
-  then compare bytes (`repin_tool_version`), and `tests/e2e/normalize.rs` normalises the live
+  then compare bytes (`repin_tool_version`), and `crates/act-mcp/tests/e2e/normalize.rs` normalises the live
   one to `{TOOL_VERSION}`. Nothing else is forgiven — key order, `tool.act_version` and every
   count stay compared — and the stamp is asserted positively where it can be read live
-  (`tests/e2e` scenario 01, `tests/protocol.rs`), so a placeholder cannot hide a writer that
+  (`crates/act-mcp/tests/e2e` scenario 01, `crates/act-mcp/tests/protocol.rs`), so a placeholder cannot hide a writer that
   stopped stamping its version.
 
-## 3. Protocol conformance (`tests/protocol_conformance.rs`)
+## 3. Protocol conformance (`crates/act-mcp/tests/protocol_conformance.rs`)
 
 The question this suite answers is the auditor's: *is `POST /mcp` a correct MCP Streamable HTTP
 endpoint on both revisions this server advertises — **2026-07-28** and **2025-11-25** — judged
@@ -183,7 +217,7 @@ report a protocol bug, and again after you fix one.
 
 ```sh
 # terminal 1 — the server, on the default loopback port
-cargo run -- serve --workspace ~/repo/with/github-workflows --act-binary ./tests/e2e/testdata/bin/act
+cargo run -p act-mcp -- serve --workspace ~/repo/with/github-workflows --act-binary ./crates/act-mcp/tests/e2e/testdata/bin/act
 
 # terminal 2 — the Inspector
 npx @modelcontextprotocol/inspector --transport http http://127.0.0.1:8080/mcp
@@ -264,7 +298,7 @@ scripts/evidence_recipes.sh <your>/.evidence   # the same recipes against a real
 
 They need `jq` (verified against 1.7.1) and are **not wired into CI**, because CI does not install
 jq and adding a pinned third-party binary is a supply-chain change that does not belong in a docs
-ticket. Run them by hand before touching anything under `src/evidence/`, `schema/evidence.schema.json`,
+ticket. Run them by hand before touching anything under `crates/act-mcp/src/evidence/`, `schema/evidence.schema.json`,
 or `docs/evidence-format.md`: a recipe that no longer parses, or that prints nothing, means the
 document and the writer have parted company. `scripts/sample_evidence.py` also stamps two
 re-stamped "later" commits into the sample tree, because one commit cannot exercise a cross-commit
@@ -316,7 +350,7 @@ pull and run 2 to be the warm number worth comparing.
 ### What it actually settles
 
 Before it touches the fixture the script checks **argv acceptance**: every flag
-`src/runner/argv.rs` emits must appear in `act --help`. It needs no daemon, so it runs even on a
+`crates/act-mcp/src/runner/argv.rs` emits must appear in `act --help`. It needs no daemon, so it runs even on a
 box with no container runtime, and it is the fact most likely to be quietly wrong — an unknown flag
 is a cobra error that arrives as a failing workflow rather than as "unknown flag", and
 `--use-gitignore` is emitted whenever the workspace carries no `.actrc`. Checked against
@@ -328,11 +362,11 @@ container) holds whichever way the flag goes.
 | step | the claim, and where the claim lives |
 |---|---|
 | prerequisites | act exists and is ≥ `MINIMUM_ACT_VERSION`; a runtime answers **the same probe the server uses**; there is disk for an image |
-| prerequisites (argv) | real `act` documents every flag `src/runner/argv.rs` emits — needs no daemon, and an unknown flag here would otherwise look like a failing workflow |
+| prerequisites (argv) | real `act` documents every flag `crates/act-mcp/src/runner/argv.rs` emits — needs no daemon, and an unknown flag here would otherwise look like a failing workflow |
 | `payload crossed the bind mount` | ADR-0003 **F8/V1**: under `--bind` the container path *is* the host path, so `$ACTMCP_EVIDENCE_OUT` works. If this fails, ADR-0002 §3.1's payload transport does not work |
 | `act log captured` | ADR-0003 **V2**: `--quiet=false` keeps step output in the `--json` stream, which is the only reason the in-band marker channel exists |
 | `run_workflow(benchmark)` | the fixture's `benchmark` job fails unless act ran its `needs: [warmup]` dependency first (`--job` semantics, ADR-0003 §7.2) |
-| `act --json shape` | the field table in `tests/realdata/golden/act-shape.json` against a live log — see below |
+| `act --json shape` | the field table in `crates/act-mcp/tests/realdata/golden/act-shape.json` against a live log — see below |
 | `worktree isolation (V1)` | **V1** again, but for a worktree under `$XDG_RUNTIME_DIR`, which is where ADR-0003 §5 actually puts non-`HEAD` runs |
 | `workspace .actrc is inert` | ADR-0003 **F2/F3**: a planted workspace `.actrc` pinning an unpullable image is *ignored*, because act reads `.actrc` from its cwd and the runner starts act in the run scratch (§12.3's first question) |
 | `cancel leaves nothing` | ADR-0003 **V3** / ADR-0004 §11.2: a cancelled run reaches `cancelled`, and `docker ps -a --filter name=act` is the filter that finds act's leftovers (`--with-cancel`) |
@@ -340,8 +374,8 @@ container) holds whichever way the flag goes.
 
 ### Run it when
 
-* **before touching anything act-facing**: `src/runner/argv.rs`, `src/evidence/benchmark/act_log.rs`,
-  `src/runner/log.rs`, an ADR that cites an `F`/`V` row about act;
+* **before touching anything act-facing**: `crates/act-mcp/src/runner/argv.rs`, `crates/act-mcp/src/evidence/benchmark/act_log.rs`,
+  `crates/act-mcp/src/runner/log.rs`, an ADR that cites an `F`/`V` row about act;
 * **after an act release**, or after bumping the act version pinned in
   `.github/workflows/nightly-real-act.yml` (that pin is the supported range's upper edge — it is
   a deliberate, reviewable change, not a drift);
@@ -353,7 +387,7 @@ container) holds whichever way the flag goes.
   carries its evidence. A red nightly is a report, not an outage.
 
 `cargo test -- --ignored` therefore now includes something that needs a container runtime
-(`tests/runner_pdeathsig.rs` aside, it only needs wall-clock time). That is deliberate and it is
+(`crates/act-mcp/tests/runner_pdeathsig.rs` aside, it only needs wall-clock time). That is deliberate and it is
 documented at the test: the ignored test is the gate, and `the_smoke_script_passes_against_the_stub`
 — which runs in ordinary CI and needs no docker — is what keeps the smoke script itself from
 rotting. If you are on a machine without `jq`, the stub self-check says `SKIP` out loud instead
@@ -386,7 +420,7 @@ with no bytes invented.
 
 ### Two artifacts that are not goldens yet
 
-`tests/realdata/golden/README.md` and `tests/realdata/expected/README.md` are worth reading
+`crates/act-mcp/tests/realdata/golden/README.md` and `crates/act-mcp/tests/realdata/expected/README.md` are worth reading
 before you "fix" either directory. Both are empty of captured data on purpose:
 
 * **`golden/act.jsonl`** is `act`'s own log from one real run. Nothing has been captured yet,
@@ -395,7 +429,7 @@ before you "fix" either directory. Both are empty of captured data on purpose:
   nightly captures one and uploads it; a human reviews and commits it.
 * **`expected/*.jsonl`** is the byte-for-byte form of the records a real run publishes, with
   volatile fields replaced by named placeholders (`{RUN_ID}`, `{COMMIT}`, `{TS}`, `{HOST}`,
-  `{NUMBER}`, `{TOOL_VERSION}` — the same rule as `tests/e2e/normalize.rs`). `--write-expected`
+  `{NUMBER}`, `{TOOL_VERSION}` — the same rule as `crates/act-mcp/tests/e2e/normalize.rs`). `--write-expected`
   writes them, in real mode only, and the script shouts that committing them is a human act.
 
 Until then the smoke makes **value** assertions instead (the coverage arithmetic in the fixture,
@@ -405,7 +439,7 @@ stays open work for a machine that passes the pre-flight above — not a file to
 
 ### What a `DIVERGENCE` means
 
-`tests/realdata/golden/act-shape.json` is the field table the extractors assume, and every row
+`crates/act-mcp/tests/realdata/golden/act-shape.json` is the field table the extractors assume, and every row
 carries its provenance: `source` (read out of act at a named tag) or `capture` (seen in a real
 log). The shape step diffs that table against a live log and prints the difference. When it says
 
@@ -423,7 +457,7 @@ supported range, and the smoke prints it whenever a capture triggers it:
   floor is `MINIMUM_ACT_VERSION` **0.2.62**, so on `0.2.62 … 0.2.75` a benchmark run publishes
   no `act_log` timings at all. *Decided:* the floor stays 0.2.62 and the missing case is the named
   warning `act_step_timings_unavailable`, pinned by
-  `tests/fixtures/benchmark/act-pre-0.2.76.jsonl` and asserted in `tests/benchmark_extraction.rs`
+  `crates/act-mcp/tests/fixtures/benchmark/act-pre-0.2.76.jsonl` and asserted in `crates/act-mcp/tests/benchmark_extraction.rs`
   — the reasoning is [docs/benchmark-inputs.md §3](benchmark-inputs.md#3-acts-own-timings-need-act-0276-or-newer),
   and what the smoke adds is confirming it against a live log.
 
@@ -446,7 +480,7 @@ three (the Rust test runs it, so the checker is not itself the untested thing):
 | act emitted a field no manifest row claims | `NEW` | no — documentation debt, add a row when a human agrees it is real |
 
 In `--stub` mode the shape step runs against the stub's log fixture
-(`tests/e2e/testdata/logs/`), so anything it reports there describes the stub. The script says
+(`crates/act-mcp/tests/e2e/testdata/logs/`), so anything it reports there describes the stub. The script says
 so; the claim about act needs the real run.
 
 ### Found by this script on its first runs (before it ever met real act)
@@ -456,7 +490,103 @@ two accepted ADRs: ADR-0002 §6.4 makes the evidence writer append `.evidence/` 
 `.act-mcp.lock` to the workspace repository's `.gitignore`, and if that `.gitignore` is a
 **tracked** file that did not already list them, the append is a tracked modification — which
 ADR-0003 G5 reads as `dirty_worktree`, so the *second* run in that workspace is refused until
-the change is committed. `tests/realdata/fixture/.gitignore` commits those patterns, which makes
+the change is committed. `crates/act-mcp/tests/realdata/fixture/.gitignore` commits those patterns, which makes
 the append a no-op; the script recognises the failure shape and says what happened instead of
 looking like a flaky server. The reconciliation (§6.4 vs G5) is a follow-up ticket, not a
 doc fix.
+
+## 8. Fathom: snapshots, fixtures, and the two semantics oracles
+
+Everything in this section runs with no git server, no act, no container and no TTY — the screens are
+drawn into a `TestBackend`, the repositories are built by the fixture in
+`crates/fathom/tests/common/mod.rs` (real `git`, a fixed author clock, and `fast-import` for the
+thousand-commit case), and the evidence is the checked-in fixture data.
+
+```sh
+cargo test -p fathom                      # every fathom suite
+cargo test -p fathom --test metrics       # one suite
+cargo test -p fathom --test cli -- --list # the surface it pins, by name
+```
+
+| suite | what it pins |
+|---|---|
+| `crates/fathom/tests/cli.rs` | the argv from outside the process: `--help`'s surface, every exit code, the stdout-is-data rule (nothing but the payload on stdout) |
+| `crates/fathom/tests/metrics.rs`, `…/mi.rs` | **the two oracles** — ADR-0008's and ADR-0007's rules, asserted against fixtures both pages quote |
+| `crates/fathom/tests/evidence_recipes.rs` | every jq recipe in [docs/evidence-format.md §12](evidence-format.md#12-recipes) against the tree the reader reads |
+| `crates/fathom/tests/report.rs`, `…/doctor.rs` | the headless envelope, `--only-missing`, the `0/1/2` gate codes, and every state that makes a column unknown |
+| `crates/fathom/tests/index_store.rs`, `…/git_history.rs`, `…/diff_reader.rs`, `…/classify.rs` | the store's cost and repair, the git walk, the patch reader and its caps, the path classifier's shipped defaults |
+| `crates/fathom/tests/tui_keys.rs`, `…/tui_render.rs`, `…/tui_diff.rs`, `…/tui_detail*.rs`, `…/tui_bench.rs`, `…/tui_store.rs`, `…/tui_responsive.rs` | keys → state → drawn screen, whole-terminal goldens included, and the two loop promises (a key is never queued behind a slow source; a burst is drawn once) |
+
+### The whole-screen snapshots, and how to re-record one
+
+There is no `.snap` file. A golden is a raw string **inside** the test that draws it, and the
+comparison is cell-by-cell against a `TestBackend` after trimming trailing cells and blank edge lines.
+That is deliberate: the diff a reviewer needs is the screen, and it lives next to the fixture that
+produced it, so a golden cannot silently be re-recorded by a helper nobody reads.
+
+```sh
+cargo test -p fathom --test tui_render            # compare; a mismatch prints both screens
+FATHOM_SNAPSHOT_UPDATE=1 cargo test -p fathom --test tui_render -- --nocapture
+FATHOM_SNAPSHOT_UPDATE=1 cargo test -p fathom --test tui_diff -- --nocapture
+```
+
+With `FATHOM_SNAPSHOT_UPDATE=1` a mismatch prints `--- expected by this test ---` then
+`--- drawn now ---` and still fails: re-recording is a paste into the raw string, because a screen that
+changes is a decision and not a side effect. Only `tui_render.rs` and `tui_diff.rs` read that variable; the
+suites whose goldens are shorter fragments (`tui_bench.rs`, `tui_detail.rs`, `tui_store.rs`) print the drawn
+screen inside the assertion message, which is the same paste with one less step. Two rules when you do
+paste one: read every line you are committing, and never widen a golden to swallow a change you have not
+explained — the point of the screen is that it is the second opinion, not the rubber stamp.
+
+The machine-readable goldens are the other kind, and they *are* files:
+`crates/fathom/tests/golden/report.json` (hand-built: unknowns, gap codes, a mixed verdict) and
+`report-sample-tree.json` (the tree `scripts/sample_evidence.py` lays, re-stamped onto the fixture's
+commits). `FATHOM_UPDATE_GOLDEN=1 cargo test -p fathom --test report` rewrites them; path and
+temporary-root substitutions happen before the compare, so a golden never pins where it was unpacked.
+
+### Regenerating the evidence fixtures a fathom test reads
+
+| fixture | where | how it is regenerated |
+|---|---|---|
+| the sample evidence tree | built into `$TMPDIR` (`/tmp/act-mcp-evidence-demo`) from `crates/act-mcp/tests/e2e/testdata/expected/` | `scripts/sample_evidence.py [-o OUT] [-q]` — nothing to re-record; it is derived at run time from the e2e goldens (§5) |
+| ADR-0008's 16 vectors | `crates/act-mcp/tests/testdata/metrics/{fixtures,expected}` | the fixture trees are hand-built; the `expected/` side is the **oracle's** output: `python3 scripts/metric_model_reference.py --vectors --write`, then `--vectors --diff` to confirm, then `scripts/validate_metric_model.py` |
+| ADR-0007's MI vectors and aggregates | `crates/act-mcp/tests/testdata/mi/{src,vectors,aggregates}` | **by hand, and deliberately so**: the token tables are counted off the fixture file. `scripts/mi_reference.py --vector … --explain` re-derives every number in them; `scripts/validate_mi_definition.py` re-derives them again in 40-digit `decimal` and refuses a vector within `1e-6` of a rounding or band boundary |
+| a screen's drawn output | inline raw strings in `tests/tui_*.rs` | `FATHOM_SNAPSHOT_UPDATE=1`, above |
+| `fathom report`'s envelope | `crates/fathom/tests/golden/*.json` | `FATHOM_UPDATE_GOLDEN=1`, above |
+
+The asymmetry in that table is the whole point: `expected/` under `metrics/` is *generated* because the
+thing being graded is a policy and a second language can express the same policy honestly, while a MI
+vector is *hand-counted* because a second implementation of the arithmetic would agree with the first
+about everything except the definitions, which are what the vectors exist to pin (ADR-0007
+[section 9](adr/0007-maintainability-index.md#9-golden-vectors-and-the-tests-that-make-them-real) records
+the three times the hand count was wrong and the rules were not).
+
+### Which tests are the ADR-0008 semantics oracle
+
+Four things, and a change to a rule has to move all of them:
+
+* **[`scripts/metric_model_reference.py`](../scripts/metric_model_reference.py)** is the independent
+  implementation — it reads `schema/metric-model.json` and no Rust. It is the oracle.
+* **`crates/fathom/tests/metrics.rs`** is the grading: it runs the Rust reader and the oracle over the
+  same fixture tree and compares the two rows as JSON, so the claim under test is "two implementations,
+  one answer", not "the struct round-trips". It is the only test that covers all 18 drop reasons, all
+  four action states and every gap code at once.
+* **`scripts/validate_metric_model.py`** is CI's check of the documents: it diffs
+  [ADR-0008](adr/0008-per-commit-metric-model.md)'s pinned blocks against
+  `schema/metric-model.json`, re-derives all sixteen vectors through the oracle, re-checks the ADR's
+  worked example against a freshly built sample tree, and then diffs the Python against the **recorded
+  output of the jq recipes** in [docs/evidence-format.md §12](evidence-format.md#12-recipes).
+* **`crates/fathom/tests/evidence_recipes.rs`** runs those recipes with `jq` against the same tree the
+  reader reads, so the documented reader's view and the Rust reader cannot drift apart quietly.
+
+[ADR-0007](adr/0007-maintainability-index.md) has the same shape with its own pair:
+`scripts/mi_reference.py` as the oracle, `crates/fathom/tests/mi.rs` as the grading (compared at the
+*token table* level, not only the final MI, because a miscounting lexer can land on a plausible score),
+and `scripts/validate_mi_definition.py` as CI's check.
+
+The prose those tests are the semantics *of* is
+[docs/fathom-metrics.md](fathom-metrics.md) — the user-facing restatement — and its worked examples are
+quoted from these fixtures, so a fixture change moves the page. Whether the Fathom docs still describe
+the tool is itself checked: `scripts/validate_fathom_docs.py` asks `fathom --help` what it accepts and
+fails when a flag, a help-overlay key or an exit code is undocumented, documented twice, or named but
+nonexistent ([README: Fathom](../README.md#fathom)).

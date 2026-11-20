@@ -32,7 +32,7 @@ ADRs; the links are at the bottom.
 [Prerequisites](#prerequisites) · [Build](#build) · [Run](#run) ·
 [Every flag and env var](#every-flag-and-env-var) · [Pointing a client at it](#pointing-a-client-at-it) ·
 [The five-minute tour](#the-five-minute-tour) · [What `.evidence` looks like](#what-evidence-looks-like) ·
-[Troubleshooting](#troubleshooting) · [Checks](#checks) · [Layout](#layout) ·
+[Fathom](#fathom) · [Troubleshooting](#troubleshooting) · [Checks](#checks) · [Layout](#layout) ·
 [Further reading](#further-reading)
 
 ## Prerequisites
@@ -54,15 +54,20 @@ ADRs; the links are at the bottom.
   `.github` directory exists; workflow resolution happens per call.
 
 **Not** needed to build it or to run the whole test suite: docker, act, or a registry pull. The
-`act` the tests run is a shell script (`tests/e2e/testdata/bin/act`) and the container daemon is
+`act` the tests run is a shell script (`crates/act-mcp/tests/e2e/testdata/bin/act`) and the container daemon is
 probed through an injectable seam — see [docs/testing.md](docs/testing.md).
 
 ## Build
 
 ```sh
-cargo build                # debug binary: target/debug/act-mcp
-cargo build --release      # release binary: target/release/act-mcp
+cargo build                # everything: target/debug/act-mcp and target/debug/fathom
+cargo build --release      # the same, released: target/release/act-mcp, target/release/fathom
+cargo build -p act-mcp     # just the server crate — what CI's release artefact is built from
+cargo build -p fathom      # just the TUI crate (no tokio, no rmcp, no axum in its graph)
 ```
+
+A bare `cargo run -- …` no longer knows which binary you mean, because there are two of them now:
+spell the package (`cargo run -p act-mcp -- serve …`, `cargo run -p fathom -- --help`).
 
 > On a bind-mounted checkout (the case on this repo's dev box) the linker can take SIGBUS or
 > fail with `Bad address (os error 14)` while writing into `./target`. The workaround is one
@@ -71,20 +76,20 @@ cargo build --release      # release binary: target/release/act-mcp
 ## Run
 
 ```sh
-cargo run --release -- serve --workspace /path/to/a/git/repo/with/github/workflows
+cargo run --release -p act-mcp -- serve --workspace /path/to/a/git/repo/with/github/workflows
 ```
 
 That is the whole command. A real startup, from the tour below, looks like this:
 
 ```console
-$ cargo run --release -- serve --workspace /tmp/actmcp-runbook/repo \
-      --act-binary ./tests/e2e/testdata/bin/act
+$ cargo run --release -p act-mcp -- serve --workspace /tmp/actmcp-runbook/repo \
+      --act-binary ./crates/act-mcp/tests/e2e/testdata/bin/act
 2026-11-10T15:09:12.606305Z  INFO act_mcp::server: bind is loopback-only: only this machine
   can reach the endpoint (there is no authentication) bind=127.0.0.1:8080
 2026-11-10T15:09:12.606542Z  INFO act_mcp::server: act-mcp listening url=http://127.0.0.1:8080/mcp
   bind=127.0.0.1:8080 workspace=/tmp/actmcp-runbook/repo
   evidence_dir=/tmp/actmcp-runbook/repo/.evidence
-  act_binary=/workspace/tests/e2e/testdata/bin/act protocol_versions=2025-11-25,2026-07-28
+  act_binary=/workspace/crates/act-mcp/tests/e2e/testdata/bin/act protocol_versions=2025-11-25,2026-07-28
   allowed_hosts=["localhost", "127.0.0.1", "::1"] allowed_origins=[]
   max_request_body_bytes=1048576 shared_secret_required=false
 ```
@@ -105,7 +110,7 @@ finish, gets act's SIGTERM grace window, and is then taken down with its process
 The binary has one other subcommand, and it is a CLI tool as much as a debug aid:
 
 ```sh
-cargo run --release -- validate-evidence <path-or-workspace> [--stats]
+cargo run --release -p act-mcp -- validate-evidence <path-or-workspace> [--stats]
 # exit 0 clean · 1 findings (file:line: reason) · 2 could not run
 ```
 
@@ -275,7 +280,7 @@ curl -sS -X DELETE "$URL" "${HDR[@]}" -H "Mcp-Session-Id: $SID"   # 202; the ses
 ## The five-minute tour
 
 Run this once to see the whole contract with no docker and no act installed — the server is
-started against the e2e stub `act` (`tests/e2e/testdata/bin/act`) and its stub `docker`. If
+started against the e2e stub `act` (`crates/act-mcp/tests/e2e/testdata/bin/act`) and its stub `docker`. If
 you have the real thing, drop the `--act-binary` flag and the two `PATH=`/`STUB_PAYLOAD_DIR=`
 assignments; **every other command in this section is identical either way.**
 
@@ -284,7 +289,7 @@ Set up a throwaway workspace (one terminal):
 ```sh
 DEMO=/tmp/actmcp-runbook
 rm -rf "$DEMO" && mkdir -p "$DEMO/repo/.github/workflows"
-cp tests/e2e/testdata/workflows/coverage.yml tests/e2e/testdata/workflows/benchmark.yml \
+cp crates/act-mcp/tests/e2e/testdata/workflows/coverage.yml crates/act-mcp/tests/e2e/testdata/workflows/benchmark.yml \
    "$DEMO/repo/.github/workflows/"
 git -C "$DEMO/repo" init -q -b main
 git -C "$DEMO/repo" config user.name act-mcp && git -C "$DEMO/repo" config user.email act-mcp@example.invalid
@@ -294,9 +299,9 @@ git -C "$DEMO/repo" add -A && git -C "$DEMO/repo" commit -qm "two workflows to r
 Start the server (terminal 1):
 
 ```sh
-PATH="$PWD/tests/e2e/testdata/bin:$PATH" STUB_PAYLOAD_DIR="$PWD/tests/e2e/testdata/payload" \
-  cargo run --release -- serve --workspace "$DEMO/repo" \
-    --act-binary "$PWD/tests/e2e/testdata/bin/act"
+PATH="$PWD/crates/act-mcp/tests/e2e/testdata/bin:$PATH" STUB_PAYLOAD_DIR="$PWD/crates/act-mcp/tests/e2e/testdata/payload" \
+  cargo run --release -p act-mcp -- serve --workspace "$DEMO/repo" \
+    --act-binary "$PWD/crates/act-mcp/tests/e2e/testdata/bin/act"
 ```
 
 Drive it (terminal 2, from the repo). The order is the intended one: `list_tasks` to find a
@@ -376,7 +381,7 @@ Then look at what it wrote:
 ```sh
 find /tmp/actmcp-runbook/repo/.evidence -type f | sed 's|/tmp/actmcp-runbook/repo/||' | sort
 cat /tmp/actmcp-runbook/repo/.gitignore        # act-mcp created it: evidence is local build output
-cargo run --release -- validate-evidence /tmp/actmcp-runbook/repo/.evidence --stats
+cargo run --release -p act-mcp -- validate-evidence /tmp/actmcp-runbook/repo/.evidence --stats
 ```
 
 ```
@@ -464,6 +469,372 @@ scripts/sample_evidence.py                      # lays the e2e goldens out as a 
 export EV=$(scripts/sample_evidence.py --quiet)  # the same, printing only the path
 scripts/evidence_recipes.sh                      # every jq recipe, run against that tree in order
 ```
+
+## Fathom
+
+`fathom` is the other binary in this workspace, and one sentence about it stops the first
+misunderstanding:
+
+> **Fathom reads `.evidence`; it does not run anything.** No MCP client, no HTTP, no act, nothing that
+> can start a run ([ADR-0005 §7](docs/adr/0005-fathom-crate-layout-and-dependencies.md)). It opens the
+> evidence act-mcp already wrote, plus `git log`, and shows what it finds — offline, on a plane, with
+> the server stopped.
+
+What it is: a per-commit timeline of the four things this repository measures — **coverage**, the
+**maintainability index** of the code in that commit, **benchmark** groups, and whether the **actions**
+(workflows) that ran there passed — one row per commit, plus a diff view, a per-commit detail view, a
+benchmark panel, a machine-readable `report` for CI, and a `doctor` that explains why there is nothing to
+show. Every column comes from files on disk, which is what makes all of them reproducible in CI and in
+front of a reviewer.
+
+Four commands, and every flag below is accepted on the bare command *and* on each subcommand:
+
+```sh
+fathom [WORKSPACE]              # the timeline TUI (the default)
+fathom index [WORKSPACE]        # build or refresh the metric cache  (--status, --rebuild)
+fathom report [WORKSPACE]       # the timeline on stdout, no TTY  (--format, --only-missing, --fail-on)
+fathom doctor [WORKSPACE]       # why is there nothing to show  (--json)
+```
+
+The definitions are not on this page:
+**[docs/fathom-metrics.md](docs/fathom-metrics.md)** is the user-facing statement of what each number
+means (the MI formula with its constants and a worked example, how a coverage percentage is derived, when
+a benchmark delta is withheld, the action-state table), each one cross-linked to the normative
+[ADR-0007](docs/adr/0007-maintainability-index.md) and [ADR-0008](docs/adr/0008-per-commit-metric-model.md).
+The cache directory's own contract is [`.fathom/LAYOUT.md`](.fathom/LAYOUT.md).
+
+### Build and first run
+
+Fathom needs no server, no docker and no act — not to build and not to run. It needs a git repository, and
+for the interesting columns it needs evidence, which is what the tour above produces.
+
+```sh
+cargo build -p fathom                       # target/debug/fathom; no tokio, no rmcp, no axum in its graph
+cargo run -p fathom -- --help
+```
+
+Then point it at the workspace the tour left behind (any repository works; without evidence the coverage,
+benchmark and action columns stay unknown, which is a state and not an error):
+
+```sh
+cargo run -p fathom -- index /tmp/actmcp-runbook/repo     # build .fathom/index once
+cargo run -p fathom -- /tmp/actmcp-runbook/repo          # the TUI
+cargo run -p fathom -- /tmp/actmcp-runbook/repo --plain  # the same table on stdout, for a pipe
+```
+
+The tour leaves one commit, which is a thin timeline. Two more commits, and a coverage run whose `commit`
+is each one, give the three-row timeline every screenshot in this section came from. Any source files will
+do; these are the ones used here, and they are the numbers quoted below:
+
+```sh
+cd /tmp/actmcp-runbook/repo
+mkdir -p src
+cat > src/classify.py <<'EOF'
+"""A module with two functions and a branch."""
+
+
+def classify(value):
+    if value > 10:
+        return "high"
+    if value > 0:
+        return "mid"
+    return "low"
+
+
+def total(values):
+    out = 0
+    for value in values:
+        out += value
+    return out
+EOF
+git add -A && git commit -qm "add the classifier module"
+cat > src/report.py <<'EOF'
+"""A module that renders a row."""
+
+
+def row(name, value):
+    if value is None:
+        return f"{name}: —"
+    return f"{name}: {value}"
+EOF
+git add -A && git commit -qm "add the row renderer"
+cd -
+
+# evidence for each commit in the window, oldest first (ADR-0008 §3 discards the older run if you
+# go the other way, which is the right behaviour and the wrong demo)
+for c in $(git -C /tmp/actmcp-runbook/repo log --format=%H | tac); do
+    scripts/mcp_call.sh run_workflow \
+        "{\"workflow\":\"coverage\",\"task\":\"coverage\",\"category\":\"coverage\",\"commit\":\"$c\"}" \
+        >/dev/null
+done
+```
+
+`index` is the only command that writes anything, and what it writes is under `.fathom/index/` (see
+[`.fathom/LAYOUT.md`](.fathom/LAYOUT.md) — it is a cache, and `rm -rf` on it costs time and nothing
+else). A cold run, then the same command again:
+
+```console
+$ cargo run -p fathom -- index /tmp/actmcp-runbook/repo -v
+fathom [INFO ] fathom::cli workspace /tmp/actmcp-runbook/repo (git root /tmp/actmcp-runbook/repo)
+fathom [INFO ] fathom::store::index indexing 0/3 commits (0 rows written, cache 0/0)
+fathom [INFO ] fathom::cli cold manual: 3 commits seen, 3 rows written (3 new), cache 0/8 hits, \
+    5 blobs read, 5 analyses, 13418 bytes published in 34 ms
+
+$ cargo run -p fathom -- index /tmp/actmcp-runbook/repo -v
+fathom [INFO ] fathom::cli warm manual: 3 commits seen, 0 rows written (0 new), cache 3/3 hits, \
+    0 blobs read, 0 analyses, 0 bytes published in 8 ms
+```
+
+The cache is keyed per blob, so the second run re-derived nothing: `cache 3/3 hits`, 0 bytes published.
+ADR-0006 §4 is why that is possible and `--rebuild` is the flag that ignores it.
+
+Then the timeline headless (`--plain` draws the same table without glyphs or colour, for a pipe):
+
+```console
+$ cargo run -p fathom -- /tmp/actmcp-runbook/repo --plain
+FATHOM  repo  main@fd92c44  indexed 3 commits | 8 ms | evidence yes
+SHA       age message                              cov          +/-       MI            bench action
+fd92c44    3m add the row renderer             44.4%=*        +7 -0    65.1^       412.5ms +1   pass
+af4920b    3m add the classifier module        44.4%=*       +19 -0     61.3                -   pass
+273ae09    4m two workflows to run             44.4%*       +26 -0        -                -   pass
+cov* secondary_measures
+3 of 3 commits shown | d diff | enter detail | b bench | ? help | q quits
+```
+
+Nothing on those five lines is a mystery. `44.4%` is lines only, and the record it comes from says so —
+the pooled `total` record for that commit, which is what the `cov` column reads
+([docs/evidence-format.md §12](docs/evidence-format.md#12-recipes)):
+
+```console
+$ jq -c 'select(.scope == "total") | {lines_found, lines_hit, branches_found, source}' \
+      /tmp/actmcp-runbook/repo/.evidence/coverage/*/*.jsonl
+{"lines_found":9,"lines_hit":4,"branches_found":2,"source":"lcov"}
+```
+
+4 of 9 is `44.4%`, and `branches_found: 2` with no branch measure being read is exactly what earns the
+`*`: `secondary_measures` is the caveat that says *the evidence carries more than the first version
+reports*. The `-` in the oldest commit's MI and bench cells means *no number could be derived* — never
+zero, never a failure: that commit has no parent to diff against, and there is no benchmark evidence in
+the tree at all. In the TUI these cells are coloured instead of ASCII-fied, unknown is `—` instead of `-`,
+and a flat delta is a dot instead of `=`; the `=`/`^` forms above are what a pipe gets.
+[docs/fathom-metrics.md](docs/fathom-metrics.md) is the page for all of it.
+
+### The timeline
+
+One row per commit, newest first. `cov` is the pooled coverage percentage, `+/-` the churn with noise
+files counted separately, `MI` the commit's LOC-weighted maintainability index, `bench` one benchmark
+group and `+N` for the rest, `action` whether the workflows that ran here passed:
+
+```text
+FATHOM  repo  main@fd92c44                                     indexed 3 commits · 8 ms · evidence ✓
+┌ commit ──────────────────────────────────────────────────────────────────────────────────────────┐
+│  SHA       age message                          cov          +/-       MI            bench action│
+│▸ fd92c44    3m add the row renderer         44.4%·*        +7 -0    65.1▲       412.5ms +1      ✓│
+│  af4920b    3m add the classifier module    44.4%·*       +19 -0     61.3                —      ✓│
+│  273ae09    4m two workflows to run          44.4%*       +26 -0        —                —      ✓│
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+cov* secondary_measures
+1/3  d diff   enter detail   b bench   / filter   R re-index   ? help   q quit
+```
+
+Three things that glyph line is doing: a `—` is *unknown*, never zero and never a failure; a `*` means
+that column has caveats and the line under the table names them; and an arrow (`▲ ▼ ·`) is a comparison
+against the commit's **first parent**, which needs both sides — a root commit has no arrow. The glyphs and
+the twelve caveat codes behind the `*` are tabulated in
+[docs/fathom-metrics.md §6](docs/fathom-metrics.md#6-glyphs-caveats-and-gaps).
+
+The picture keeps itself current. Opening the screen on a store whose newest row is older than `HEAD`
+starts an index straight away — the same run `R` starts, with the same `Esc` — and while the screen is
+open `HEAD` is re-checked every two seconds, so a commit made in another terminal appears by itself
+(`HEAD` moving is one `git rev-parse`; nothing else is read unless it moved). `--no-auto-index` turns
+both halves off, and a cache root this build cannot write is never attempted: that screen says `stale` in
+the header and waits, because a reader that fails loudly beats one that writes somewhere unexpected.
+
+### The diff view, the detail view and the bench panel
+
+`d` opens the selected commit's patch — file list on the left, patch on the right, first parent
+compared:
+
+```text
+DIFF  fd92c44  add the row renderer                            vs parent af4920b · +7 -0 · 1/1 files
+┌─ files ────────────────────────┬─ diff ──────────────────────────────────────────────────────────┐
+│▸ src/report.py            +7 -0│diff --git a/src/report.py b/src/report.py                       │
+│                                │new file mode 100644                                             │
+│                                │index 0000000..6532896                                           │
+│                                │--- /dev/null                                                    │
+│                                │+++ b/src/report.py                                              │
+│                                │@@ -0,0 +1,7 @@                                                  │
+│                                │+"""A module that renders a row."""                              │
+│                                │+                                                                │
+│                                │+                                                                │
+│                                │+def row(name, value):                                           │
+│                                │+    if value is None:                                           │
+│                                │+        return f"{name}: —"                                     │
+└────────────────────────────────┴─────────────────────────────────────────────────────────────────┘
+1  j/k scroll   n/p file   t all files   g/G ends   d/Esc back   ? help   q quit
+```
+
+Patches are capped — `--max-diff-bytes` for the commit, `--max-diff-bytes-per-file` for one file — and
+when a cap bites the view says so and names the flag, because a silently cut diff reads as a smaller
+commit. `t` shows the files the path filters hide along with the totals that go with them.
+
+`enter` opens the commit detail view (per-file coverage, MI hotspots with their `V`/`G`/`LOC` inputs under
+`i`, and the diffstat); `b` opens the benchmark panel, one row per metric group with its spread, its
+run count and a sparkline that refuses to compare incomparable units; `f` inside it shows the runs
+retention excluded and why. `--diff <REV>`, `--detail <REV>` and `--bench <REV>` open the same screens
+straight from the command line, and each prints as text when stdout is not a terminal or you pass
+`--plain`.
+
+### Keys
+
+`?` shows these on whichever screen is up, with the glyph legend.
+
+| key | screens | what it does |
+|---|---|---|
+| `j` / `k`, `↑` / `↓` | all | one row down / up (clamped at both ends, never wrapped) |
+| `PgDn` / `PgUp` | all | one screenful |
+| `Home` / `End`, `g` / `G` | all | first / last row of the list |
+| `/` | timeline | filter by sha, author or message; `enter` applies, `Esc` clears |
+| `Backspace` | timeline filter | delete one filter character (any printable character appends) |
+| `R` | timeline | re-index now; the screen also re-indexes itself when `HEAD` has no row (`--no-auto-index` turns that off) · `Esc` cancels a run in flight |
+| `enter` | timeline, detail | open the commit detail view; from detail, back to the timeline |
+| `d` | all | open this commit's diff; from the diff, back to the timeline |
+| `b` | timeline, detail, bench | open the benchmark panel; from the panel, back |
+| `n` / `p`, `Tab` / `Shift-Tab` | diff, detail | next / previous file (diff) or pane (detail) |
+| `t` | diff, detail | diff: show the files the path filters hide · detail: the MI pane's `V`/`G`/`LOC` inputs |
+| `i` | detail | the MI pane's inputs (`V`, `G`, `LOC`) |
+| `s` | detail | next sort order for the focused pane |
+| `f` | bench | show the runs retention excluded, and why each was |
+| `Esc` | all | back out: closes help, cancels a running index, clears the filter, leaves a sub-screen |
+| `?` | all | the help overlay for this screen |
+| `q`, `Ctrl-C` | all | quit. `Ctrl-C` is a key here, not a signal: the screen is restored and the cache lock released |
+
+### Flags and exit codes
+
+Every flag is `global`, so it may go before or after the subcommand. A flag always wins over its env var,
+and a refusal to parse one of them is clap's, never re-implemented.
+
+| flag | env var | default | what it does |
+|---|---|---|---|
+| `--evidence-dir <PATH>` | `EVIDENCE_DIR` | `<workspace>/.evidence` | read the evidence from here; the same flag and env name act-mcp writes with |
+| `--cache-dir <PATH>` | `FATHOM_DIR` | `<workspace>/.fathom` | the metric cache root ([ADR-0006 §3](docs/adr/0006-fathom-workspace-layout.md)): disposable, and never read from `fathom.toml` |
+| `--config <PATH>` | `FATHOM_CONFIG` | `fathom.toml`, found root-ward | read this config instead of searching; an unreadable file is a refusal, never a fallback |
+| `--from <REV>` | | `history.depth` back | start the window here (a rev, a branch, anything `git rev-parse` takes) |
+| `--to <REV>` | | `HEAD` | end the window here |
+| `--limit <N>` | | all commits shown | show at most N commits, newest first; a view choice, so nothing is re-indexed |
+| `--first-parent` | | `history.first_parent` | walk only first parents; this changes per-commit deltas, so it costs a re-index |
+| `--diff <REV>` | | timeline | open this commit's diff instead of the timeline |
+| `--detail <REV>` | | timeline | open this commit's detail view instead of the timeline |
+| `--bench <REV>` | | timeline | open this commit's benchmark panel instead of the timeline |
+| `--max-diff-bytes <BYTES>` | | `1048576` | stop reading a commit's patch after this many bytes |
+| `--max-diff-bytes-per-file <BYTES>` | | `131072` | stop reading one file's patch after this many bytes, so one generated file cannot hide the others |
+| `--plain` | | a TTY is assumed | print the table instead of drawing a TUI; implied by a non-tty stdout or `TERM=dumb` |
+| `--no-auto-index` | | automatic on | stop the TUI from re-indexing a store that is behind the checkout on its own; `R` still indexes, and a read-only cache root is never written |
+| `--no-color` | `NO_COLOR` | colour on | no colour, unicode glyphs kept — every state is in the glyph, so nothing is lost |
+| `-v`, `--verbose` | `RUST_LOG` | warnings and errors | raise the log level on stderr: `-v` info, `-vv` trace |
+| `fathom index --status` | | index | print store and configuration state as `key<TAB>value` and write nothing |
+| `fathom index --rebuild` | | incremental | delete `<cache root>/index` and build it again from nothing |
+| `fathom report --format <FMT>` | | `json` | `json` (the versioned envelope, the stable one), `tsv` (the timeline's own columns, ascii glyphs) or `csv` |
+| `fathom report --only-missing` | | every commit | only commits with no evidence at all — the queue an act-mcp sweep works through |
+| `fathom report --fail-on <WHAT>` | | gate off | `coverage-drop`, `mi-drop`, `benchmark-regression`, `action-failure`; repeat or comma-separate |
+| `fathom doctor --json` | | text | the same checks as one JSON document |
+
+Logs and warnings go to stderr; stdout is data. `fathom report > timeline.tsv`, `fathom index --status` \
+and `fathom doctor --json` stay parseable however broken the workspace is, because a refusal is a stderr
+thing in this binary.
+
+| code | `fathom tui` / `index` | `fathom report` | `fathom doctor` |
+|---|---|---|---|
+| `0` | it ran | produced, gate clean or off | every check `ok` |
+| `1` | a refusal (typed, on stderr, with a `fix:` line) | `--fail-on` found something | the worst check was `warn` |
+| `2` | clap's: bad argv | the report could not be produced | some check was `fail` |
+| `3` | recognised argv, a feature a later ticket owns | — | — |
+
+`report` and `doctor` are the two commands written for a CI step, so they follow **0 clean · 1 findings ·
+2 could not run** — the same three meanings `act-mcp validate-evidence` has, so one `-run` line in a
+pipeline treats both tools alike. A finding is the product there, not a fault: a `--fail-on` gate that
+prints findings and exits `0` anyway is worse than no gate, because CI goes green.
+
+And a reader is allowed to stop reading. `fathom report --format tsv | head -1` is one of the first things
+anyone types at a table, so a pipe whose far end went away is not an error in this binary: the command
+finishes the work, keeps the exit code its own row above promises (a tripped gate is still `1`, closed
+pipe or not), and says nothing. A stdout that is broken *for real* — a full disk, a redirect into a place
+that will not take it — is a refusal like every other, with the code that row calls a refusal.
+
+### When the timeline is empty
+
+The first thing everyone meets is a timeline with no numbers, and it is nearly always one of three things.
+`fathom doctor` is the command that tells you which — it checks the workspace, the evidence root, the
+workflows, the cache, the languages and the config, and it exits non-zero when any of them needs
+attention:
+
+```sh
+cargo run -p fathom -- doctor /tmp/actmcp-runbook/repo
+```
+
+A repository that has never been served, indexed or given a workflow is what that looks like in practice
+(the `fathom [WARN ]` line is the same first check, printed early for whoever ran the wrong command):
+
+```console
+$ cargo run -p fathom -- doctor /tmp/noev
+fathom [WARN ] fathom::cli no evidence directory in this workspace: /tmp/noev/.evidence
+  fix: run the server once (`act-mcp serve --workspace /tmp/noev`) to write it, or pass --evidence-dir; \
+    coverage, benchmarks and action success will read as unknown, not as zero
+fathom 0.0.1 doctor · /tmp/noev
+ok   workspace  git work tree at /tmp/noev
+     · HEAD 3a52e75
+     · 1 commit(s) in HEAD's history
+     · on `main`
+warn evidence   no evidence root at /tmp/noev/.evidence — nothing has run for this workspace
+  fix: run a workflow with act-mcp (it owns that directory), or point --evidence-dir / $EVIDENCE_DIR at \
+    the tree that has the records
+ok   runs       no runs/ directory (advisory: nothing has been run here)
+warn workflows  no /tmp/noev/.github/workflows — there is nothing here for act-mcp to run
+  fix: add a workflow that publishes coverage or benchmark evidence, e.g. .github/workflows/coverage.yml \
+    running `cargo llvm-cov` or `hyperfine`, then run it with act-mcp
+warn cache      cache root /tmp/noev/.fathom (writable)
+     · no store yet: nothing has been indexed in this cache root
+  fix: `fathom index` builds it; every column stays unknown until it does
+ok   languages  0 of 1 path(s) in HEAD are in scope for the MI; 2 language(s) enabled (python, rust)
+ok   config     no fathom.toml found; every value is this build's default (ADR-0006 §7.1)
+4 ok · 3 warn · exit 1
+```
+
+Three `warn`s, no `fail`: nothing is broken, nothing has happened. Every line is a check with a state and a
+`fix:`, and the same document comes out of `--json` for a machine.
+
+**"everything is empty" — no evidence yet.** `—` in every metric column, and the header says
+`not indexed`. Coverage, benchmarks and action success all come from act-mcp: they cannot exist until a
+workflow has run for that commit. Run the [tour](#the-five-minute-tour) against your own workspace —
+`list_tasks` to name the workflow and the task, then `run_workflow` with that commit — then:
+
+```sh
+scripts/mcp_call.sh list_tasks
+scripts/mcp_call.sh run_workflow "{\"workflow\":\"coverage\",\"task\":\"coverage\",\
+\"category\":\"coverage\",\"commit\":\"$(git rev-parse HEAD)\"}"
+cargo run -p fathom -- index /tmp/actmcp-runbook/repo && cargo run -p fathom -- /tmp/actmcp-runbook/repo
+```
+
+A row can also be empty because the window never reached it, or because it is older than
+`history.depth` (500 commits): `fathom index --from <REV>` widens the walk, and
+`fathom report --only-missing` lists the commits in the window that still have no evidence — that is the
+queue, and it is meant to be machine-readable.
+
+**Wrong `--evidence-dir`.** Fathom reads `<workspace>/.evidence` unless told otherwise, and act-mcp writes
+there unless *it* was told otherwise. Two machines, one run, two evidence roots is the usual story: check
+`$EVIDENCE_DIR`, then pass the root explicitly and let `doctor` print what it resolved —
+`--evidence-dir /path/to/.evidence`. The same flag name on both binaries is on purpose; the root it
+resolves to is printed by `fathom doctor` and by `fathom index --status` (`evidence_root`,
+`evidence_state`), and a root that is missing is a `warn`, while a root that is inside the cache root is a
+refusal.
+
+**A cache from an older build.** Fathom refuses a store it does not understand rather than guess at it
+([ADR-0006 §8](docs/adr/0006-fathom-workspace-layout.md)): a schema or layout version this build does not
+know is a refusal with a `fix:` line, not a silent migration. `fathom doctor` says which case you are in
+(absent · stale · refused · yours); then `fathom index --rebuild` deletes `<cache root>/index` and builds
+the whole thing again, touching nothing else under the cache root. `rm -rf <cache root>/index` is the same
+thing with more typing — the cache is regenerable by definition, which is
+[what makes it safe to delete](.fathom/LAYOUT.md).
 
 ## Troubleshooting
 
@@ -621,7 +992,7 @@ any of it by hand, including the MCP Inspector.
 | a benchmark run has no `step_duration_s` records, and `job_duration_s` looks like whole seconds | act only emits step timings (`executionTime`) from **v0.2.76**, and this server accepts act from 0.2.62; the run carries the `act_step_timings_unavailable` warning rather than a silent gap | upgrade act to ≥ 0.2.76, or have the job time its own steps; [docs/benchmark-inputs.md §3](docs/benchmark-inputs.md#3-acts-own-timings-need-act-0276-or-newer) |
 | a run fails in `Set up job` with `invalid reference format`, and act's log has `🚀  Start image=` with nothing after it | act has no container image for the job's `runs-on` label — act's own table stops at `ubuntu-22.04` | put `-P <label>=<image>` in an actrc the **server** can read; the run carries the `act_runs_on_unmapped` warning — [act has no image for the runner label](#act-has-no-image-for-the-runner-label--invalid-reference-format) |
 | `linker … Bad address (os error 14)` while building | bind-mounted `./target` | `export CARGO_TARGET_DIR=/tmp/tt` |
-| `pip` and `python3` disagree and `scripts/validate_evidence.py` cannot import `jsonschema` | dev-box packaging, not this repo | use the built-in checker: `cargo run -- validate-evidence <path>` |
+| `pip` and `python3` disagree and `scripts/validate_evidence.py` cannot import `jsonschema` | dev-box packaging, not this repo | use the built-in checker: `cargo run -p act-mcp -- validate-evidence <path>` |
 
 ## Checks
 
@@ -634,16 +1005,19 @@ scripts/ci.sh --keep-going          # what CI's check job runs
 scripts/install_ci_tools.sh         # cargo-deny + python jsonschema, pinned
 ```
 
-`fmt`, `clippy -D warnings`, `rustdoc` (broken intra-doc links are errors), `cargo test
---all-features`, schema validation of `schema/*.json` and the evidence tree, `cargo deny`,
-and a release build that is smoke-tested by running it.
+`fmt`, `clippy -D warnings`, a workspace `build` (both binaries), `rustdoc` (broken intra-doc links
+are errors), `cargo test --all-features`, the fathom steps (drawn-screen snapshots, the `report`
+envelope goldens and a `report`/`doctor` exit-code smoke over a sample evidence tree), schema
+validation of `schema/*.json` and the evidence tree, `cargo deny` plus the dependency firewalls,
+and a release build per artefact that is smoke-tested by running it.
 [docs/ci.md](docs/ci.md) documents each step, the pipeline, the supply-chain policy, and
 `scripts/ci_drill.sh`, which proves every one of those checks can actually fail.
 
 The GitHub workflow is `.github/workflows/ci.yml`: a `check` job that calls
-`scripts/ci.sh --keep-going …` and a `release` job that builds and smoke-tests the binary
-for `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`. It contains no check logic —
-logic lives in `scripts/`, which is also what makes it runnable before you push.
+`scripts/ci.sh --keep-going …` and a `release` job that gates on `cargo deny`, builds the workspace
+in release, and smoke-tests and uploads both artefacts — `act-mcp-<target>` and `fathom-<target>` —
+for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and `aarch64-apple-darwin`. It contains no
+check logic — logic lives in `scripts/`, which is also what makes it runnable before you push.
 
 Everything above runs with no docker and no `act`. The one check that needs the real thing is
 a manual/nightly step, because a stub can never contradict an assumption about the tool it
@@ -663,17 +1037,33 @@ and `.github/workflows/nightly-real-act.yml` runs it nightly where docker exists
 
 ## Layout
 
+Three crates, one lockfile, one CI run ([ADR-0005](docs/adr/0005-fathom-crate-layout-and-dependencies.md)):
+
 | path | what it is |
 |---|---|
-| `src/server.rs`, `src/tools/` | the rmcp service, the mounted endpoint, one module per tool |
-| `src/registry/` | the run supervisor: state machine, run registry, workspace lock (ADR-0004) |
-| `src/runner/` | the act process: argv, log tee with redaction, process-group teardown |
-| `src/workspace/` | the pre-start validation gate: commit/HEAD gates, isolation policy, probes |
-| `src/evidence/` | the `.evidence` JSONL contract as code: records, writer, extractors, the checker |
-| `schema/` | the machine-readable contract: `evidence`, `run-meta`, `tool-contract` |
-| `tests/` | one suite per tool, the protocol conformance matrix, `tests/e2e` (the whole pipeline) |
-| `tests/realdata/` | the trivial two-workflow fixture, the `act --json` shape table and its captured goldens (when there are any), and the record goldens — see `tests/realdata/fixture/README.md` |
+| `Cargo.toml` | the virtual workspace: members, `default-members`, the shared `[workspace.package]` (version, MSRV, `publish = false`), the one dependency table, the shared `[workspace.lints]` |
+| `crates/act-mcp/` | the MCP server binary. Its integration tests live beside it, because Cargo looks for `tests/` next to the package manifest |
+| `crates/act-evidence/` | the `.evidence` contract as types: record structs, strict deserializers, the shape predicates, the embedded schemas, the tree validator. No tokio, no transport, no writer — the half a reader is allowed to link |
+| `crates/fathom/` | the reader: `fathom` (the timeline, diff, detail and bench screens, `index`, `report`, `doctor`) and the lib that holds everything testable — the git walker, the MI front end, the evidence reader, the store. It never depends on `act_mcp`, and its tree names no tokio, rmcp, axum or HTTP client ([ADR-0005](docs/adr/0005-fathom-crate-layout-and-dependencies.md)); the definitions it renders are [docs/fathom-metrics.md](docs/fathom-metrics.md) |
+| `schema/` | the machine-readable contract, still one copy at the root: `evidence`, `run-meta`, `tool-contract`, `mi-definition`, `metric-model` |
+| `.fathom/` | this workspace's own Fathom cache — generated, gitignored, and safe to delete. `LAYOUT.md` is the one committed file in it and the on-disk statement of what the directory is ([ADR-0006](docs/adr/0006-fathom-workspace-layout.md)) |
 | `scripts/` | the CI scripts, the ADR/schema consistency checkers, and the runbook helpers (`mcp_call.sh`, `sample_evidence.py`, `evidence_recipes.sh`) |
+
+Inside `act-mcp`, which is the part that answers MCP:
+
+| path | what it is |
+|---|---|
+| `crates/act-mcp/src/server.rs`, `src/tools/` | the rmcp service, the mounted endpoint, one module per tool |
+| `crates/act-mcp/src/registry/` | the run supervisor: state machine, run registry, workspace lock (ADR-0004) |
+| `crates/act-mcp/src/runner/` | the act process: argv, log tee with redaction, process-group teardown |
+| `crates/act-mcp/src/workspace/` | the pre-start validation gate: commit/HEAD gates, isolation policy, probes |
+| `crates/act-mcp/src/evidence/` | the writer's half of the contract: the atomic append-only writer, the `validate-evidence` checker, the coverage and benchmark extractors (the types come from `act-evidence` and are re-exported here) |
+| `crates/act-mcp/tests/` | one suite per tool, the protocol conformance matrix, `tests/e2e` (the whole pipeline) |
+| `crates/act-mcp/tests/realdata/` | the trivial two-workflow fixture, the `act --json` shape table and its captured goldens (when there are any), and the record goldens — see `crates/act-mcp/tests/realdata/fixture/README.md` |
+
+The dependency arrows are one-way and checked by a script, not by convention:
+`act-mcp → act-evidence`, `fathom → act-evidence`, and nothing from `fathom` to `act-mcp` in either
+direction (`scripts/validate_crate_layout.py`, drilled by `scripts/crate_layout_drill.sh`).
 
 ## Further reading
 
@@ -684,6 +1074,11 @@ and `.github/workflows/nightly-real-act.yml` runs it nightly where docker exists
 * [docs/adr/0002-evidence-jsonl-contract.md](docs/adr/0002-evidence-jsonl-contract.md) — the `.evidence` contract, normatively
 * [docs/adr/0003-commit-isolation-and-serialization.md](docs/adr/0003-commit-isolation-and-serialization.md) — what may be run, and one run at a time
 * [docs/adr/0004-run-lifecycle.md](docs/adr/0004-run-lifecycle.md) — runs that outlive the request
+* [docs/adr/0005-fathom-crate-layout-and-dependencies.md](docs/adr/0005-fathom-crate-layout-and-dependencies.md) — the Cargo workspace: where fathom lives and what it may depend on
+* [docs/adr/0006-fathom-workspace-layout.md](docs/adr/0006-fathom-workspace-layout.md) — the `.fathom` cache root, `fathom.toml` and the metric cache store (also: `.fathom/LAYOUT.md`, the same contract from inside the cache directory)
+* [docs/adr/0007-maintainability-index.md](docs/adr/0007-maintainability-index.md) — the Maintainability Index: the formula, what counts as an operator/decision point/logical line, the per-commit aggregate and bands, and the pure-Rust front end (also: `schema/mi-definition.json` for the machine-readable constants, `scripts/mi_reference.py` as the oracle, `crates/act-mcp/tests/testdata/mi/` for the hand-counted golden vectors)
+* [docs/adr/0008-per-commit-metric-model.md](docs/adr/0008-per-commit-metric-model.md) — the per-commit metric model: how `.evidence` becomes one row per commit (which records are selected, how a coverage % is pooled, how benchmark groups are deduped, and what "action success" means when the server has forgotten the run) (also: `schema/metric-model.json` for the machine-readable rule set, `scripts/metric_model_reference.py` as the oracle, `crates/act-mcp/tests/testdata/metrics/` for the golden vectors)
+* [docs/fathom-metrics.md](docs/fathom-metrics.md) — what every number on the Fathom screen means: the MI formula and its worked example, how coverage % is derived, when a benchmark delta is withheld, the action-success table — the user-facing restatement of ADR-0007 and ADR-0008, cross-linked to both
 * [docs/testing.md](docs/testing.md) — the suites, and how to read a red one
 * [docs/ci.md](docs/ci.md) — CI, in full
 * [docs/security.md](docs/security.md) — loopback-only, and what that does and does not protect

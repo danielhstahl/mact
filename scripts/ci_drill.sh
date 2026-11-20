@@ -9,8 +9,12 @@
 # check, or pointing a step at the wrong file, this is where it shows up.
 #
 # Nothing is modified in the real working tree: every drill copies Cargo.toml, Cargo.lock,
-# rust-toolchain.toml, deny.toml, schema/, scripts/, src/ and tests/ into a temporary
-# directory, breaks the copy, and runs the step there.
+# rust-toolchain.toml, deny.toml, schema/, scripts/, crates/ and docs/ into a temporary
+# directory, breaks the copy, and runs the step there. Two consequences worth knowing when a drill
+# goes red: the copy is not a git work tree (copying `.git` would be slow, and a drill reading the
+# real repository's history would not be a drill), so `scripts/smoke_fathom.sh` falls back to a
+# scratch work tree of its own — which is what makes the fathom-report and fathom-doctor drills mean
+# something, because their checks pass in the copy until the injected violation breaks one.
 #
 # Usage:
 #   scripts/ci_drill.sh                every drill
@@ -42,17 +46,23 @@ DRILLS=(
     "doc-broken-intra-doc-link:doc"
     "doc-link-to-test-only-module:doc"
     "test-failing-assertion:test"
+    "tui-snapshot-snapshot-mismatch:tui-snapshot"
+    "fathom-report-report-golden-drift:fathom-report"
+    "fathom-report-flat-header-drift:fathom-report"
+    "fathom-doctor-doctor-exit-code-lie:fathom-doctor"
     "schema-broken-schema-file:schema"
     "schema-bad-evidence-record:schema"
     "schema-undocumented-tool-io-fixture:schema"
     "supply-chain-disallowed-licence:supply-chain"
+    "supply-chain-fathom-dependency-banned:supply-chain"
+    "supply-chain-fathom-firewall-crossed:supply-chain"
 )
 
 drill_list() { printf '%s\n' "${DRILLS[@]}"; }
 
 # Each mutation takes the copy's root as $1 and makes exactly one violation.
 mut_fmt_misformatted_code() {
-    cat >> "$1/src/lib.rs" <<'RS'
+    cat >> "$1/crates/act-mcp/src/lib.rs" <<'RS'
 
 /// Injected by scripts/ci_drill.sh: valid Rust that rustfmt will not accept.
 pub fn ci_drill_fmt() -> u32 {
@@ -63,7 +73,7 @@ RS
 }
 
 mut_clippy_lint() {
-    cat >> "$1/src/lib.rs" <<'RS'
+    cat >> "$1/crates/act-mcp/src/lib.rs" <<'RS'
 
 /// Injected by scripts/ci_drill.sh: compiles, but trips clippy::needless_return.
 #[allow(dead_code)]
@@ -75,7 +85,7 @@ RS
 }
 
 mut_doc_broken_intra_doc_link() {
-    cat >> "$1/src/lib.rs" <<'RS'
+    cat >> "$1/crates/act-mcp/src/lib.rs" <<'RS'
 
 /// Injected by scripts/ci_drill.sh: a link to something that does not exist, which is
 /// exactly the rot this step exists to catch ([`ci_drill_no_such_item`]).
@@ -92,7 +102,7 @@ mut_doc_link_to_test_only_module() {
     # happy — rustdoc is the only tool that does not build cfg(test) code, so the doc step is
     # the only place the link can show up as dead. This drill is the proof that it stays an
     # error instead of quietly turning the sentence into a reference to nothing.
-    cat >> "$1/src/lib.rs" <<'RS'
+    cat >> "$1/crates/act-mcp/src/lib.rs" <<'RS'
 
 /// Injected by scripts/ci_drill.sh: a link to a module `#[cfg(test)]` hides from rustdoc
 /// ([`ci_drill_test_only_module`]).
@@ -110,7 +120,7 @@ RS
 }
 
 mut_test_failing_assertion() {
-    cat >> "$1/src/lib.rs" <<'RS'
+    cat >> "$1/crates/act-mcp/src/lib.rs" <<'RS'
 
 #[cfg(test)]
 mod ci_drill_tests {
@@ -139,14 +149,14 @@ PY
 mut_schema_bad_evidence_record() {
     # A record that satisfies nothing: a JSONL line missing the required envelope fields.
     printf '%s\n' '{"schema_version":1,"kind":"benchmark"}' \
-        >> "$1/tests/e2e/testdata/expected/benchmark.jsonl"
+        >> "$1/crates/act-mcp/tests/e2e/testdata/expected/benchmark.jsonl"
 }
 
 mut_schema_undocumented_tool_io_fixture() {
     # Delete the README row that names one tool-io fixture. The contract checker refuses an
     # undocumented fixture, because a contract rule nobody can look up is a rule that will be
     # broken by accident; this proves that refusal is fatal and not advice.
-    python3 - "$1/tests/e2e/testdata/README.md" <<'PY'
+    python3 - "$1/crates/act-mcp/tests/e2e/testdata/README.md" <<'PY'
 import sys
 
 path = sys.argv[1]
@@ -175,15 +185,156 @@ PY
 }
 
 # ---------------------------------------------------------------------------
+# the fathom steps (mact-by1.16)
+# ---------------------------------------------------------------------------
+mut_tui_snapshot_snapshot_mismatch() {
+    # One character inside a drawn golden, and only inside the golden: the fixture builds the subject
+    # lower-case (`tui_render.rs`'s `populated()`), and the first copy of that subject in the file is
+    # the expected screen. So the code still draws the timeline it always drew and the snapshot no
+    # longer says what the screen says — which is the shape of a real snapshot failure, whether someone
+    # widened a column by accident or is trying to slip a redesign past review.
+    python3 - "$1/crates/fathom/tests/tui_render.rs" <<'PY'
+import sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+needle = "registry: sweep evicted r"
+if needle not in text:
+    sys.exit("drill setup: the timeline subject this drill edits is not in tui_render.rs")
+# The expected screen is the first copy in the file; the fixture's own subject is further down.
+open(path, "w", encoding="utf-8").write(text.replace(needle, "registry: sweep evicted R", 1))
+PY
+}
+
+mut_fathom_report_report_golden_drift() {
+    # A number in the report golden, nudged by one — the drift a downstream dashboard notices first
+    # and CI should notice second: the envelope still parses, the field is still there and still an
+    # integer, and it now describes something the tool did not compute. A surgical text edit, not a
+    # json.load/dump: the golden is compared as text, so reformatting the file would make the drill
+    # pass for a formatting reason instead of the semantic one.
+    python3 - "$1/crates/fathom/tests/golden/report.json" <<'PY'
+import re
+import sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+match = re.search(r'("with_evidence": )([0-9]+)', text)
+if not match:
+    sys.exit("drill setup: report.json has no counts.with_evidence to drift")
+value = int(match.group(2))
+open(path, "w", encoding="utf-8").write(
+    text[:match.start()] + match.group(1) + str(value + 1) + text[match.end():]
+)
+PY
+}
+
+mut_fathom_report_flat_header_drift() {
+    # The half the golden cannot see: the tsv header is a machine-readable contract (`cut -f4` is
+    # written against it), and crates/fathom/tests/report.rs pins the *count* of columns and the last
+    # two names, so renaming a middle column passes every Rust test and breaks every consumer.
+    # `smoke_fathom.sh --check report` is the one that pins the whole header; this is its proof.
+    python3 - "$1/crates/fathom/src/report.rs" <<'PY'
+import sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+needle = '"sha", "age", "message", "coverage", "churn",'
+if needle not in text:
+    sys.exit("drill setup: report::COLUMNS is not spelled the way this drill expects")
+open(path, "w", encoding="utf-8").write(
+    text.replace(needle, '"sha", "age", "message", "coverage", "churned",', 1)
+)
+PY
+}
+
+mut_fathom_doctor_doctor_exit_code_lie() {
+    # `doctor`'s whole product is its exit code, so sever the code from the checks and require the
+    # smoke to notice. Everything else still prints — same statuses, same fixes, same JSON — which is
+    # what makes this a lie rather than a crash: the command now reports `warn` and exits 0, so a CI
+    # step written as `fathom doctor || exit 1` would go green on a broken workspace.
+    python3 - "$1/crates/fathom/src/doctor.rs" <<'PY'
+import sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+needle = "    pub fn exit(&self) -> Exit {\n        self.status.exit()\n    }"
+if needle not in text:
+    sys.exit("drill setup: doctor's Report::exit is no longer the one-line derivation this drill replaces")
+open(path, "w", encoding="utf-8").write(
+    text.replace(
+        needle,
+        "    pub fn exit(&self) -> Exit {\n        let _ = self;\n        Exit::Success\n    }",
+        1,
+    )
+)
+PY
+}
+
+# ---------------------------------------------------------------------------
+# the fathom half of the supply-chain step (mact-by1.16)
+# ---------------------------------------------------------------------------
+mut_supply_chain_fathom_dependency_banned() {
+    # Ban a crate only fathom's tree carries. The MIT drill above proves cargo-deny reads *a* graph;
+    # this proves it reads *fathom's*, which is the difference between this epic's dependencies being
+    # gated and being assumed. `ratatui` is the one to name: nothing in the server's tree reaches it
+    # (ADR-0005 §6 forbids it there), so if the workspace were not in cargo-deny's view this ban would
+    # change nothing.
+    cat >> "$1/deny.toml" <<'TOML'
+
+# injected by scripts/ci_drill.sh — a crate only the fathom tree carries.
+[[bans.deny]]
+name = "ratatui"
+reason = "drill: proves cargo-deny checks fathom's graph and not only the server's"
+TOML
+}
+
+mut_supply_chain_fathom_firewall_crossed() {
+    # The transitive edge a manifest checker cannot see. `schemars` is already in
+    # [workspace.dependencies] (act-mcp needs it for the tool schemas) and
+    # `scripts/validate_crate_layout.py` C5/C6 read manifests, so declaring it here is the smallest
+    # way to put the server's schema engine into fathom's release build through the front door; the
+    # firewall check reads `cargo tree`, which is the only place ADR-0005 §11's "a standalone fathom
+    # build carries no schemars" can be checked at all.
+    python3 - "$1/crates/fathom/Cargo.toml" <<'PY'
+import sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+needle = "serde_json = { workspace = true }"
+if needle not in text:
+    sys.exit("drill setup: crates/fathom/Cargo.toml does not declare serde_json as this drill expects")
+open(path, "w", encoding="utf-8").write(
+    text.replace(needle, needle + "\n# injected by scripts/ci_drill.sh\nschemars = { workspace = true }", 1)
+)
+PY
+}
+
+# ---------------------------------------------------------------------------
 # machinery
 # ---------------------------------------------------------------------------
 copy_repo() {
     local dest=$1
     mkdir -p "$dest"
     local item
-    for item in Cargo.toml Cargo.lock rust-toolchain.toml deny.toml schema scripts src tests docs; do
+    for item in Cargo.toml Cargo.lock rust-toolchain.toml deny.toml schema scripts crates docs .gitignore; do
         [[ -e "$repo_root/$item" ]] && cp -a "$repo_root/$item" "$dest/"
     done
+    # `.fathom/LAYOUT.md` is `include_str!`-ed by fathom's boot module (ADR-0006 §4.1), so a copy
+    # without it cannot build the crate at all — and a step that fails because of a missing input is a
+    # drill that "catches" every violation, including none of them. Only that one file: the rest of
+    # `.fathom` is somebody's 14 MB metric cache, which is an output, not an input to a compile.
+    if [[ -f "$repo_root/.fathom/LAYOUT.md" ]]; then
+        mkdir -p "$dest/.fathom"
+        cp -a "$repo_root/.fathom/LAYOUT.md" "$dest/.fathom/"
+    fi
+    # Cargo calls a tree "fresh" by mtime and `cp -a` preserves mtimes, so a copy can be handed an
+    # artefact compiled from a different tree — one whose `env!("CARGO_MANIFEST_DIR")` points at a
+    # directory that no longer exists, or (worse, because it is quiet) at the real repository. A drill
+    # whose tests never run against the copy is a drill that proves nothing, so make the copy's own
+    # member manifests newer than anything in the shared target directory: every workspace crate
+    # recompiles from the copy, and every baked path points inside it. Dependencies keep their mtimes,
+    # so the expensive part is still paid once per target directory rather than once per drill.
+    find "$dest/crates" -mindepth 2 -maxdepth 2 -name Cargo.toml -exec touch {} +
     chmod -R u+w "$dest"
 }
 

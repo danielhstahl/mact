@@ -1,0 +1,65 @@
+{
+  "case": "act_log_context",
+  "model_version": 1,
+  "notes": "The job reported its own job_duration_s (300.9 s), so act's act_log 91.8 s for the same label set is shadowed - ADR-0002 5.1's precedence, applied to whatever survived the writer's own dedup. step_duration_s is act_log context, marked as such. Nothing in this row pretends a step took 0 s: absence is absence.",
+  "rows": {
+    "1111111111111111111111111111111111111111": {
+      "action_detail": [
+        {
+          "category": "benchmark",
+          "kind": "benchmark",
+          "ok": true,
+          "run_id": "20261110T100000Z-bb0004",
+          "status": "success",
+          "task": "bench",
+          "workflow": "benchmark"
+        }
+      ],
+      "action_success": "success",
+      "benchmarks": [
+        {
+          "comparable": true,
+          "context": false,
+          "flags": [],
+          "labels": {
+            "job": "bench"
+          },
+          "max": 300.9,
+          "min": 300.9,
+          "name": "job_duration_s",
+          "run_count": 1,
+          "run_id": "20261110T100000Z-bb0004",
+          "samples": 1,
+          "source": "job_file",
+          "unit": "s",
+          "value": 300.9
+        },
+        {
+          "comparable": true,
+          "context": true,
+          "flags": [],
+          "labels": {
+            "job": "bench",
+            "step": "Run benchmark"
+          },
+          "max": 88.234,
+          "min": 88.234,
+          "name": "step_duration_s",
+          "run_count": 1,
+          "run_id": "20261110T100000Z-bb0004",
+          "samples": 1,
+          "source": "act_log",
+          "unit": "s",
+          "value": 88.234
+        }
+      ],
+      "caveats": [
+        "context_only"
+      ],
+      "commit": "1111111111111111111111111111111111111111",
+      "gaps": {
+        "coverage": "no_records"
+      }
+    }
+  }
+}

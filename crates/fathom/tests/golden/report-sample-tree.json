@@ -1,0 +1,212 @@
+{
+  "fathom_version": "0.0.1",
+  "schema_version": 1,
+  "workspace": "@ROOT@/repo",
+  "window": {
+    "from": null,
+    "to": null,
+    "limit": null,
+    "first_parent": false,
+    "only_missing": false
+  },
+  "store": {
+    "state": "present",
+    "rows": 3
+  },
+  "counts": {
+    "commits": 3,
+    "hidden": 0,
+    "with_evidence": 3,
+    "missing_evidence": 0,
+    "not_indexed": 0
+  },
+  "gate": {
+    "fail_on": [],
+    "status": "off",
+    "band_percent": 5.0,
+    "findings": []
+  },
+  "commits": [
+    {
+      "sha": "c345ddfbdcae7bbcaf542200eba4cffcba989241",
+      "short": "c345ddf",
+      "parent": "1a3928b6c760f88969c085778208dd71a6f1da09",
+      "subject": "third",
+      "author": "Fathom Fixture",
+      "author_utc": 1767225600,
+      "committer_utc": 1767225600,
+      "indexed": true,
+      "action": "mixed",
+      "coverage": {
+        "percent": 86.7,
+        "delta": "flat",
+        "caveat": true,
+        "gap": null
+      },
+      "churn": {
+        "add": 2,
+        "del": 0,
+        "files": 1,
+        "noise_add": 0,
+        "noise_del": 0,
+        "truncated": false
+      },
+      "mi": {
+        "score": 87.3,
+        "delta": "flat",
+        "caveat": false,
+        "gap": null,
+        "unanalysed_paths": 0
+      },
+      "bench": {
+        "name": "cold_start_ms",
+        "labels": "{\"job\":\"hyperfine-bench\",\"step\":\"Run benchmark\"}",
+        "text": "412.5ms",
+        "value": 412.5,
+        "comparable": true,
+        "context": false,
+        "groups": 7,
+        "delta": "flat",
+        "caveat": true,
+        "gap": null
+      },
+      "gaps": [],
+      "caveats": [
+        "percent_only",
+        "low_confidence",
+        "secondary_measures",
+        "context_only",
+        "unit_missing",
+        "run_excluded"
+      ],
+      "display": {
+        "coverage": "86.7%=*",
+        "churn": "+2 -0",
+        "mi": "87.3=",
+        "bench": "412.5ms= +6*",
+        "action": "mix"
+      }
+    },
+    {
+      "sha": "1a3928b6c760f88969c085778208dd71a6f1da09",
+      "short": "1a3928b",
+      "parent": "aa9608487fd15b72a310f0d0647c39b122ff76b6",
+      "subject": "second",
+      "author": "Fathom Fixture",
+      "author_utc": 1767225600,
+      "committer_utc": 1767225600,
+      "indexed": true,
+      "action": "mixed",
+      "coverage": {
+        "percent": 86.7,
+        "delta": "flat",
+        "caveat": true,
+        "gap": null
+      },
+      "churn": {
+        "add": 2,
+        "del": 0,
+        "files": 1,
+        "noise_add": 0,
+        "noise_del": 0,
+        "truncated": false
+      },
+      "mi": {
+        "score": 87.3,
+        "delta": "flat",
+        "caveat": false,
+        "gap": null,
+        "unanalysed_paths": 0
+      },
+      "bench": {
+        "name": "cold_start_ms",
+        "labels": "{\"job\":\"hyperfine-bench\",\"step\":\"Run benchmark\"}",
+        "text": "412.5ms",
+        "value": 412.5,
+        "comparable": true,
+        "context": false,
+        "groups": 7,
+        "delta": "flat",
+        "caveat": true,
+        "gap": null
+      },
+      "gaps": [],
+      "caveats": [
+        "percent_only",
+        "low_confidence",
+        "secondary_measures",
+        "context_only",
+        "unit_missing",
+        "run_excluded"
+      ],
+      "display": {
+        "coverage": "86.7%=*",
+        "churn": "+2 -0",
+        "mi": "87.3=",
+        "bench": "412.5ms= +6*",
+        "action": "mix"
+      }
+    },
+    {
+      "sha": "aa9608487fd15b72a310f0d0647c39b122ff76b6",
+      "short": "aa96084",
+      "parent": null,
+      "subject": "first",
+      "author": "Fathom Fixture",
+      "author_utc": 1767225600,
+      "committer_utc": 1767225600,
+      "indexed": true,
+      "action": "mixed",
+      "coverage": {
+        "percent": 86.7,
+        "delta": null,
+        "caveat": true,
+        "gap": null
+      },
+      "churn": {
+        "add": 2,
+        "del": 0,
+        "files": 1,
+        "noise_add": 0,
+        "noise_del": 0,
+        "truncated": false
+      },
+      "mi": {
+        "score": 87.3,
+        "delta": null,
+        "caveat": false,
+        "gap": null,
+        "unanalysed_paths": 0
+      },
+      "bench": {
+        "name": "cold_start_ms",
+        "labels": "{\"job\":\"hyperfine-bench\",\"step\":\"Run benchmark\"}",
+        "text": "412.5ms",
+        "value": 412.5,
+        "comparable": true,
+        "context": false,
+        "groups": 7,
+        "delta": null,
+        "caveat": true,
+        "gap": null
+      },
+      "gaps": [],
+      "caveats": [
+        "percent_only",
+        "low_confidence",
+        "secondary_measures",
+        "context_only",
+        "unit_missing",
+        "run_excluded"
+      ],
+      "display": {
+        "coverage": "86.7%*",
+        "churn": "+2 -0",
+        "mi": "87.3",
+        "bench": "412.5ms +6*",
+        "action": "mix"
+      }
+    }
+  ]
+}
+

@@ -1,0 +1,19 @@
+{
+  "case": "unreadable_only",
+  "model_version": 1,
+  "notes": "Everything present is a schema_version 2 record. The row is no_evidence with unreadable_records 1 and gaps unreadable: 'could not read it' and 'nothing ran' are both unknown, and neither one is a failure.",
+  "rows": {
+    "1111111111111111111111111111111111111111": {
+      "action_success": "no_evidence",
+      "caveats": [
+        "unreadable"
+      ],
+      "commit": "1111111111111111111111111111111111111111",
+      "gaps": {
+        "benchmarks": "unreadable",
+        "coverage": "unreadable"
+      },
+      "unreadable_records": 1
+    }
+  }
+}

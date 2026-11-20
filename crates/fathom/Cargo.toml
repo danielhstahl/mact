@@ -1,0 +1,85 @@
+[package]
+name = "fathom"
+description = "Per-commit code and repo quality timeline: reads .evidence and git history, draws the timeline, prints the report"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# One package, two targets (ADR-0005 §6): the bin is `Clap::parse()` plus a call into the lib, and
+# the lib holds everything testable. That shape is what lets mact-by1.9 test a screen and
+# mact-by1.13 test `report`'s golden output without starting a TTY or a process — and it is how
+# `act-mcp` is shaped, so the two halves of the workspace are recognisably the same kind of program.
+[lib]
+name = "fathom"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fathom"
+path = "src/main.rs"
+
+[dependencies]
+# The contract, not the server (ADR-0005 P4): fathom reads `.evidence` with `act_evidence`'s
+# record types — the same strict deserializer the writer uses — and never names `act_mcp`. The
+# `json-schema` feature is deliberately NOT enabled: the `JsonSchema` impls are the server's need,
+# and this crate's build must not carry schemars (ADR-0005 §6, check C5/C6).
+# First real consumer: mact-by1.6 (the evidence reader). Today this crate names `SCHEMA_VERSION`
+# at boot, which is the one thing about the contract a reader must know before it can say
+# "this fathom speaks evidence schema v1".
+act-evidence = { workspace = true }
+
+clap = { workspace = true }
+crossterm = { workspace = true }
+# The screens (mact-by1.9). ADR-0005 §6 names these two and nothing else, and the forbidden side of
+# that table — `rmcp`, `axum`, `tower`, `tokio`, an HTTP client — is what `cargo tree -p fathom`
+# is checked for; neither of these brings one of them along.
+ratatui = { workspace = true }
+serde = { workspace = true }
+# The row is JSON-shaped and the model is a JSON file, so `serde_json` is not a convenience: it is
+# how `schema/metric-model.json` is loaded instead of restated, and how a stored row's canonical JSON
+# (ADR-0006 §6.3) gets the one number spelling every consumer prints. Allowed by ADR-0005 §6.
+serde_json = { workspace = true }
+# `fk1(…)` is sha256 — ADR-0006 §6.3 spells every block key, section digest and evidence digest with
+# it, and §6.3's "keys sorted, floats at the schema's rounded spelling, no absolute paths, no clock" is
+# a *canonicalisation* problem, not a hash-algorithm one, so the hash has to be a real one for the keys
+# to be stable across machines. This is the dependency this manifest's closing note predicted: "new
+# dependencies for the store (`sha2`, …) arrive with the ticket that consumes them", and mact-by1.10 is
+# that ticket. Pure Rust, no C, no async, no transport.
+sha2 = { workspace = true }
+toml = { workspace = true }
+# The doctor's workflow check (mact-by1.13) reads `.github/workflows/*.yml` locally — "is there
+# anything here that would produce evidence" is the question the evidence tree cannot answer, and
+# `list_tasks` may not be called to answer it (ADR-0005 P4/P5). Same crate act-mcp's own workflow
+# reader uses, so the two halves of the workspace parse one YAML dialect; pure Rust, no async, no
+# transport, already in `[workspace.dependencies]` and already in the lockfile.
+yaml-rust2 = { workspace = true }
+# `thiserror` is not on ADR-0005 §6's short list, and §6 says the list is a code-review question
+# rather than an ADR question as long as nothing on the forbidden side rides in with it: this is a
+# pure-proc-macro error enum crate with no runtime, no async, no transport. It is here because the
+# ticket asks fathom's refusals to mirror `act_mcp::config`'s style, and that style is thiserror.
+thiserror = { workspace = true }
+
+# No git library, on purpose, and this is the same refusal act-mcp's manifest records (ADR-0003) and
+# ADR-0005 §6 turns into a rule: `git2`/`libgit2-sys` are on the forbidden list for this crate.
+# Fathom reads history through the `git` CLI with `std::process::Command` (`src/git.rs`) — act shells
+# out to git anyway, every gate fathom needs (`rev-parse`, `log --raw --numstat -z`, `diff-tree`) is a
+# CLI subcommand, the ADR's numbers are *defined* against `git diff --numstat` so reading git's own
+# bytes is the reference rather than an approximation of one, and libgit2 would put a C build
+# dependency into five release targets (two musl) to save nothing. ADR-0006 §5 refuses sqlite with the
+# same argument, so the reader stays as C-free as the server.
+#
+# The deferred list from act-mcp's manifest still applies: no `uuid`, no `reqwest`. New dependencies
+# for the store (`sha2`, and `globset` if the classifier in `src/classify.rs` ever wants gitignore's
+# dialect instead of the smaller one it implements) arrive with the ticket that consumes them.
+
+# ADR-0006 §9's single writer is `flock(2)` on `<cache>/.fathom.lock`, and `flock(2)`/`fcntl(2)`/
+# `gethostname(3)` have no `std` API. Same precedent, same reasoning, and the same one-audited-surface
+# shape as act-mcp's registry lock: `store::lock` is this crate's whole `unsafe` surface, and the
+# workspace lint still denies `unsafe_code` everywhere else.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

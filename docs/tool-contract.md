@@ -11,7 +11,7 @@ field sets drift apart between the ADR, this file and
   HTTP, one endpoint, loopback, no auth.
 - Schemas: [`schema/tool-contract.schema.json`](../schema/tool-contract.schema.json) — every `*_args`,
   `*_result`, `run_view`, `tool_error` and the `x-error-codes` registry live there.
-- Fixtures (the e2e oracle): [`tests/e2e/testdata/tool-io`](../tests/e2e/testdata/tool-io).
+- Fixtures (the e2e oracle): [`crates/act-mcp/tests/e2e/testdata/tool-io`](../crates/act-mcp/tests/e2e/testdata/tool-io).
 - Reader's contract for what `evidence_files` points at: [docs/evidence-format.md](evidence-format.md)
   (the on-disk layout, the record fields, and jq recipes for whoever writes a scanner).
 - Related decisions: [ADR-0002](adr/0002-evidence-jsonl-contract.md) (the on-disk contract, already
@@ -50,7 +50,7 @@ $ curl -sS http://127.0.0.1:8080/mcp \
                    "io.modelcontextprotocol/clientCapabilities":{}}}}'
 ```
 
-All of the above is asserted request by request in [`tests/protocol_conformance.rs`](../tests/protocol_conformance.rs),
+All of the above is asserted request by request in [`crates/act-mcp/tests/protocol_conformance.rs`](../crates/act-mcp/tests/protocol_conformance.rs),
 which has one section per lifecycle (stateless, and the `2025-11-25` session) and
 [`docs/testing.md`](testing.md) §4 is the hand-reproduction path (Inspector, or the `curl`
 above when an Inspector cannot speak `2026-07-28`).
@@ -375,10 +375,10 @@ Any change lands in one commit that touches: this file,
 ```console
 $ pip install jsonschema
 $ python3 scripts/validate_tool_contract.py --stats
-$ python3 scripts/validate_evidence.py tests/e2e/testdata/expected   # the sibling contract, unchanged by this
+$ python3 scripts/validate_evidence.py crates/act-mcp/tests/e2e/testdata/expected   # the sibling contract, unchanged by this
 ```
 
 `scripts/ci.sh schema` runs the first of those three on every build, so drift between these
 files and the schema is a red build rather than a chore someone forgets; the fixtures it
-checks are indexed in [`tests/e2e/testdata/README.md`](../tests/e2e/testdata/README.md), and
+checks are indexed in [`crates/act-mcp/tests/e2e/testdata/README.md`](../crates/act-mcp/tests/e2e/testdata/README.md), and
 a fixture with no row there fails the same step.

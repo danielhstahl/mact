@@ -1,0 +1,256 @@
+name: MCP Evidence
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# The jobs that make the coverage and benchmark evidence real. Each one starts the MCP action runner,
+# asks it — over MCP, through `scripts/mcp_call.sh` — to run a producer job, and then fails unless the
+# runner advertised that job, ran it to `success`, and published a record for the commit it executed.
+#
+# This is the only place the whole path is exercised, and it runs on every push and pull request, which
+# is what ADR-0006 §10's "Evidence production" row asks for:
+#
+#     | Evidence production | one job per category through act-mcp | act installed, network to the
+#     | (coverage, benchmark) |                                     | endpoint, a commit to run      |
+#
+# `fathom doctor` answers "does a coverage job exist in this repository?". This answers the question a
+# workflow file cannot: "did one run, through the runner, and did anything come out the other end". A
+# YAML file is a claim; this is the check.
+#
+# Why the producer jobs are in other files (`coverage.yml`, `benchmarks.yml`) and hand-triggered: a job
+# that starts a runner must never be a job a runner runs. act-mcp refuses that case itself with
+# `act_in_container` (ADR-0006 §10.1), and the `!env.ACT` guard below means that if someone does ask the
+# runner for one of these jobs, it exits without building anything instead of failing after four minutes
+# of container work — the same belt `dogfood-local.yml` uses for its own fathom steps.
+#
+# No toolchain action and no pnpm here: rustup reads `rust-toolchain.toml`, which is the pin (the same
+# reasoning `ci.yml` gives), and the MCP client in this path is `curl` and `python3`, not an inspector.
+jobs:
+  coverage-run:
+    name: Coverage through the runner
+    if: ${{ !env.ACT }}
+    runs-on: ubuntu-24.04
+    env:
+      # Keep in step with `nightly-real-act.yml`'s `act_version`: one repository, one act, and a bump
+      # in both files at once is a reviewable change rather than two silent versions.
+      ACT_VERSION: '0.2.97'
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: rustup show
+
+      # Pinned and checksum-verified, exactly the way the nightly does it: this job runs workflows in
+      # containers on a runner that has a docker daemon, and the version of act decides which log fields
+      # the extractors see. A floating install would make an upstream change look like a regression here.
+      - name: Install act ${{ env.ACT_VERSION }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "https://github.com/nektos/act/releases/download/v${ACT_VERSION}/act_Linux_x86_64.tar.gz"
+          curl -fsSLO "https://github.com/nektos/act/releases/download/v${ACT_VERSION}/checksums.txt"
+          grep "  act_Linux_x86_64.tar.gz\$" checksums.txt | sha256sum --check
+          tar xzf act_Linux_x86_64.tar.gz act
+          mkdir -p "$HOME/.local/bin"
+          install -m 0755 act "$HOME/.local/bin/act"
+          echo "$HOME/.local/bin" >>"$GITHUB_PATH"
+          act --version
+
+      - name: Build
+        run: cargo build --release --bin act-mcp --bin fathom
+
+      # `serve` binds loopback and has no authentication, so there is nothing else to configure: no
+      # `--allow-host`, no non-loopback bind. act resolves it from PATH. There is no tool allowlist in
+      # this build, so the defence is that the endpoint is loopback-only for the length of one job.
+      - name: Start the MCP action runner
+        run: |
+          set -euo pipefail
+          nohup ./target/release/act-mcp serve \
+            --workspace "$PWD" \
+            --bind 127.0.0.1:8080 \
+            > /tmp/act-mcp.log 2>&1 &
+          for _ in $(seq 1 60); do
+            if scripts/mcp_call.sh -u http://127.0.0.1:8080/mcp list_tasks '{}' >/dev/null 2>&1; then
+              echo "the runner answered list_tasks"
+              break
+            fi
+            sleep 2
+          done
+          mkdir -p "$HOME/.config/act-mcp"
+          printf 'http://127.0.0.1:8080/mcp\n' >"$HOME/.config/act-mcp/endpoint"
+
+      # One call, one exit code, four assertions: reachable, advertised as `coverage`, terminal
+      # `success`, and at least one coverage record under `.evidence/coverage/<commit>/` for the commit
+      # that was executed. `--commit` is resolved here because the contract refuses a ref name
+      # (`docs/tool-contract.md` §3.1), and the poll prints the run's phase rather than going quiet for
+      # the length of an instrumented build.
+      - name: Ask the runner to run coverage, and check what came back
+        run: |
+          set -euo pipefail
+          scripts/mcp_run.sh \
+            --workflow coverage.yml \
+            --task coverage \
+            --category coverage \
+            --commit "$(git rev-parse HEAD)" \
+            --evidence-kind coverage \
+            --url http://127.0.0.1:8080/mcp \
+            --wait-secs 120 \
+            --timeout-secs 3300 \
+            --poll-secs 15
+
+      - name: Publish the tracefile and the record it produced
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          trace=$(find .evidence -name lcov.info -type f -printf '%T@ %p\n' 2>/dev/null \
+            | sort -rn | cut -d' ' -f2- | head -n1)
+          [[ -n $trace ]] || { echo "no lcov.info under .evidence after a run that reported success" >&2; exit 1; }
+          cp "$trace" evidence/lcov.info
+          record=$(find .evidence/coverage -name '*.jsonl' -type f -printf '%T@ %p\n' 2>/dev/null \
+            | sort -rn | cut -d' ' -f2- | head -n1)
+          [[ -n $record ]] || { echo "no coverage records under .evidence/coverage" >&2; exit 1; }
+          cp "$record" evidence/coverage.jsonl
+          # The contract's own validator, on the record the run produced: the server checked it on the
+          # way in, and this says the bytes that landed are still what the contract describes.
+          ./target/release/act-mcp validate-evidence evidence/coverage.jsonl
+          awk -F: '/^LF:/ { f += $2 } /^LH:/ { h += $2 } /^BF:/ { bf += $2 } /^BH:/ { bh += $2 }
+            END { printf "lines %d/%d, branches %d/%d\n", h, f, bh, bf }' evidence/lcov.info
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: evidence/
+          if-no-files-found: error
+
+      # Read-only, never gating, and pointed at the tree that now holds the evidence — which is the point
+      # of the arrangement: `report`'s contract is that CI can run it after every commit without it
+      # writing anything (ADR-0006 §10.1), and `doctor`'s findings belong in the log, not in the job
+      # result, because a warning about a machine is not a broken tree.
+      - name: Fathom report
+        if: always()
+        continue-on-error: true
+        run: ./target/release/fathom report .
+
+      - name: Fathom report (tsv)
+        if: always()
+        continue-on-error: true
+        run: ./target/release/fathom report . --format tsv
+
+      - name: Fathom doctor
+        if: always()
+        continue-on-error: true
+        run: ./target/release/fathom doctor .
+
+      - name: Show the runner's log
+        if: failure()
+        run: cat /tmp/act-mcp.log || true
+
+  benchmark-run:
+    name: Benchmark through the runner
+    if: ${{ !env.ACT }}
+    runs-on: ubuntu-24.04
+    env:
+      ACT_VERSION: '0.2.97'
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: rustup show
+
+      - name: Install act ${{ env.ACT_VERSION }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "https://github.com/nektos/act/releases/download/v${ACT_VERSION}/act_Linux_x86_64.tar.gz"
+          curl -fsSLO "https://github.com/nektos/act/releases/download/v${ACT_VERSION}/checksums.txt"
+          grep "  act_Linux_x86_64.tar.gz\$" checksums.txt | sha256sum --check
+          tar xzf act_Linux_x86_64.tar.gz act
+          mkdir -p "$HOME/.local/bin"
+          install -m 0755 act "$HOME/.local/bin/act"
+          echo "$HOME/.local/bin" >>"$GITHUB_PATH"
+          act --version
+
+      - name: Build
+        run: cargo build --release --bin act-mcp --bin fathom
+
+      - name: Start the MCP action runner
+        run: |
+          set -euo pipefail
+          nohup ./target/release/act-mcp serve \
+            --workspace "$PWD" \
+            --bind 127.0.0.1:8080 \
+            > /tmp/act-mcp.log 2>&1 &
+          for _ in $(seq 1 60); do
+            if scripts/mcp_call.sh -u http://127.0.0.1:8080/mcp list_tasks '{}' >/dev/null 2>&1; then
+              echo "the runner answered list_tasks"
+              break
+            fi
+            sleep 2
+          done
+          mkdir -p "$HOME/.config/act-mcp"
+          printf 'http://127.0.0.1:8080/mcp\n' >"$HOME/.config/act-mcp/endpoint"
+
+      # ADR-0006 §9.2 is explicit that the budget check is not a pre-merge gate in the shape it ships,
+      # and this job agrees: timings are published every commit and nothing here fails because a number
+      # moved. What does fail is a run that produced no numbers, or a cold first screen over the §9.1
+      # budget — those are facts about the tree, not noise about a machine. The budget is named here and
+      # nowhere else, so the ADR's number is not copied into a script that could drift from it.
+      - name: Ask the runner to run the benchmarks, and check what came back
+        run: |
+          set -euo pipefail
+          scripts/mcp_run.sh \
+            --workflow benchmarks.yml \
+            --task benchmark \
+            --category benchmark \
+            --commit "$(git rev-parse HEAD)" \
+            --evidence-kind benchmark \
+            --url http://127.0.0.1:8080/mcp \
+            --wait-secs 120 \
+            --timeout-secs 3300 \
+            --poll-secs 15
+
+      - name: Publish the payload and the record it produced
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          payload=$(find .evidence -name 'benchmark.json' -type f -printf '%T@ %p\n' 2>/dev/null \
+            | sort -rn | cut -d' ' -f2- | head -n1)
+          [[ -n $payload ]] || { echo "no benchmark.json under .evidence after a run that reported success" >&2; exit 1; }
+          cp "$payload" evidence/benchmark.json
+          record=$(find .evidence/benchmark -name '*.jsonl' -type f -printf '%T@ %p\n' 2>/dev/null \
+            | sort -rn | cut -d' ' -f2- | head -n1)
+          [[ -n $record ]] || { echo "no benchmark records under .evidence/benchmark" >&2; exit 1; }
+          cp "$record" evidence/benchmark.jsonl
+          ./target/release/act-mcp validate-evidence evidence/benchmark.jsonl
+          # Re-validated on this side of the boundary: if the runner kept it and a reader would not, that
+          # is a contract break, and the job says so instead of uploading a file nothing can use.
+          scripts/bench.sh --validate evidence/benchmark.json
+          python3 -c 'import json,sys
+          for m in json.load(open(sys.argv[1]))["metrics"]:
+              print("%-40s %12.2f %s  %s" % (m["name"], m["value"], m.get("unit", ""), m.get("labels", {})))' \
+            evidence/benchmark.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark
+          path: evidence/
+          if-no-files-found: error
+
+      - name: Fathom report
+        if: always()
+        continue-on-error: true
+        run: ./target/release/fathom report .
+
+      - name: Fathom report (tsv)
+        if: always()
+        continue-on-error: true
+        run: ./target/release/fathom report . --format tsv
+
+      - name: Fathom doctor
+        if: always()
+        continue-on-error: true
+        run: ./target/release/fathom doctor .
+
+      - name: Show the runner's log
+        if: failure()
+        run: cat /tmp/act-mcp.log || true

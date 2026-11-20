@@ -10,7 +10,7 @@ rules.
 Usage:
     scripts/validate_evidence.py [PATH ...] [--schema S] [--meta-schema M] [--stats]
 
-With no PATH it walks ./tests/e2e/testdata/expected.
+With no PATH it walks ./crates/act-mcp/tests/e2e/testdata/expected.
 
 PATH may be a .jsonl file, a meta.json file, or a directory (walked recursively; only
 `*.jsonl` and `meta.json` are picked up, dot-files and `.tmp` files are skipped because
@@ -210,7 +210,7 @@ def main(argv: list[str]) -> int:
         prog="validate_evidence.py",
         description="Validate .evidence JSONL and run manifests against the ADR-0002 schema.",
     )
-    parser.add_argument("paths", nargs="*", default=["tests/e2e/testdata/expected"], type=Path)
+    parser.add_argument("paths", nargs="*", default=["crates/act-mcp/tests/e2e/testdata/expected"], type=Path)
     parser.add_argument("--schema", type=Path, default=Path("schema/evidence.schema.json"))
     parser.add_argument("--meta-schema", type=Path, default=Path("schema/run-meta.schema.json"))
     parser.add_argument("--stats", action="store_true", help="print per-kind / per-commit counts")

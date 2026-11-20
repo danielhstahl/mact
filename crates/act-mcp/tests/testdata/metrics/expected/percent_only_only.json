@@ -1,0 +1,30 @@
+{
+  "case": "percent_only_only",
+  "model_version": 1,
+  "notes": "The only coverage record is log_scrape + percent_only + low_confidence, so there is no coverage number at all: coverage is absent, the gap is only_percent_only, and the scraped 87.4 is a caveat on the row, never the row's percent. Action success is still success - a run ran and succeeded.",
+  "rows": {
+    "1111111111111111111111111111111111111111": {
+      "action_detail": [
+        {
+          "category": "coverage",
+          "kind": "coverage",
+          "ok": true,
+          "run_id": "20261110T030900Z-77aa55",
+          "status": "success",
+          "task": "coverage-ad-hoc",
+          "workflow": "coverage"
+        }
+      ],
+      "action_success": "success",
+      "caveats": [
+        "percent_only",
+        "low_confidence"
+      ],
+      "commit": "1111111111111111111111111111111111111111",
+      "gaps": {
+        "benchmarks": "no_records",
+        "coverage": "only_percent_only"
+      }
+    }
+  }
+}

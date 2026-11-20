@@ -1,0 +1,54 @@
+{
+  "vector": "rust_loop",
+  "language": "rust",
+  "frontend": "lexer1",
+  "source": "../src/rust_loop.rs",
+  "sources_equal": null,
+  "hand_computed": "N, n, the decision-point counts and LOC are counted by hand from the file; V, G, MI and the band are re-derived by scripts/mi_reference.py and checked by scripts/validate_mi_definition.py",
+  "notes": "Rule coverage for `loop` (a decision point with no condition token at all) and for `break`, which is an operator keyword and never a decision point. Statements: fn + let (D), two semicolon statements (E), no arms (A), and two block headers, `loop` and `if` (B). The tail expression `i` still costs nothing.",
+  "expect": {
+    "status": "ok",
+    "operators": {
+      "total": 11,
+      "unique": 11,
+      "occurrences": {
+        "&": 1,
+        "+=": 1,
+        "=": 1,
+        ">=": 1,
+        "break": 1,
+        "fn": 1,
+        "if": 1,
+        "let": 1,
+        "loop": 1,
+        "mut": 1,
+        "pub": 1
+      }
+    },
+    "operands": {
+      "total": 11,
+      "unique": 8,
+      "occurrences": {
+        "0": 1,
+        "1": 1,
+        "3": 1,
+        "count": 1,
+        "i": 4,
+        "u8": 1,
+        "usize": 1,
+        "v": 1
+      }
+    },
+    "volume": 38.05374780501027,
+    "decision_points": {
+      "loop": 1,
+      "if": 1
+    },
+    "cyclomatic": 3,
+    "statements": 6,
+    "loc": 6,
+    "mi_raw": 122.36069880172613,
+    "mi": 71.6,
+    "band": "green"
+  }
+}

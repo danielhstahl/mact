@@ -1,0 +1,61 @@
+{
+  "vector": "rust_question",
+  "language": "rust",
+  "frontend": "lexer1",
+  "source": "../src/rust_question.rs",
+  "sources_equal": null,
+  "hand_computed": "N, n, the decision-point counts and LOC are counted by hand from the file; V, G, MI and the band are re-derived by scripts/mi_reference.py and checked by scripts/validate_mi_definition.py",
+  "notes": "The two decision points that are not keywords, plus the two lexical rules that look wrong and are pinned anyway: `?` is a decision point wherever it appears, and the `else` of a `let ... = .. else { .. }` is a decision point while every other `else` is not (and the `;` after that `else` block closes a D-counted introduction, so it adds no second line). Call-shaped beats grammatical: `Ok(number)` in a pattern costs `Ok` as an operator, and the turbofished `first.parse::<u32>()` costs `parse` as an OPERAND because the token after it is `::` and not `(` — which is exactly the consequence the rule is written to make identical in every implementation.",
+  "expect": {
+    "status": "ok",
+    "operators": {
+      "total": 19,
+      "unique": 15,
+      "occurrences": {
+        "&": 1,
+        "+": 1,
+        "<": 2,
+        "=": 2,
+        ">": 2,
+        "?": 1,
+        "Ok": 1,
+        "Some": 1,
+        "else": 1,
+        "fn": 1,
+        "let": 2,
+        "next": 1,
+        "pub": 1,
+        "return": 1,
+        "split": 1
+      }
+    },
+    "operands": {
+      "total": 15,
+      "unique": 11,
+      "occurrences": {
+        "' '": 1,
+        "1": 1,
+        "None": 1,
+        "Option": 1,
+        "first": 2,
+        "head": 1,
+        "number": 2,
+        "parse": 1,
+        "raw": 2,
+        "str": 1,
+        "u32": 2
+      }
+    },
+    "volume": 74.23092131656186,
+    "decision_points": {
+      "question": 1,
+      "let_else": 1
+    },
+    "cyclomatic": 3,
+    "statements": 4,
+    "loc": 4,
+    "mi_raw": 125.45469122782038,
+    "mi": 73.4,
+    "band": "green"
+  }
+}

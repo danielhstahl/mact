@@ -7,8 +7,11 @@ on:
     # A docs-only commit cannot break the crate, and a build that runs anyway teaches
     # people to ignore the badge. The full set of paths that can break it:
     paths:
-      - "src/**"
-      - "tests/**"
+      # Every crate in the workspace, in one pattern: each crate's manifest, sources and tests
+      # live under `crates/` since the split (mact-by1.5, ADR-0005 §3), and a pattern that names
+      # the directory rather than the crates cannot forget the next one. The root manifest is
+      # listed below; a workspace member's own Cargo.toml is inside `crates/**`.
+      - "crates/**"
       - "schema/**"
       - "scripts/**"
       - "Cargo.toml"
@@ -39,7 +42,10 @@ jobs:
     env:
       CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
     steps:
+      # Full history: the check step runs fathom's suite, which indexes this repository.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # One cache for the whole job: the registry (what cargo downloads) and ./target
       # (what it compiles). Keyed on Cargo.lock plus the toolchain pin, so a lockfile or
@@ -74,4 +80,4 @@ jobs:
       # The check itself. Everything except the release build, and `--keep-going` so one
       # red step reports the others instead of hiding them.
       - name: ci
-        run: cargo test #scripts/ci.sh --keep-going fmt clippy doc test schema supply-chain
+        run: cargo test #scripts/ci.sh --keep-going fmt clippy build doc test tui-snapshot fathom-report fathom-doctor coverage benchmark mcp-driver schema supply-chain

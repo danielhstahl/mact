@@ -1,0 +1,28 @@
+{
+  "vector": "rust_unparseable",
+  "language": "rust",
+  "frontend": "lexer1",
+  "source": "../src/rust_unparseable.rs",
+  "derived": false,
+  "notes": "An unterminated string literal and an unbalanced brace. The front end refuses rather than guessing, because a repaired parse silently drops statements and a silently wrong LOC on a trend line is worse than a gap. The reason is cached, so one broken file is not re-parsed forever.",
+  "expect": {
+    "status": "parse_error",
+    "operators": {
+      "total": 0,
+      "unique": 0,
+      "occurrences": {}
+    },
+    "operands": {
+      "total": 0,
+      "unique": 0,
+      "occurrences": {}
+    },
+    "volume": null,
+    "decision_points": {},
+    "cyclomatic": null,
+    "statements": null,
+    "loc": null,
+    "mi": null,
+    "band": null
+  }
+}

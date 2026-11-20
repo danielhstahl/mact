@@ -1,10 +1,12 @@
 .transcripts/
+
+# fathom metric cache (local only): docs/adr/0006-fathom-workspace-layout.md
+# Everything under .fathom/ is disposable cache; the only committed file is LAYOUT.md, the
+# on-disk contract that lives inside the cache root. Any other whitelist entry here must be
+# listed in that ADR's §12 or it is dead: scripts/validate_fathom_layout.py says so.
 .fathom/*
-!.fathom/reviews/
-!.fathom/ratchet.toml
 !.fathom/LAYOUT.md
-.fathom/**/*.tmp
-.fathom/**/*.sqlite3-*
+
 __pycache__/
 *.pyc
 
@@ -18,3 +20,9 @@ __pycache__/
 
 # cargo build artefacts
 /target
+
+# what `scripts/coverage.sh` and `scripts/bench.sh` write when they are run by hand: inside a run
+# $ACTMCP_EVIDENCE_OUT is set and they write into the evidence tree instead (ADR-0002 §3.2, §3.3)
+/lcov.info
+/benchmark.json
+.pi/*

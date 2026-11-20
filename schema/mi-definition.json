@@ -1,0 +1,835 @@
+{
+  "$comment": "ADR-0007's normative constants: the Maintainability Index definition act-mcp/Fathom measures. This file is the machine-readable form of docs/adr/0007-maintainability-index.md. It is the ONE spelling of the numbers and the closed enumerations: scripts/mi_reference.py loads it and is the oracle scripts/validate_mi_definition.py checks the golden vectors in tests/testdata/mi/ against, and the ADR's fenced blocks are diffed against it by that same checker. Prose that disagrees with this file is a bug in the prose. Changing anything here is a semantic change to every MI number ever written: bump the analyzer version(s) named in `analyzer` in the same commit (ADR-0006 section 6.3), or the cache will serve old numbers under new keys.",
+  "definition_version": 1,
+  "adr": "ADR-0007",
+  "ticket": "mact-by1.3",
+  "analyzer": {
+    "frontend_id": "lexer1",
+    "tokenize": {
+      "id": "mi.tokenize",
+      "version": 1,
+      "input_kind": "blob_path"
+    },
+    "score": {
+      "id": "mi.score",
+      "version": 1,
+      "input_kind": "blob_path"
+    },
+    "bump_rules": {
+      "tokenize": "any change to a token stream, a keyword/punctuation enumeration, a decision-point rule, a statement rule, or a lexer bug fix that moves a count",
+      "score": "any change to formula, rounding, clamping, band edges, measurability thresholds or aggregation arithmetic"
+    }
+  },
+  "formula": {
+    "reference": "Coleman, DeMers, Ramani & Sweet, \"Integrating software metrics into a commercial software development environment\", IEEE Software 13(5), 1996 \u2014 the original MI, scaled by the 100/171 Microsoft published with it so the score is 0-100. This is the formula ADR-0006 line 98 points here for.",
+    "halstead_volume": "V = N * log2(n)",
+    "cyclomatic": "G = 1 + decision points, counted over the whole file",
+    "raw": "MI_raw = 171 - 5.2*ln(V) - 0.23*G - 16.2*ln(LOC)",
+    "scaled": "MI = clamp(MI_raw * 100 / 171, 0, 100)",
+    "a": 171.0,
+    "b_volume": 5.2,
+    "c_cyclomatic": 0.23,
+    "d_loc": 16.2,
+    "scale_numerator": 100.0,
+    "scale_denominator": 171.0,
+    "clamp_min": 0.0,
+    "clamp_max": 100.0
+  },
+  "precision": {
+    "arithmetic": "ieee754-binary64-every-operation",
+    "volume_basis": "operators",
+    "volume_basis_note": "V is computed from the OPERATOR counts, which is what the 1996 paper and the MI tools in the wild do. The operand-based variant (N and n over both classes together) is documented in ADR-0007 section 3.1 as the alternative that moves the number least, and is refused for comparability, not because it is worse.",
+    "ln": "platform natural log: Rust f64::ln, Python math.log",
+    "log2": "platform log2: Rust f64::log2, Python math.log2. NOT ln(n)/ln(2).",
+    "rounding": "round_half_away_from_zero",
+    "rounding_formula": "MI_1(x) = round_half_away(x * 10.0) / 10.0; Rust (x*10.0).round()/10.0, Python copysign(floor(abs(x*10.0)+0.5), x*10.0)/10.0",
+    "storage_decimals": 1,
+    "storage_rule": "the stored/compared number is the rounded one, always; the pre-rounding double is never persisted and never compared",
+    "json_volume_encoding": "repr shortest round-trip decimal, no trailing-zero padding",
+    "json_float_encoding": "repr of the rounded double, at most storage_decimals decimals",
+    "boundary_slack": 1e-06,
+    "boundary_rule": "no golden vector value may sit within boundary_slack of a storage rounding boundary or a band edge: a 1 ULP libm difference must not be able to move a stored value or a traffic light",
+    "reachable_range": "V >= 1 and LOC >= 1 make every subtracted term non-negative, so MI_raw < 171 and MI < 100 for every measurable file; the reachable ceiling is 99.9. clamp_max is defensive: it is what a leak through the vacuous rule would land on instead of an impossible number above 100."
+  },
+  "measurability": {
+    "min_loc": 1,
+    "min_operator_unique": 2,
+    "ordered_reasons": [
+      "excluded",
+      "skipped_noise",
+      "unsupported_language",
+      "oversized",
+      "parse_error",
+      "vacuous",
+      "ok"
+    ],
+    "vacuous_note": "LOC < min_loc or n < min_operator_unique: ln(0) is undefined, so there is no number to report. This reason exists so the gap is labelled and not silently 0.",
+    "never_zero_rule": "a file with no MI has no MI field. It is never 0, because 0 means 'worst possible file' and would be a lie."
+  },
+  "status_reasons": [
+    {
+      "id": "ok",
+      "stored": "the file has a measurable MI",
+      "in_caveat_count": false
+    },
+    {
+      "id": "excluded",
+      "stored": "not a source file, or under paths.exclude",
+      "in_caveat_count": false
+    },
+    {
+      "id": "skipped_noise",
+      "stored": "matched paths.noise, or is a test file while paths.include_tests is false",
+      "in_caveat_count": false
+    },
+    {
+      "id": "unsupported_language",
+      "stored": "an extension on the source list whose language has no front end",
+      "in_caveat_count": true
+    },
+    {
+      "id": "oversized",
+      "stored": "the blob is larger than index.file_size_cap_mib",
+      "in_caveat_count": true
+    },
+    {
+      "id": "parse_error",
+      "stored": "the blob is not lexable by its language's front end (invalid UTF-8, unterminated literal or block comment, unterminated bracket at EOF)",
+      "in_caveat_count": true
+    },
+    {
+      "id": "vacuous",
+      "stored": "lexed fine, but LOC == 0 or n < 2, so ln() is undefined",
+      "in_caveat_count": true
+    }
+  ],
+  "bands": {
+    "green_min": 50.0,
+    "amber_min": 25.0,
+    "rule": "band(mi) = red if mi < 25.0, amber if mi < 50.0, green otherwise; an exact edge belongs to the better band",
+    "names": [
+      "green",
+      "amber",
+      "red"
+    ],
+    "names_by_threshold": {
+      "amber_below": 50.0,
+      "red_below": 25.0
+    },
+    "edge_ownership": "better band",
+    "stored_in_cache": false,
+    "is_config": false,
+    "note": "declared here, not invented in the view layer (ticket rule). Not stored: a band change must not invalidate a cache full of numbers that did not move. Not config: two readers of one repository must not see different traffic lights for one commit, and a per-user band would make `fathom report --json` disagree between CI and a laptop for a non-measurement reason.",
+    "calibration": "the ticket suggested < 85 amber and < 65 red, and those edges cannot be used with the formula this ticket pins. They belong to the UPDATED MI, which estimates Halstead volume from LOC instead of measuring it, so it lands 60-90 for ordinary code. With a measured volume the 5.2*ln(V) term is 25-55 points instead of ~5, and the 16.2*ln(LOC) term dominates: this ADR's own hand-counted 16-statement fixture scores 55.9, and section 5.2 shows a 1000-line file scoring 0. Bands at 85/65 would call an entire real repository red, and a band that everything fails is not a signal. The edges here are placed where the formula separates the corpus: green is a file nobody needs to argue about, amber is a file worth a look, red is a file whose size and density is the finding. Section 5.2 carries the arithmetic and the line counts each edge falls at.",
+    "provenance": "the hand-counted golden vectors in tests/testdata/mi plus the extrapolation table in ADR-0007 section 5.2, both computed from the pinned formula",
+    "revisit_when": "mact-by1.7's first full-corpus run: its histogram is attached to ADR-0007 section 5 or these two numbers are amended, in one commit. Spent by mact-by1.7: the histogram is ADR-0007 section 5.3, the edges stand, and the next trigger is a second corpus of a different shape."
+  },
+  "aggregation": {
+    "unit": "file",
+    "population": "every file in scope in the commit's tree (git ls-tree -r), not only the files the commit touched",
+    "weight": "loc",
+    "formula": "MI_agg = MI_1( sum(MI_i * LOC_i) / sum(LOC_i) ), i over status == ok",
+    "accumulation_order": "path bytes ascending",
+    "excluded_from_mean": "every status that is not ok; each is counted in `counts`",
+    "empty_population": "aggregate is unknown (gaps.no_mi = true), never 0",
+    "hotspots_default": 5,
+    "hotspot_sort": [
+      "mi ascending",
+      "loc descending",
+      "path ascending"
+    ],
+    "sub_threshold_set_below": 65.0,
+    "parent": "git parent #1 (first parent), whatever the walk mode",
+    "delta_rule": "delta = MI_1(aggregate(C) - aggregate(parent)); absent when the commit has no parent",
+    "recompute_rule": "the aggregate is a pure function of the commit's own file set; no carry-forward recurrence over history is allowed, because float addition order would then decide the stored digit and `doctor` could not re-derive it",
+    "reported_alongside": [
+      "loc",
+      "files",
+      "counts",
+      "delta_vs_parent",
+      "hotspots",
+      "sub_threshold_added",
+      "sub_threshold_removed",
+      "unanalysed_paths"
+    ],
+    "sub_threshold_set": {
+      "name": "watchlist",
+      "below": "bands.names_by_threshold.red_below",
+      "note": "the set whose membership the row reports is exactly the red band, named by reference so the band edge cannot be spelled twice. The ticket asked for 'files added/removed from the sub-threshold set'; membership changes of a set the size of the amber band (below 65 here) is a list that churns on every commit and says nothing, so the reported set is the red one and the amber population is reported as a count."
+    },
+    "sub_threshold_report": "added = S(commit) \\ S(parent), removed = S(parent) \\ S(commit), both path-bytes sorted; plus amber_paths, the paths below the amber edge, so the view can grey them without re-deriving a band"
+  },
+  "scope": {
+    "classifier": "ADR-0006 section 7.2's `paths.source` / `paths.noise` / `paths.exclude`, plus the extension map below; the diffstat (by1.8) and MI read the same classifier so the +/- column and the MI column describe the same set of files",
+    "source_extensions": {
+      ".rs": "rust",
+      ".py": "python"
+    },
+    "extension_rule": "longest-suffix match, case-sensitive, applied to the repo-relative path's final segment; an extension not on this list is `excluded`, i.e. not source at all, and is NOT counted as unanalysed",
+    "noise_globs": [
+      "target/**",
+      "node_modules/**",
+      "**/*.lock",
+      "Cargo.lock",
+      "**/generated/**",
+      "**/*.min.*",
+      ".venv/**",
+      "vendor/**"
+    ],
+    "tests_default": {
+      "key": "paths.include_tests",
+      "default": false,
+      "test_globs": [
+        "tests/**",
+        "**/tests/**",
+        "**/test_*.py",
+        "**/*_test.py",
+        "**/*_test.rs"
+      ],
+      "note": "new key this ADR declares; the rule is consumed by BOTH diff.per_file and mi.score so the sets stay identical. A test file excluded this way is labelled noise, not hidden: ADR-0006's noise_add/noise_del still counts it."
+    },
+    "precedence": "exclude > noise > (source AND an enabled language)",
+    "binary_rule": "a blob containing a NUL byte before the first newline, or that is not valid UTF-8, is `parse_error` if its extension is in scope, `excluded` otherwise"
+  },
+  "languages": {
+    "rust": {
+      "display": "Rust",
+      "extensions": [
+        ".rs"
+      ],
+      "enabled_in_v1": true,
+      "operator_keywords": [
+        "abstract",
+        "as",
+        "async",
+        "await",
+        "become",
+        "break",
+        "const",
+        "continue",
+        "do",
+        "dyn",
+        "else",
+        "enum",
+        "extern",
+        "final",
+        "fn",
+        "for",
+        "if",
+        "impl",
+        "in",
+        "let",
+        "loop",
+        "match",
+        "mod",
+        "move",
+        "mut",
+        "override",
+        "priv",
+        "pub",
+        "ref",
+        "return",
+        "static",
+        "struct",
+        "trait",
+        "try",
+        "type",
+        "typeof",
+        "unsized",
+        "unsafe",
+        "use",
+        "virtual",
+        "where",
+        "while",
+        "yield"
+      ],
+      "operand_keywords": [
+        "crate",
+        "self",
+        "Self",
+        "true",
+        "false",
+        "_"
+      ],
+      "operand_by_position": [
+        "a field-access name after `.` that is not called",
+        "a call-argument name (not the callee)",
+        "a bound or type name in a generic argument list",
+        "a non-keyword identifier in any other position"
+      ],
+      "contextual_keywords_are_operands": [
+        "box",
+        "catch",
+        "copy",
+        "default",
+        "gen",
+        "macro",
+        "raw",
+        "relocatable",
+        "offsetof",
+        "poll",
+        "safe",
+        "spawn",
+        "union"
+      ],
+      "primitive_types_are_operands": true,
+      "operator_punctuation": [
+        "+",
+        "-",
+        "*",
+        "/",
+        "%",
+        "^",
+        "!",
+        "&&",
+        "||",
+        "<<",
+        ">>",
+        "<=",
+        ">=",
+        "==",
+        "!=",
+        "<",
+        ">",
+        "=",
+        "+=",
+        "-=",
+        "*=",
+        "/=",
+        "%=",
+        "&=",
+        "|=",
+        "^=",
+        "<<=",
+        ">>=",
+        "..",
+        "..=",
+        "?",
+        "|",
+        "&"
+      ],
+      "ignored_punctuation": [
+        "(",
+        ")",
+        "[",
+        "]",
+        "{",
+        "}",
+        ",",
+        ";",
+        ":",
+        "::",
+        ".",
+        "->",
+        "=>",
+        "@",
+        "#"
+      ],
+      "token_classes_ignored": [
+        "whitespace",
+        "line_comment",
+        "block_comment",
+        "doc_comment",
+        "attribute (a `#` or `#!` followed by `[`: the whole bracketed form emits no tokens)",
+        "lifetime ('name)",
+        "label ('name: in front of a loop)",
+        "shebang line"
+      ],
+      "macro_invocation": "the macro name is an operator, `!` is an operator, and the token tree is tokenised by the same rules recursively",
+      "ambiguities": [
+        {
+          "site": ">> vs two >",
+          "rule": "maximal munch: `Vec<Vec<u8>>` lexes `>>`, exactly as rustc does; the vector file has a fixture pinning it"
+        },
+        {
+          "site": "* and & as operator vs as type/borrow marker",
+          "rule": "both readings are operator tokens, so the ambiguity does not need resolving"
+        },
+        {
+          "site": "< and > in generics vs comparison",
+          "rule": "both readings are operator tokens"
+        },
+        {
+          "site": "|| as closure head vs || as short-circuit",
+          "rule": "shared_exceptions value_preceded: `||` is a decision point only when the previous token is an operand, so `unwrap_or_else(|| x)` counts 0 and `a || b` counts 1"
+        },
+        {
+          "site": "&& as double reference vs short-circuit",
+          "rule": "same rule: `fn f(x: &&str)` counts 0, `a && b` counts 1"
+        },
+        {
+          "site": "!' as macro bang vs logical not",
+          "rule": "both are operator tokens; `!` is never a decision point"
+        },
+        {
+          "site": "a match arm's `|` pattern alternative vs a closure parameter pipe",
+          "rule": "both are `|` operator tokens; neither is a decision point, so the ambiguity does not need resolving"
+        },
+        {
+          "site": "char literal 'a' vs lifetime 'a",
+          "rule": "a quote closed by a matching quote within the same line is a char literal (operand); otherwise the run is a lifetime (ignored)"
+        },
+        {
+          "site": "&& and || as a fork or as something else",
+          "rule": "the preceding-token rule (shared exception value_preceded): look at the nearest preceding token of any class except whitespace and comments, so ignored punctuation counts. If it is an operand or one of `)` `]` `}` it is a fork; otherwise it is not. `key: &&str` is not a fork, `unwrap_or_else(|| x)` is not a fork, `a && b` and `foo() || bar` are forks."
+        },
+        {
+          "site": "a turbofished call foo::<T>(x)",
+          "rule": "the callee test is lexical, so `foo` is an operand here and an operator at `foo(x)`. Accepted so that no front end has to guess types."
+        }
+      ],
+      "decision_points": {
+        "note": "a list entry is the token text (maximal munch) or a structural rule; each occurrence adds its weight to `base + sum`.",
+        "base": 1,
+        "rules": [
+          {
+            "id": "if",
+            "token": "if",
+            "weight": 1
+          },
+          {
+            "id": "for",
+            "token": "for",
+            "weight": 1
+          },
+          {
+            "id": "while",
+            "token": "while",
+            "weight": 1
+          },
+          {
+            "id": "loop",
+            "token": "loop",
+            "weight": 1
+          },
+          {
+            "id": "match_arm",
+            "structural": "a `=>` at the top level of a match expression body (tracked by bracket depth), one per arm",
+            "weight": 1
+          },
+          {
+            "id": "and_and",
+            "token": "&&",
+            "weight": 1,
+            "condition": "value_preceded"
+          },
+          {
+            "id": "or_or",
+            "token": "||",
+            "weight": 1,
+            "condition": "value_preceded"
+          },
+          {
+            "id": "question",
+            "token": "?",
+            "weight": 1
+          },
+          {
+            "id": "let_else",
+            "token": "else",
+            "weight": 1,
+            "condition": "the `else` of a `let ... = expr else { .. }` statement; every other `else` weighs nothing"
+          }
+        ],
+        "not_decision_points": [
+          "`else` and `else if`: the nested `if` already counts, so an if/else chain costs one per `if`",
+          "`if let` / `while let`: the `if`/`while` already counts",
+          "`return`, `break`, `continue`, `panic!`, `unreachable!`, `assert!`: a straight line, per the shared exception list",
+          "a closure head `||` or a double reference `&&`",
+          "`|` pattern alternatives",
+          "`dyn`/`impl`/`async`/`await`",
+          "a `?` inside a macro's token tree: tokenised as an operator, and counted as a decision point like any other `?`"
+        ]
+      },
+      "statements": {
+        "formula": "LOC = D + E + A + B",
+        "D": "one per introduction keyword wherever it appears: let, use, const, static, type, struct, enum, union, trait, impl, mod, fn, and a macro_rules! definition",
+        "E": "one per `;`-terminated statement that is not the `;` closing a D-counted introduction and not a `;` inside a macro token tree or an attribute",
+        "A": "one per match arm (`=>` at the top level of a match body)",
+        "B": "one per control-flow block header followed by a block: if, for, while, loop. An `else` block adds nothing and `match` adds nothing, because its arms carry the count",
+        "extras": [
+          "match arm"
+        ],
+        "never_counted": [
+          "a closing `}` / `)` / `]` line",
+          "an attribute (it emits no tokens at all)",
+          "a blank line",
+          "a comment-only line",
+          "the inside of a macro token tree",
+          "a `where` clause or a parameter list"
+        ],
+        "empty_or_comment_file_is_zero": true,
+        "note": "a struct field, an enum variant, a `where` clause, a parameter list, an attribute and a doc comment are not statements: LOC measures executable logic, not declarations of data or prose about it"
+      },
+      "name_rules_ordered": [
+        "1. an operand_keyword is an operand (self, Self, true, false, crate, _)",
+        "2. an operator_keyword is an operator",
+        "3. R1 definition name: a name immediately after fn, struct, enum, union, trait, impl, mod, type, const, static or macro_rules! is an operand",
+        "4. R2 call-shaped: a name immediately followed by `(` is an operator",
+        "5. R2m macro head: a name immediately followed by `!` is an operator",
+        "6. anything else is an operand"
+      ],
+      "name_rules_consequences": [
+        "a call and a call-shaped match pattern are both operators: `Some(rest)` in a pattern costs `Some` as an operator exactly as `Some(rest)` in an expression does, because the test is lexical and a pattern-vs-expression distinction would need a parse",
+        "a definition name is an operand (`fn add(`), so a file is never rewarded or punished for repeating its own function names",
+        "a turbofished call site `foo::<T>(x)` counts `foo` as an operand, because the token after it is `::` and not `(`. Known, accepted, and identical in every implementation because the rule is lexical."
+      ],
+      "soft_keywords": []
+    },
+    "python": {
+      "display": "Python",
+      "extensions": [
+        ".py"
+      ],
+      "enabled_in_v1": true,
+      "operator_keywords": [
+        "and",
+        "as",
+        "assert",
+        "async",
+        "await",
+        "break",
+        "class",
+        "continue",
+        "def",
+        "del",
+        "elif",
+        "else",
+        "except",
+        "finally",
+        "for",
+        "from",
+        "global",
+        "if",
+        "import",
+        "in",
+        "is",
+        "lambda",
+        "nonlocal",
+        "not",
+        "or",
+        "pass",
+        "raise",
+        "return",
+        "try",
+        "while",
+        "with",
+        "yield"
+      ],
+      "operand_keywords": [
+        "None",
+        "True",
+        "False",
+        "cls",
+        "self"
+      ],
+      "operand_by_position": [
+        "a call-argument name (not the callee)",
+        "an attribute name after `.`",
+        "a keyword-argument name at a call site (before `=`)",
+        "a module or alias name after `import`/`from`/`as`",
+        "a non-keyword identifier in any other position"
+      ],
+      "contextual_keywords_are_operands": [
+        "type (soft keyword: `type Alias = int`)",
+        "any name shadowing a soft keyword at a non-statement-start position"
+      ],
+      "soft_keywords_by_position": {
+        "match": "a keyword iff it is the first token of a logical line, is not followed by `=`, and the line's final token before the newline is `:`",
+        "case": "a keyword iff it is the first token of a logical line whose enclosing block header was a `match` statement",
+        "else_line": "an `else` that begins a logical line is an operator token and is merged into its header's statement (see statements.extras)"
+      },
+      "primitive_types_are_operands": true,
+      "operator_punctuation": [
+        "+",
+        "-",
+        "*",
+        "/",
+        "//",
+        "%",
+        "**",
+        "@",
+        "&",
+        "|",
+        "^",
+        "~",
+        "<<",
+        ">>",
+        "<",
+        ">",
+        "==",
+        "!=",
+        "<=",
+        ">=",
+        "=",
+        "+=",
+        "-=",
+        "*=",
+        "/=",
+        "//=",
+        "%=",
+        "**=",
+        "&=",
+        "|=",
+        "^=",
+        "<<=",
+        ">>=",
+        ":="
+      ],
+      "ignored_punctuation": [
+        "(",
+        ")",
+        "[",
+        "]",
+        "{",
+        "}",
+        ",",
+        ";",
+        ":",
+        ".",
+        "->"
+      ],
+      "token_classes_ignored": [
+        "whitespace and line continuations",
+        "comment",
+        "decorator marker `@` when it begins a logical line (its expression is still tokenised)",
+        "indentation/dedentation, which feeds structure only"
+      ],
+      "macro_invocation": "n/a",
+      "ambiguities": [
+        {
+          "site": "f-string interiors",
+          "rule": "an f-string is one operand token; `{expr}` inside it is never tokenised, so a comprehension inside an f-string adds nothing"
+        },
+        {
+          "site": "string prefixes and quotes",
+          "rule": "r/b/u/f combinations and triple quotes are one operand token, text as written"
+        },
+        {
+          "site": "`@` decorator vs matrix multiply",
+          "rule": "a `@` that begins a logical line is the ignored decorator marker; anywhere else it is an operator token"
+        },
+        {
+          "site": "soft keywords match/case",
+          "rule": "soft_keywords_by_position; `case = 1` inside a function is an operand, a `case` line inside a `match` block is a keyword"
+        },
+        {
+          "site": "`...` (Ellipsis)",
+          "rule": "an operand token (it denotes a value), unlike Rust's `..`, which is an operator: the notation test and the value test disagree here and the value test wins"
+        },
+        {
+          "site": "`*args` / `**kwargs`",
+          "rule": "`*` and `**` are operator tokens, as everywhere; there is no type position in Python to confuse them with"
+        }
+      ],
+      "decision_points": {
+        "note": "a list entry is the token text (maximal munch) or a structural rule; each occurrence adds its weight to `base + sum`.",
+        "base": 1,
+        "rules": [
+          {
+            "id": "if",
+            "token": "if",
+            "weight": 1
+          },
+          {
+            "id": "elif",
+            "token": "elif",
+            "weight": 1
+          },
+          {
+            "id": "for",
+            "token": "for",
+            "weight": 1
+          },
+          {
+            "id": "while",
+            "token": "while",
+            "weight": 1
+          },
+          {
+            "id": "except",
+            "token": "except",
+            "weight": 1
+          },
+          {
+            "id": "and",
+            "token": "and",
+            "weight": 1
+          },
+          {
+            "id": "or",
+            "token": "or",
+            "weight": 1
+          },
+          {
+            "id": "if_comprehension",
+            "structural": "an `if` inside a comprehension's square brackets (already covered by the `if` rule; listed so the vector can name it)",
+            "weight": 0
+          },
+          {
+            "id": "match_case",
+            "token": "case",
+            "weight": 1
+          }
+        ],
+        "not_decision_points": [
+          "`else` (including a `try/finally` and a `for/else`) and `finally`",
+          "`with` and `async with`",
+          "`assert`",
+          "`lambda` and `yield`",
+          "`not` (unary, not a fork in the graph)",
+          "`try` itself: the cost is carried by its `except` clauses",
+          "a `for` clause inside a comprehension"
+        ]
+      },
+      "statements": {
+        "formula": "LOC = L + H",
+        "L": "one per logical line (a `\\` continuation or a bracketed run is one logical line), including a bare expression statement such as a module docstring",
+        "H": "one extra per logical line that opens a block, which is exactly the logical line whose last token before the newline is `:`: class, def, if, elif, else, for, while, try, except, finally, with, match headers and every `case` clause",
+        "extras": [
+          "block header opened by a logical line",
+          "else/elif/except/finally clause"
+        ],
+        "never_counted": [
+          "a continuation line inside brackets or after `\\`",
+          "a decorator line (it emits its tokens into the definition header's statement)",
+          "a blank line",
+          "a comment-only line"
+        ],
+        "empty_or_comment_file_is_zero": true,
+        "note": "the rule is deliberately expressible without an AST: logical lines and their final token are all a tokeniser has to track, and that is what makes two implementations agree"
+      },
+      "name_rules_ordered": [
+        "1. an operand_keyword is an operand (None, True, False, self, cls)",
+        "2. an operator_keyword is an operator",
+        "3. R1 definition name: a name immediately after def or class is an operand",
+        "4. R2 call-shaped: a name immediately followed by `(` is an operator",
+        "5. R2m: not applicable (Python has no macro head)",
+        "6. anything else is an operand"
+      ],
+      "soft_keywords": [
+        "match",
+        "case"
+      ]
+    }
+  },
+  "shared": {
+    "operand_definition": "an operand is an identifier occurrence or a literal occurrence, classed by the ordered name rules; a literal is one token and its contents are never tokenised; nothing else produces an operand.",
+    "token_classes": [
+      "operator",
+      "operand",
+      "ignored"
+    ],
+    "unique_key": "byte-for-byte token text as written. An identifier is its own source text: no case folding, no unicode normalisation, no raw-identifier prefix stripping (Rust `r#type` is a different operand from `type`). A number keeps the form it was written in, so `1`, `1.0`, `1_000` and `0x10` are four operands. A string, bytes or char literal is keyed by its source text *including* the prefix and the quote marks, and escapes are NOT interpreted: `'x'` is not the operand `x` and `r#\"a\"#` is not `\"a\"`. Keeping the quotes is what stops the identifier `a` and the string \"a\" from collapsing into one operand, which is the trap in every hand-rolled Halstead counter.",
+    "ignored_classes": [
+      "whitespace",
+      "line_comment",
+      "block_comment",
+      "doc_comment",
+      "attribute content (Rust `#[...]` / `#![...]` blocks)",
+      "decorator marker (Python line-leading `@`)",
+      "lifetime and label tokens (Rust `'a`, `'a:)",
+      "shebang and encoding declarations",
+      "indentation structure (it feeds statements, not tokens)"
+    ],
+    "exceptions": [
+      {
+        "id": "value_preceded",
+        "rule": "`&&` and `||` (Rust) and the keywords `and` and `or` (Python) are decision points only when the nearest preceding token of ANY class except whitespace and comments is an operand or one of `)` `]` `}`. Ignored punctuation counts as a preceding token, which is what makes `key: &&str` not a fork. A rule about positions in the token stream, chosen over a rule about positions in the grammar, because the first is decidable without a parse: a closure head `|| x`, a double reference `&&str`, a default value, a keyword argument, a type position and a generic argument list are all settled by it, and `foo(1) || bar` is a fork, which is right.",
+        "applies": [
+          "rust:and_and",
+          "rust:or_or",
+          "python:and",
+          "python:or"
+        ]
+      },
+      {
+        "id": "else_is_cheap",
+        "rule": "`else` is an operator token but never a decision point, except Rust's `let ... else`, whose `else` is a decision point because the statement has two exits",
+        "applies": [
+          "rust",
+          "python"
+        ]
+      },
+      {
+        "id": "arms_are_decision_points",
+        "rule": "the decision is the arm, not the keyword: Rust counts one per `match` arm (`=>`), Python counts one per `case` clause. A two-arm match and an if/else therefore cost the same 2.",
+        "applies": [
+          "rust:match_arm",
+          "python:match_case"
+        ]
+      },
+      {
+        "id": "call_names_are_operators",
+        "rule": "the name rules are lexical and ordered (each language's `name_rules_ordered`): definition names are operands, a name followed by `(` (or `!` in Rust) is an operator, everything else is an operand; call arguments are operands. No front end needs types, and no front end has to tell a pattern from an expression.",
+        "applies": [
+          "rust",
+          "python"
+        ]
+      },
+      {
+        "id": "no_early_return_special_case",
+        "rule": "a guard clause is an `if` and costs exactly 1, like every other `if`. A `?` costs 1 wherever it appears. There is no per-function CFG, so `return` itself is never a decision point.",
+        "applies": [
+          "rust",
+          "python"
+        ]
+      },
+      {
+        "id": "macro_and_format_bodies",
+        "rule": "Rust macro token trees are tokenised as operators-and-operands by the same rules, and contribute no statements; `format!`/`println!` format strings are one operand token whose `{}` slots are never tokenised. Python f-strings are one operand token whose `{}` slots are never tokenised.",
+        "applies": [
+          "rust",
+          "python"
+        ]
+      },
+      {
+        "id": "strings_are_leaves",
+        "rule": "a string literal is one operand, and nothing inside it is a token, ever: it is the only way `\"if a && b\"` inside a docstring cannot change a metric",
+        "applies": [
+          "rust",
+          "python"
+        ]
+      },
+      {
+        "id": "maximal_munch",
+        "rule": "operators are lexed by maximal munch, so `>>` in `Vec<Vec<u8>>` is one token (as rustc lexes it) and not two `>`; both readings are operator tokens, so only the *unique count* can differ, which is exactly why it is pinned and vectored",
+        "applies": [
+          "rust",
+          "python"
+        ]
+      }
+    ]
+  },
+  "front_end": {
+    "decision": "pure-Rust hand-written per-language token front ends, one shared model and one scoring function; tree-sitter rejected",
+    "why_not_tree_sitter": [
+      "it is C: `tree-sitter` plus one grammar per language is a `cc` build requirement, and cd.yml builds five targets from one runner including musl and aarch64-apple-darwin; ADR-0003 refused libgit2 and ADR-0006 refused sqlite for exactly this reason",
+      "MI needs a token stream, statement boundaries and decision points, not a syntax tree with error recovery; tree-sitter's repair is the feature it is bought for and the one this ADR refuses (a repaired tree silently drops statements, so LOC would be wrong and unnoticeable)",
+      "the definition would be written in node-kind names owned by someone else's grammar release, so a grammar bump would move every cached MI; the version that has to go into the cache key is another moving part",
+      "one hand-written front end per language is a table of enumerations plus a lexer, and the enumerations are this ADR's tables: the definition stays readable and reviewable in this repository"
+    ],
+    "cost": "one lexer per language (the Rust one is the harder: maximal munch, raw strings, char-vs-lifetime, nested block comments, attributes, macro token trees), a per-language enumeration table in this file, and a golden vector set per language",
+    "uniformity_guarantee": "uniformity comes from the shared model, not from one grammar: one `Token`/`DecisionPoint`/`Statement` model, one measurability ladder, one `score()`, one aggregate, one band function. Per-language work is a table and a lexer; it must never fork the scoring.",
+    "v2_candidates": [
+      "Go (one lexer, no maximal-munch surprises: gofmt makes the token stream unusually regular)",
+      "TypeScript/JS (ASI is the whole difficulty; it needs the logical-line machinery Python already has)",
+      "C (preprocessor: either refuse `#ifdef`-heavy files or define a second front end that tokenises each conditional arm)",
+      "Java (annotations are `@Name` blocks, unlike Python's `@`)"
+    ]
+  },
+  "vectors": {
+    "dir": "tests/testdata/mi",
+    "source_dir": "src",
+    "vector_dir": "vectors",
+    "aggregate_dir": "aggregates",
+    "required_cases": [
+      "one per language: a normal file with every decision-point kind exercised",
+      "comment-only file: LOC == 0 -> vacuous, and no mi field anywhere",
+      "LOC == 1: the file where ln(LOC) is 0, which is legal, sitting next to the case where it is undefined",
+      "the reachable ceiling of the range (a one-statement file), which is what clamp_max guards",
+      "a reformat pair: two files whose token streams are identical while their bytes are not",
+      "maximal munch, nested generics and `&&` in a type position for Rust; soft keywords, comprehensions, f-strings and a walrus for Python"
+    ]
+  }
+}

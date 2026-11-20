@@ -1,4 +1,8 @@
-# Testing for integration
+# The CI payload, run under act on a developer machine through act-mcp: the same step list as
+# ci.yml's check job, shaped for a container act can actually start. GitHub is never supposed to run
+# this file (every branch filter names a branch that does not exist); `scripts/mcp_run.sh --workflow
+# dogfood-local.yml --task check --category other --commit "$(git rev-parse HEAD)"` does, and it is
+# the only way to watch the real CI payload run outside CI.
 name: dogfood
 
 on:
@@ -7,8 +11,11 @@ on:
     # A docs-only commit cannot break the crate, and a build that runs anyway teaches
     # people to ignore the badge. The full set of paths that can break it:
     paths:
-      - "src/**"
-      - "tests/**"
+      # Every crate in the workspace, in one pattern: each crate's manifest, sources and tests
+      # live under `crates/` since the split (mact-by1.5, ADR-0005 §3), and a pattern that names
+      # the directory rather than the crates cannot forget the next one. The root manifest is
+      # listed below; a workspace member's own Cargo.toml is inside `crates/**`.
+      - "crates/**"
       - "schema/**"
       - "scripts/**"
       - "Cargo.toml"
@@ -34,13 +41,28 @@ permissions:
 jobs:
   check:
     name: check
-    #runs-on: ubuntu-24.04
-    runs-on: macos-latest
+    # A label act's own platform table knows. `ubuntu-24.04` is not one on an Apple-silicon host —
+    # its image is amd64-only, so act skips the leg, exits 0, and the run proves nothing; that is
+    # what `scripts/mcp_run.sh`'s `runs-on-unmapped` guard refuses. `${{ matrix.runner }}` is worse:
+    # act reads it as a literal label, which is why ci.yml's matrix cannot be run here at all and why
+    # this file exists instead.
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      CARGO_BUILD_TARGET: aarch64-apple-darwin #x86_64-unknown-linux-gnu
+      # Build into the container's own filesystem, not into the checkout. Two reasons, and the second
+      # is what this file used to get wrong: act-mcp runs a HEAD commit in place (ADR-0003 §4), so an
+      # unpinned target directory (a) writes the run's artefacts into the developer's real ./target,
+      # and (b) is the mount rustc takes SIGBUS linking into — docs/ci.md §1: "on a bind-mounted
+      # checkout rustc can take SIGBUS while linking into ./target". `scripts/ci.sh` honours this
+      # variable (its §1 note is the same advice), so every step follows it, including the snapshot
+      # and report steps that find the binary rather than rebuild it.
+      CARGO_TARGET_DIR: /var/tmp/ci-target
+    # No CARGO_BUILD_TARGET, on purpose; see the toolchain step.
     steps:
+      # Full history: the check step runs fathom's suite, which indexes this repository.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # One cache for the whole job: the registry (what cargo downloads) and ./target
       # (what it compiles). Keyed on Cargo.lock plus the toolchain pin, so a lockfile or
@@ -53,26 +75,30 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            target/
+            ${{ env.CARGO_TARGET_DIR }}/
           key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-cargo-
       ## act doesn't have rust installed
+      # And no target: input: build whatever triple the runner has, because under act that is the
+      # container's triple and not the host's. Naming one here — `aarch64-apple-darwin` on a Mac
+      # included, since act starts a Linux container on a Mac — asks a Linux `cc` to link a Mach-O
+      # binary and every step that links dies on `cc: error: unrecognized command-line option
+      # '-framework'`, which is a confusing way to discover that CI ran a different OS.
       - uses: actions-rust-lang/setup-rust-toolchain@v2
-        with:
-          target: aarch64-apple-darwin #x86_64-unknown-linux-gnu
-      #- name: target
-      #  run: rustup target add x86_64-unknown-linux-gnu
-      # No toolchain action: rustup reads rust-toolchain.toml, which is the pin, and
-      # installs the components (clippy, rustfmt) listed in it. `rustup show` is what
-      # triggers that resolution, and prints what CI actually built with.
-      #- name: toolchain
-      #  run: rustup show
+
+      # ci.yml has no toolchain action at all: rustup reads rust-toolchain.toml, which is the pin,
+      # and installs the components (clippy, rustfmt) listed in it. act's image has no rustup, so
+      # this job is where that difference gets paid for, and `rustup show` is what prints the
+      # toolchain the run actually used.
+      - name: toolchain
+        run: rustup show
 
       - name: tools
         run: scripts/install_ci_tools.sh
 
       # The check itself. Everything except the release build, and `--keep-going` so one
-      # red step reports the others instead of hiding them.
+      # red step reports the others instead of hiding them. Same list as ci.yml's check job: this
+      # workflow differs in what it *feeds* the tool (a real dogfood run), not in what it checks.
       - name: ci
-        run: scripts/ci.sh --keep-going fmt clippy doc test schema supply-chain
+        run: scripts/ci.sh --keep-going fmt clippy build doc test tui-snapshot fathom-report fathom-doctor coverage benchmark mcp-driver schema supply-chain

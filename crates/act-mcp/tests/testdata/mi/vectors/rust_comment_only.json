@@ -1,0 +1,28 @@
+{
+  "vector": "rust_comment_only",
+  "language": "rust",
+  "frontend": "lexer1",
+  "source": "../src/rust_comment_only.rs",
+  "derived": false,
+  "notes": "Line comments, a doc comment and two block comments (one nested) are not tokens and not statements, so LOC is 0, ln(0) is undefined, and there is no MI to report. The row says `vacuous`; it does not say 0.",
+  "expect": {
+    "status": "vacuous",
+    "operators": {
+      "total": 0,
+      "unique": 0,
+      "occurrences": {}
+    },
+    "operands": {
+      "total": 0,
+      "unique": 0,
+      "occurrences": {}
+    },
+    "volume": null,
+    "decision_points": {},
+    "cyclomatic": null,
+    "statements": null,
+    "loc": null,
+    "mi": null,
+    "band": null
+  }
+}

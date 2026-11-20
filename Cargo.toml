@@ -1,22 +1,75 @@
-[package]
-name = "act-mcp"
+# The act-mcp workspace — ADR-0005's decision, in Cargo's own vocabulary.
+#
+# This is a **virtual root manifest**: `[workspace]` and no `[package]`. A root that is also a
+# package makes `cargo build` at the root mean "build the server" by accident and gives `act-mcp`
+# a privileged position the dependency graph in ADR-0005 §2 says it does not have. The three
+# members are:
+#
+#   crates/act-evidence  the `.evidence` contract as code: record types, shape predicates,
+#                        the embedded schemas, the tree validator. The only implementation of
+#                        *reading* `.evidence` (ADR-0002 §7), and it names none of the server.
+#   crates/act-mcp       the MCP server, the act runner and supervisor, the evidence *writer*,
+#                        and the `act-mcp` / `act-mcp validate-evidence` CLIs. Surface unchanged
+#                        by the split: same argv, same exit codes, same `act_mcp` lib name.
+#   crates/fathom        the reader: `fathom` the binary (TUI, `index`, `report`) and the lib
+#                        holding everything testable. It never depends on `act_mcp`, and its tree
+#                        never contains rmcp, axum, tower, tokio or an HTTP client (P4).
+#
+# The edge `act-mcp ↔ fathom` does not exist in either direction; both name `act-evidence`.
+#
+# `scripts/validate_crate_layout.py` reads this file and the three member manifests and enforces
+# ADR-0005's C1–C13 — members, floor, publish, dependency directions, the shared package policy
+# and the lints below — so the graph above is a checked fact rather than a comment. It runs in
+# `scripts/ci.sh`'s `schema` step.
+#
+# One lockfile, one `target/`, one `rust-toolchain.toml`, one `deny.toml` for all three crates
+# (P1); `schema/` stays at the root because three artifacts include it (ADR-0005 §9).
+
+[workspace]
+resolver = "2"
+members = ["crates/act-evidence", "crates/act-mcp", "crates/fathom"]
+
+[workspace.package]
+# One repo, one tag, one version: `cd.yml` sets this once per release and every member inherits
+# it, which is what keeps `fathom` and `act-mcp` from drifting to unrelated versions nobody chose.
 version = "0.0.1"
 edition = "2021"
-# rmcp 3.9's floor (its own Cargo.toml declares rust-version = "1.88"); do not
-# lower it, the 2026-07-28 protocol plumbing in rmcp does not build below it.
+# rmcp 3.9's floor (its own Cargo.toml declares rust-version = "1.88"); do not lower it, the
+# 2026-07-28 protocol plumbing in rmcp does not build below it. A member whose own dependencies
+# need more raises *its own* `rust-version` with a literal and a comment naming the dependency
+# that forced it; the shared floor never goes down (ADR-0005 §8, check C3).
 rust-version = "1.88"
-description = "HTTP MCP server (protocol 2026-07-28 and 2025-11-25) wrapping nektos/act with .evidence JSONL output"
+# Nothing here is published: `act-evidence`'s types describe an on-disk format that is already
+# frozen (ADR-0002), so "internal" means "no external consumer to apologise to", not "free to
+# change". Publishing it for out-of-repo readers is ADR-0005 §8's open question, not today's.
 publish = false
 
-[lib]
-name = "act_mcp"
-path = "src/lib.rs"
+[workspace.dependencies]
+# --- this workspace's own crates (every shared version is declared here, once) ---------------
+act-evidence = { path = "crates/act-evidence" }
 
-[[bin]]
-name = "act-mcp"
-path = "src/main.rs"
+# --- the contract crate's budget (ADR-0005 §6: a closed list, and the checker knows it) -------
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+thiserror = "2"
+# `fk1(…)` is sha256 (ADR-0006 §6.3), and the store's whole key scheme is one hash call. fathom's
+# manifest records that this dependency "arrives with the ticket that consumes it"; that ticket is
+# mact-by1.10, the incremental index. No HTTP client, no async, no C.
+sha2 = "0.11"
+# The `.evidence` contract's machine-readable half is `schema/evidence.schema.json`, and
+# `act-mcp validate-evidence` is the CI guard that checks real trees against it. Validating
+# against the *pinned schema file* rather than a hand-written lookalike is the whole anti-rot
+# story (ADR-0002 §7), so the engine is a runtime dependency of the contract crate, not a
+# dev-dependency. Default features are off so nothing pulls an HTTP client to resolve remote
+# `$ref`s: both our schemas are self-contained and embedded with `include_str!`.
+jsonschema = { version = "0.61", default-features = false }
+# Optional in `act-evidence` behind its non-default `json-schema` feature: the `JsonSchema`
+# impls exist to mirror `schema/evidence.schema.json` for the server's *tool* schemas, so
+# act-mcp turns them on and a reader's build never carries schemars (ADR-0005 §6).
+schemars = "1"
 
-[dependencies]
+# --- the server's half (nothing here may reach crates/fathom) --------------------------------
 # Pinned to the 3.9 line on purpose: this server speaks two protocol revisions (2026-07-28
 # stateless, 2025-11-25 with the initialize handshake) and rmcp is what implements the
 # negotiation, the session lifecycle and the substitution rule for both. Bumping rmcp means
@@ -38,88 +91,62 @@ tokio = { version = "1", features = [
     "sync",
     "io-util",
     # fs: the runner's teardown removes the run's secret file with tokio::fs rather than
-    # blocking a worker on it (mact-f1w.8, runner::run). Only `cargo build` notices this
-    # is needed: `cargo test` got the feature from the dev-dependency's `full` set and
-    # never asked for it on the library build.
+    # blocking a worker on it (mact-f1w.8, runner::run). Only `cargo build` notices this is
+    # needed: `cargo test` got the feature from the dev-dependency's `full` set and never asked
+    # for it on the library build.
     "fs",
 ] }
 axum = "0.8"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }
-clap = { version = "4", features = ["derive", "env"] }
 # CancellationToken: one token drives axum graceful shutdown and MCP session teardown.
 tokio-util = "0.7"
-# tower-http is used for the request-trace layer; tower is here because rmcp's
-# tower services are composed with it directly (mact-f1w.13 adds the Host/Origin
-# guards as tower layers).
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-schemars = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "std"] }
 anyhow = "1"
-thiserror = "2"
 which = "8"
-
-# git: plain `git` CLI via tokio::process, NOT git2/libgit2. Decided in
-# mact-f1w.5 and recorded here so nobody re-litigates it: act itself shells out
-# to git, the gates we need (rev-parse, status --porcelain, worktree add) are all
-# CLI subcommands, and libgit2 would add a C build dependency for no gain.
-# The CLI is first used in mact-f1w.6 (workspace + commit validator).
-#
-# Deferred deps, deliberately not listed yet so `cargo build` stays honest about
-# what this scaffold actually links; each lands with the ticket that consumes it:
-#   chrono        - landed in mact-f1w.8 (run timestamps); the evidence writer (.9) reuses it.
-#   uuid          - NOT wanted after all: the ADR-0002 §1.2 run_id shape is
-#                   `YYYYMMDDTHHMMSSZ-<6 hex>`, which `runner::RunId::generate` builds from
-#                   chrono plus 3 bytes of /dev/urandom. A v7 UUID adds a dependency to
-#                   produce 6 hex characters; if a later ticket wants a real UUID, it is
-#                   additive inside `RunId`.
-
-# YAML: needed to read `.github/workflows/*.yml` (the `name:` key and the `jobs:`
-# map) during workflow/task resolution — mact-f1w.6. Deliberately yaml-rust2 and
-# not serde_yaml: serde_yaml is unmaintained (RUSTSEC-2024-0320), and we need only
-# "parse and walk", not serde derives on untrusted workflow files. `default-features
-# = false` drops encoding_rs; the loader reads &str. mact-f1w.7 (`list_tasks`)
-# builds its richer job index on the same crate rather than adding a second parser.
+# YAML: needed to read `.github/workflows/*.yml` (the `name:` key and the `jobs:` map) during
+# workflow/task resolution — mact-f1w.6. Deliberately yaml-rust2 and not serde_yaml: serde_yaml
+# is unmaintained (RUSTSEC-2024-0320), and we need only "parse and walk", not serde derives on
+# untrusted workflow files. `default-features = false` drops encoding_rs; the loader reads &str.
+# mact-f1w.7 (`list_tasks`) builds its richer job index on the same crate rather than adding a
+# second parser.
 yaml-rust2 = { version = "0.13", default-features = false }
-
-# Timestamps: UTC everywhere (ADR-0002 §2.2). Chosen in the scaffold's Cargo.toml comment
-# because rmcp already pulls chrono into the tree; mact-f1w.8 uses it for `started_at` /
-# `finished_at` on a run outcome. `clock` is what gives `Utc::now()`; default features are
-# off so no serde/time formatting bloat rides along (rmcp's own features keep what it needs).
-chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
-# The `.evidence` contract's machine-readable half is `schema/evidence.schema.json`, and
-# `act-mcp validate-evidence` (mact-f1w.9) is the CI guard that checks real trees against
-# it. Validating against the *pinned schema file* rather than a hand-written lookalike is
-# the whole anti-rot story (ADR-0002 §7), so the engine is a runtime dependency, not a
-# dev-dependency. Default features are off so nothing pulls a HTTP client to resolve
-# remote `$ref`s: both our schemas are self-contained and embedded with `include_str!`.
-# This is also the "second, stricter implementation" ADR-0002's verification table asks
-# the schema to compile under.
-jsonschema = { version = "0.61", default-features = false }
-
-# The runner (mact-f1w.8) is the only code in this crate that signals a process, and
+# The runner (mact-f1w.8) is the only code in this workspace that signals a process, and
 # signalling a *process group* has no `std` API: `killpg(2)`/`prctl(2)` come from libc.
-[target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-[dev-dependencies]
-# Same rmcp, plus the client half so the tests can be a real MCP client (a stock
-# client listing tools is the ticket's definition of done).
-rmcp = { version = "3.9", default-features = false, features = [
-    "server",
-    "macros",
-    "schemars",
-    "transport-streamable-http-server",
-    "client",
-    "transport-streamable-http-client-reqwest",
-] }
+# --- what two crates share -------------------------------------------------------------------
+# clap: same major for both CLIs, declared once (ADR-0005 §6's table).
+clap = { version = "4", features = ["derive", "env"] }
 tempfile = "3"
-# Raw JSON-RPC over plain HTTP for the cases a well-behaved client never sends
-# (e.g. an initialize naming an older protocol revision).
-reqwest = { version = "0.13", default-features = false, features = ["json"] }
-tokio = { version = "1", features = ["full", "macros"] }
 
-# libc is a regular (unix) dependency since mact-f1w.8; integration tests keep using it for
-# `libc::kill`, which is why the crate attribute is `deny(unsafe_code)` and not `forbid`.
+# --- fathom's half (ADR-0005 §6's allowed list; nothing on the forbidden side) ----------------
+# `fathom.toml` (ADR-0006 §7) is parsed with serde and `deny_unknown_fields`, so an unknown key
+# is an error rather than a shrug. `toml` is the parser; the typed Config lives in fathom.
+toml = "0.9"
+# The two UI crates ADR-0005 §6 names for fathom's screens (mact-by1.9), and the pair is kept
+# together on purpose: `ratatui` re-exports the crossterm it is built against, so the version declared
+# here is the *same* crossterm the backend uses rather than a second copy in the tree. Default features
+# are off to drop `widget-calendar` (nothing here draws a calendar); `crossterm_0_29` pins the backend
+# to the crossterm line below. No async runtime rides in with either: the TUI's work is synchronous
+# file reads on a worker thread (§6), which is what the mact-by1.9 loop actually does.
+# One line, and not for style: TOML forbids a newline inside an inline table, and
+# `scripts/validate_crate_layout.py` reads this manifest with `tomllib`, which reads the spec.
+ratatui = { version = "0.30", default-features = false, features = ["std", "macros", "layout-cache", "underline-color", "crossterm_0_29"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
+
+# --- dev-only ---------------------------------------------------------------------------------
+# Raw JSON-RPC over plain HTTP for the cases a well-behaved client never sends (e.g. an
+# initialize naming an older protocol revision).
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
+
+[workspace.lints.rust]
+# The one genuinely workspace-wide promise: neither tree wants `unsafe`. act-mcp's audited call
+# sites (killpg/prctl in the runner, gethostname in the writer) keep their local `#[allow]` with
+# its `// SAFETY:` note, and a new `unsafe` anywhere else still fails a build (ADR-0005 §8, C8).
+unsafe_code = "deny"
+# `missing_docs` deliberately does NOT move up: `[lints]` applies to every target in the package,
+# and CI's `-D warnings` would turn it into an error on integration-test scaffolding for no
+# benefit. It stays a `#![warn(missing_docs)]` crate attribute in each `lib.rs`, where the
+# documentation promise actually lives.

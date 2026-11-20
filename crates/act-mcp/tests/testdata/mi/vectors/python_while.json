@@ -1,0 +1,45 @@
+{
+  "vector": "python_while",
+  "language": "python",
+  "frontend": "lexer1",
+  "source": "../src/python_while.py",
+  "sources_equal": null,
+  "hand_computed": "N, n, the decision-point counts and LOC are counted by hand from the file; V, G, MI and the band are re-derived by scripts/mi_reference.py and checked by scripts/validate_mi_definition.py",
+  "notes": "Rule coverage for Python's `while`: four logical lines plus two block headers (`def`, `while`) = 6 lines, one decision point. Kept tiny on purpose, like every coverage fixture: a small file is one a human can count, and the point of these vectors is that a human checked them.",
+  "expect": {
+    "status": "ok",
+    "operators": {
+      "total": 6,
+      "unique": 6,
+      "occurrences": {
+        "+=": 1,
+        "<": 1,
+        "=": 1,
+        "def": 1,
+        "return": 1,
+        "while": 1
+      }
+    },
+    "operands": {
+      "total": 9,
+      "unique": 5,
+      "occurrences": {
+        "0": 1,
+        "1": 1,
+        "limit": 2,
+        "n": 4,
+        "spin": 1
+      }
+    },
+    "volume": 15.509775004326936,
+    "decision_points": {
+      "while": 1
+    },
+    "cyclomatic": 2,
+    "statements": 7,
+    "loc": 7,
+    "mi_raw": 124.76060913822354,
+    "mi": 73.0,
+    "band": "green"
+  }
+}

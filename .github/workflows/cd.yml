@@ -39,18 +39,24 @@ jobs:
       - name: target
         run: rustup target add "${{ matrix.target }}"
 
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-edit
-
-      - name: update cargo.toml
+      - name: update the workspace version
+        # One version for one repo (ADR-0005 §8): the tag sets `[workspace.package] version` in the
+        # root manifest once and every member inherits it. Logic lives in a script, not in this
+        # YAML, so it is runnable and checkable before a tag exists (`scripts/set_version.py
+        # --check 0.0.1`), and it refuses a tag that is not a version instead of shipping a tarball
+        # named after a typo.
         run: |
           version=${{ github.event.release.tag_name }}
-          version="${version#v}"
-          cargo set-version "$version"
+          scripts/set_version.py "${version#v}"
 
-      - name: release build and smoke test
-        run: scripts/ci.sh release
+      - name: release build and smoke test (act-mcp)
+        # One artefact per step, deliberately. `scripts/ci.sh release --artefact act-mcp` builds
+        # `-p act-mcp --bin act-mcp` and smoke-tests it (scripts/smoke_binary.sh: --version, --help,
+        # a refused flag, and validate-evidence running for real with the embedded schemas). The
+        # artefact is one renamed binary and a broken TUI must not block shipping the server, which is
+        # why the fathom half below is a *later* step: by the time it runs, mact-<target>.tar.gz is
+        # already built and uploaded (ADR-0005 §3).
+        run: scripts/ci.sh release --artefact act-mcp
 
       - name: Release
         run: |
@@ -63,3 +69,27 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           gh release upload ${{ github.event.release.tag_name }} mact-${{ matrix.target }}.tar.gz
+
+      - name: release build and smoke test (fathom)
+        # The reader's artefact, built by the same step of the same script with `--artefact fathom`, so
+        # "we ship it" and "we check it" are one decision (mact-by1.16 answered ADR-0005 §Open
+        # questions' "own artefacts or ride the server's tarball" in favour of its own: a reader that
+        # does not need the server's 200 crates should not have to download them, and one tarball with
+        # two binaries inside it is a tarball whose sha256 describes both). scripts/smoke_fathom.sh
+        # proves the image answers --version/--help, refuses a bad flag, and keeps `report`/`doctor`'s
+        # 0/1/2 exit-code contract on a real evidence tree — the version and the headless half of that
+        # run against the artefact, so a release image that builds and cannot run never gets published.
+        run: scripts/ci.sh release --artefact fathom
+
+      - name: Release fathom
+        # No rename: `act-mcp` becomes `mact` because that is the name the server has always shipped
+        # under, and `fathom` is already called what it is.
+        run: |
+          cd target/release
+          tar czvf ../../fathom-${{ matrix.target }}.tar.gz fathom
+
+      - name: upload fathom artifact
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload ${{ github.event.release.tag_name }} fathom-${{ matrix.target }}.tar.gz

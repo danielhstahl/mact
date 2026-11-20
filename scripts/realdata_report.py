@@ -6,7 +6,7 @@ and to read — in Python than in shell. Nothing here talks to a server, to act,
 container runtime: the inputs are ordinary files on disk, which is what makes them runnable
 (and testable) without docker.
 
-    shape     compare a captured `act --json` log against tests/realdata/golden/act-shape.json
+    shape     compare a captured `act --json` log against crates/act-mcp/tests/realdata/golden/act-shape.json
     expected  normalise the records a run published and diff them against committed goldens
     normalise print the normalised form of one evidence file (the diff's primitive)
 
@@ -15,7 +15,7 @@ the machine that produced it (run id, commit, instants, hostname, durations, pid
 cannot be pinned without lying. So **nothing is deleted and nothing is compared loosely**:
 every volatile value is replaced by a named placeholder, the list of placeholders is right
 here, and everything else is compared byte for byte. It is the same rule and the same
-placeholders as `tests/e2e/normalize.rs`, so a reader who knows one knows the other.
+placeholders as `crates/act-mcp/tests/e2e/normalize.rs`, so a reader who knows one knows the other.
 
     {RUN_ID}   a run id (`YYYYMMDDTHHMMSSZ-xxxxxx`)          {COMMIT}  a full 40-hex commit
     {TS}       an RFC 3339 instant                           {HOST}    the reporting host
@@ -396,7 +396,7 @@ def cmd_expected(args: argparse.Namespace) -> int:
         print(f"realdata_report: no committed expected records for: {names}")
         print(
             "  that is the state of the repo until a real-act run has produced them — see "
-            "tests/realdata/expected/README.md. The smoke's own value assertions still ran; "
+            "crates/act-mcp/tests/realdata/expected/README.md. The smoke's own value assertions still ran; "
             "the byte-for-byte diff starts on the next run after someone runs --write-expected.",
             file=sys.stderr,
         )
@@ -427,7 +427,9 @@ def cmd_selftest(args: argparse.Namespace) -> int:
     `normalise` placeholders are what the goldens claim they are. Nothing here needs a run.
     """
     repo = Path(__file__).resolve().parent.parent
-    manifest = repo / "tests" / "realdata" / "golden" / "act-shape.json"
+    # `tests/` moved into the crate with mact-by1.5's workspace split; `schema/` and `scripts/`
+    # stayed at the root (ADR-0005 §9).
+    manifest = repo / "crates" / "act-mcp" / "tests" / "realdata" / "golden" / "act-shape.json"
     failures: list[str] = []
 
     def check(name: str, ok: bool) -> None:
@@ -556,7 +558,7 @@ def main(argv: list[str]) -> int:
 
     shape = sub.add_parser("shape", help="compare a captured act --json log against the shape manifest")
     shape.add_argument("--capture", required=True, help="a captured act --json log (act.jsonl)")
-    shape.add_argument("--manifest", required=True, help="tests/realdata/golden/act-shape.json")
+    shape.add_argument("--manifest", required=True, help="crates/act-mcp/tests/realdata/golden/act-shape.json")
     shape.add_argument("--json-out", help="also write the machine-readable report here")
     shape.add_argument("--max-lines", type=int, default=None, help="scan at most N lines")
     shape.add_argument("--samples", type=int, default=3, help="sample values kept per field")
@@ -569,7 +571,7 @@ def main(argv: list[str]) -> int:
 
     expected = sub.add_parser("expected", help="diff produced records against committed goldens")
     expected.add_argument("--produced", required=True, help="the run's evidence root (<ws>/.evidence)")
-    expected.add_argument("--expected", required=True, help="tests/realdata/expected")
+    expected.add_argument("--expected", required=True, help="crates/act-mcp/tests/realdata/expected")
     expected.add_argument(
         "--write", action="store_true", help="write the goldens instead of checking them"
     )

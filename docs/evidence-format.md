@@ -1,12 +1,27 @@
 # The `.evidence` format — the contract a reader gets
 
-Who this is for: whoever writes the **downstream cross-commit scanner** — the program that
-walks `<workspace>/.evidence` after a run and answers "did this commit regress?". It is the
+Who this is for: **Fathom** — `crates/fathom`, the downstream cross-commit scanner this page was
+written for, which walks `<workspace>/.evidence` after a run and answers "did this commit regress?"
+([README: Fathom](../README.md#fathom), [what every number means](fathom-metrics.md)). It is the
 human-facing restatement of
 [ADR-0002](adr/0002-evidence-jsonl-contract.md), which stays the normative text: where this
 page and the ADR disagree, the ADR wins. The machine-readable form is
 [`schema/evidence.schema.json`](../schema/evidence.schema.json), and
-`act-mcp validate-evidence` enforces both.
+`act-mcp validate-evidence` enforces both. Anyone else writing a scanner reads the same page: the
+decisions below are not Fathom's private ones, and §2's "what a scanner walks" is the contract for any
+reader.
+
+**Consumers of `act-evidence`.** These records now have two consumers in this repo and they share one
+implementation: `crates/act-evidence` — the crate `records.rs`, `shapes.rs`, `schema.rs` and
+`validate.rs` were moved into out of `crates/act-mcp/src/evidence/` (see
+[ADR-0005](adr/0005-fathom-crate-layout-and-dependencies.md)) — holds the strict record
+types, the strict deserializer and the tree validator, and depends on none of the server's transport.
+`act-mcp` is the **writer** and the `validate-evidence` checker; **fathom** — the scanner this page is
+written for, now a program in its own right rather than a hypothetical one — is the **reader**. Two
+consequences for whoever reads this page next: code that parses `.evidence` with its own structs is
+not a shortcut, it is the second implementation ADR-0002 §7 forbids, so depend on `act-evidence`; and
+fathom is a reader of these files, never a client of the server — no new MCP tool, no MCP client, and
+nothing in it that can start a run (ADR-0005 §7).
 
 Assumed versions, restated so a recipe's output can be reproduced: `schema_version` **1**,
 `act-mcp` **0.1.0**, act **≥ 0.2.62** (the fixture records were captured against
@@ -37,7 +52,7 @@ scripts/sample_evidence.py                       # writes the tree, prints what 
 export EV=$(scripts/sample_evidence.py --quiet)  # just the path, for scripting
 ```
 
-That lays the checked-in e2e goldens (`tests/e2e/testdata/expected/`) out under the real
+That lays the checked-in e2e goldens (`crates/act-mcp/tests/e2e/testdata/expected/`) out under the real
 layout, across three commits, and `scripts/evidence_recipes.sh` runs every recipe in
 [§12](#12-recipes) against it end to end. If you have run the server for real
 ([README runbook](../README.md#the-five-minute-tour)), use its evidence root instead:
@@ -434,11 +449,11 @@ jq -r 'select(.scope == "file" and (.lines_found // 0) > 0)
 ```
 
 ```
-100	src/gen/protobuf_out.rs
-96.35	src/parser/mod.rs
+100	crates/act-mcp/src/gen/protobuf_out.rs
+96.35	crates/act-mcp/src/parser/mod.rs
 93.91	lib/index.js
-84.03	src/parser/tokenizer.rs
-0	src/util/debug_helpers.rs
+84.03	crates/act-mcp/src/parser/tokenizer.rs
+0	crates/act-mcp/src/util/debug_helpers.rs
 0	lib/legacy/no-tests-here.js
 ```
 
@@ -620,7 +635,7 @@ evidence — that is the whole reason the path is keyed by the full SHA.
 ## 13. Validating a tree
 
 ```sh
-cargo run -- validate-evidence "$EV" --stats     # or: target/release/act-mcp validate-evidence …
+cargo run -p act-mcp -- validate-evidence "$EV" --stats     # or: target/release/act-mcp validate-evidence …
 ```
 
 ```

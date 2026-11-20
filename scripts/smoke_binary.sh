@@ -22,7 +22,9 @@
 #                         to pass: the embedded schemas and the reader have to work in the
 #                         shipped image, not only in `cargo run`.
 #   --expect-version VER  require --version to report VER (default: the version in
-#                         Cargo.toml, so a binary built from a different tree is caught).
+#                         [workspace.package] of the root Cargo.toml, falling back to
+#                         crates/act-mcp/Cargo.toml, so a binary built from a different tree
+#                         is caught).
 #
 # Exit status: 0 everything checked out, 1 a check failed, 2 usage/environment error.
 
@@ -43,7 +45,7 @@ Options:
   --report DIR          write DIR/version.txt and DIR/sha256.txt, for CI to attach;
                         also appends a row to $GITHUB_STEP_SUMMARY when it is set
   --fixture DIR         also run `<binary> validate-evidence DIR` and require it to pass
-  --expect-version VER  require --version to report VER (default: Cargo.toml's version)
+  --expect-version VER  require --version to report VER (default: [workspace.package]'s)
 
 Exit status: 0 everything checked out, 1 a check failed, 2 usage/environment error.
 USAGE
@@ -115,7 +117,20 @@ say "binary   $binary ($size bytes)"
 # 1. --version, and it is the version this tree says it is
 # ---------------------------------------------------------------------------
 if [[ -z "$expect_version" ]]; then
-    expect_version=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' "$repo_root/Cargo.toml" | head -1)
+    # Where the version is actually written since the workspace split (mact-by1.5): once, in the
+    # root manifest's [workspace.package], which crates/act-mcp/Cargo.toml inherits (ADR-0005 §8).
+    # The member manifest is the fallback, so this script still reads the truth on a pre-split tree
+    # and on one where a member stopped inheriting; either way the comparison below is against the
+    # version the binary was compiled with, which is the fact that matters.
+    expect_version=$(sed -n '/^\[workspace\.package\]/,/^\[/p' "$repo_root/Cargo.toml" \
+        | sed -n 's/^version *= *"\([^"]*\)".*/\1/p' | head -1)
+    if [[ -z "$expect_version" ]]; then
+        expect_version=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' \
+            "$repo_root/crates/act-mcp/Cargo.toml" | head -1)
+    fi
+    if [[ -z "$expect_version" ]]; then
+        fail "no version found: neither [workspace.package] in $repo_root/Cargo.toml nor a version in crates/act-mcp/Cargo.toml"
+    fi
 fi
 version_output=$("$binary" --version 2>&1 | head -1) || fail "--version exited non-zero: $version_output"
 if [[ "$version_output" != "act-mcp $expect_version" ]]; then
