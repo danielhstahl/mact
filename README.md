@@ -1009,7 +1009,8 @@ scripts/install_ci_tools.sh         # cargo-deny + python jsonschema, pinned
 ```
 
 `fmt`, `clippy -D warnings`, a workspace `build` (both binaries), `rustdoc` (broken intra-doc links
-are errors), `cargo test --all-features`, the fathom steps (drawn-screen snapshots, the `report`
+are errors), `docs-site` (every link inside `docs/`, including the `#section` ones, has to resolve),
+`cargo test --all-features`, the fathom steps (drawn-screen snapshots, the `report`
 envelope goldens and a `report`/`doctor` exit-code smoke over a sample evidence tree), schema
 validation of `schema/*.json` and the evidence tree, `cargo deny` plus the dependency firewalls,
 and a release build per artefact that is smoke-tested by running it.
@@ -1021,6 +1022,11 @@ The GitHub workflow is `.github/workflows/ci.yml`: a `check` job that calls
 in release, and smoke-tests and uploads both artefacts — `act-mcp-<target>` and `fathom-<target>` —
 for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and `aarch64-apple-darwin`. It contains no
 check logic — logic lives in `scripts/`, which is also what makes it runnable before you push.
+
+`docs/` is published as a static HTML site by `.github/workflows/docs.yml`, built by the same
+`scripts/build_docs_site.py` that the `docs-site` step checks (`scripts/build_docs_site.py --out
+/tmp/site` builds it for reading; there is no build dependency and no network in the path). See
+[docs/ci.md §3b](docs/ci.md#3b-publishing-docs-as-a-static-site).
 
 Everything above runs with no docker and no `act`. The one check that needs the real thing is
 a manual/nightly step, because a stub can never contradict an assumption about the tool it
@@ -1083,5 +1089,6 @@ direction (`scripts/validate_crate_layout.py`, drilled by `scripts/crate_layout_
 * [docs/adr/0008-per-commit-metric-model.md](docs/adr/0008-per-commit-metric-model.md) — the per-commit metric model: how `.evidence` becomes one row per commit (which records are selected, how a coverage % is pooled, how benchmark groups are deduped, and what "action success" means when the server has forgotten the run) (also: `schema/metric-model.json` for the machine-readable rule set, `scripts/metric_model_reference.py` as the oracle, `crates/act-mcp/tests/testdata/metrics/` for the golden vectors)
 * [docs/fathom-metrics.md](docs/fathom-metrics.md) — what every number on the Fathom screen means: the MI formula and its worked example, how coverage % is derived, when a benchmark delta is withheld, the action-success table — the user-facing restatement of ADR-0007 and ADR-0008, cross-linked to both
 * [docs/testing.md](docs/testing.md) — the suites, and how to read a red one
+* [docs/ci.md §3b](docs/ci.md#3b-publishing-docs-as-a-static-site) — this `docs/` tree, published: what `docs.yml` builds, and what `scripts/build_docs_site.py` promises about links and anchors
 * [docs/ci.md](docs/ci.md) — CI, in full
 * [docs/security.md](docs/security.md) — loopback-only, and what that does and does not protect

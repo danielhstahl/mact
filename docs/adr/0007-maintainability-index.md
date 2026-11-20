@@ -44,7 +44,7 @@ date: 2026-11-16
   would be a claim about one language); a language-agnostic comment+token approximation for decision
   points; storing the unrounded double; carrying the aggregate as a running sum over history; making
   the bands configuration; the operand-based Halstead variant. Each with its reason in
-  [Considered alternatives](#considered-alternatives).
+  [Considered alternatives](#11-considered-alternatives).
 - **Machine-readable form:** three artifacts. [`schema/mi-definition.json`](../../schema/mi-definition.json)
   is the one normative spelling of every constant, every closed enumeration (per-language operator
   keywords, ignored punctuation, decision points, statement rules, ambiguities) and every reason code;

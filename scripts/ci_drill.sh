@@ -45,6 +45,7 @@ DRILLS=(
     "clippy-lint:clippy"
     "doc-broken-intra-doc-link:doc"
     "doc-link-to-test-only-module:doc"
+    "docs-site-broken-cross-page-link:docs-site"
     "test-failing-assertion:test"
     "tui-snapshot-snapshot-mismatch:tui-snapshot"
     "fathom-report-report-golden-drift:fathom-report"
@@ -117,6 +118,14 @@ mod ci_drill_test_only_module {
     pub fn pinned_by_tests() {}
 }
 RS
+}
+
+mut_docs_site_broken_cross_page_link() {
+    # The Markdown mirror of the drill above, and the same class of rot: a link that reads correctly
+    # and goes nowhere. It is a *section* link rather than a file link because the file exists, so
+    # nothing but the anchor check can notice, which is exactly why the step exists.
+    printf '\nSee [the section that is not there](adr/0001-tool-contract.md#the-heading-that-was-never-written).\n' \
+        >>"$1/docs/ci.md"
 }
 
 mut_test_failing_assertion() {

@@ -21,6 +21,13 @@
 #   doc          `cargo doc --no-deps` with rustdoc warnings fatal. A broken intra-doc link
 #                is a broken reference into the reasoning this crate's docs exist to carry,
 #                so it is an error, not a warning.
+#   docs-site    `scripts/build_docs_site.py --check`, then a real build of docs/ into a scratch
+#                directory: the Markdown half of the promise `doc` makes about Rust. A link from one
+#                document to another, or to a section of one, is the reference a reader follows when
+#                the code has stopped explaining itself, and this is the step that fails when it stops
+#                resolving. Standard-library python, no toolchain, about a second — and it is the same
+#                build `.github/workflows/docs.yml` publishes to Pages, so the check and the artefact
+#                are one program rather than two opinions about what a link means.
 #   test         `cargo test --all-features`. The whole contract: unit tests, the tool
 #                suites, the protocol conformance matrix and crates/act-mcp/tests/e2e (real server, stub
 #                act). Nothing in here needs docker or act — if a test needs them it is the
@@ -109,8 +116,7 @@
 #                and uploads `act-mcp` and `fathom` in separate steps with `--artefact`.
 #
 # Usage and the full flag list: `scripts/ci.sh --help`. CI runs
-# `scripts/ci.sh --keep-going fmt clippy build doc test tui-snapshot fathom-report fathom-doctor
-# coverage benchmark mcp-driver schema supply-chain` in the check job; the release job runs
+# `scripts/ci.sh --keep-going fmt clippy build doc docs-site test tui-snapshot fathom-report fathom-doctor coverage benchmark mcp-driver schema supply-chain` in the check job; the release job runs
 # `scripts/ci.sh --keep-going supply-chain release-workspace` and then `scripts/ci.sh release` per
 # target.
 
@@ -124,17 +130,17 @@ set -o errexit -o nounset -o pipefail
 # The three new steps sit after `fathom-doctor` and before `schema` because they are the checks whose
 # subject is the evidence pipeline rather than the binaries: what they assert is about a tracefile, a
 # payload and a driver, and none of them needs act.
-STEPS_ALL=(fmt clippy build doc test tui-snapshot fathom-report fathom-doctor coverage benchmark
-           mcp-driver schema supply-chain release-workspace release)
+STEPS_ALL=(fmt clippy build doc docs-site test tui-snapshot fathom-report fathom-doctor coverage
+           benchmark mcp-driver schema supply-chain release-workspace release)
 
 usage() {
     cat <<'USAGE'
 Usage: scripts/ci.sh [OPTIONS] [STEP ...]
 
 Runs the act-mcp workspace's checks — the server, the contract crate and fathom. With no STEP,
-runs every step in the canonical order (fmt clippy build doc test tui-snapshot fathom-report
-fathom-doctor coverage benchmark mcp-driver schema supply-chain release-workspace release).
-With STEPs, runs exactly those,
+runs every step in the canonical order (fmt clippy build doc docs-site test tui-snapshot
+fathom-report fathom-doctor coverage benchmark mcp-driver schema supply-chain release-workspace
+release). With STEPs, runs exactly those,
 in canonical order.
 
 Options:
@@ -342,6 +348,26 @@ step_build() {
         fi
         echo "--- built $bin"
     done
+}
+
+step_docs_site() {
+    # Two halves, cheapest first. `--check` is the builder's own suite: the anchor function (whose odd
+    # trailing hyphens are GitHub's, because GitHub is where the section links already written into
+    # docs/ have to resolve), the Markdown subset, and the refusal cases — a link to a file that is not
+    # there, a link to a section that is not a heading, an unterminated code fence. Then docs/ is built
+    # for real into a scratch tree, which is where a reference that rotted since the last commit gets
+    # named with its file and line. Nothing is written into the repository: the published tree is built
+    # by `docs.yml` from the same bytes, so a green step and a published site are the same fact.
+    "$script_dir/build_docs_site.py" --check
+    local scratch
+    scratch=$(mktemp -d "${TMPDIR:-/tmp}/act-mcp-docs-site.XXXXXX")
+    # -W 3 because the links that leave docs/ are a standing fact of this tree and not news on every
+    # commit: README, schema/ and scripts/ are cited by path from the ADRs, and outside a published
+    # site they have no local target. docs.yml passes --github-url and they become real links; here the
+    # first three are enough to say that is still what is happening.
+    "$script_dir/build_docs_site.py" --out "$scratch" --quiet -W 3 >&2
+    echo "docs-site: $(find "$scratch" -name '*.html' | wc -l | tr -d ' ') page(s) built; every link inside docs/ resolved"
+    rm -rf "$scratch"
 }
 
 step_test() {
@@ -668,6 +694,7 @@ step_fix_hint() {
         clippy)       echo "cargo clippy --all-targets --all-features, then read the lints; suppress one only with a reason" ;;
         build)        echo "cargo build --workspace --all-features; both act-mcp and fathom must produce a binary" ;;
         doc)          echo "the failing link is named above; point it at a real path or make it a code span" ;;
+        docs-site)    echo "scripts/build_docs_site.py --check, then scripts/build_docs_site.py --out /tmp/site — it names the file, the line and the link that does not resolve" ;;
         test)         echo "cargo test --all-features -- --nocapture <the failing test>; docs/testing.md explains the suites" ;;
         tui-snapshot) echo "cargo test -p fathom --test tui_render; a mismatch is a screen you changed on purpose or a bug in the screen — read the diff, never re-record blind" ;;
         fathom-report) echo "cargo test -p fathom --test report, then scripts/smoke_fathom.sh --check report <bin>; FATHOM_UPDATE_GOLDEN=1 rewrites the goldens and you must read what it wrote" ;;
