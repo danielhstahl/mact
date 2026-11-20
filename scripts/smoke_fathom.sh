@@ -29,7 +29,12 @@
 # caught here and nowhere else.
 #
 # Usage:
-#   scripts/smoke_fathom.sh [OPTIONS] <path-to-binary>
+#   scripts/smoke_fathom.sh [OPTIONS] [path-to-binary]
+#
+# The binary is what is under test. Name it, or leave it off and take the one cargo just built —
+# `$CARGO_TARGET_DIR`/`target/debug/fathom`, which is where scripts/ci.sh built it a line earlier —
+# because a step printed in docs/ci.md is a command someone copies, and `--check doctor` with no path
+# used to answer a usage block and exit 2 with nothing missing but the obvious argument.
 #
 # Options:
 #   -h, --help            this text
@@ -50,12 +55,15 @@ set -o errexit -o nounset -o pipefail
 
 usage() {
     cat <<'USAGE'
-Usage: scripts/smoke_fathom.sh [OPTIONS] <path-to-binary>
+Usage: scripts/smoke_fathom.sh [OPTIONS] [path-to-binary]
 
 Prove a built fathom binary is a runnable binary: it exists, answers --version with the version
 this tree declares, answers --help and names all four subcommands, refuses an unknown flag, and —
 with --check report and --check doctor — keeps the headless exit-code contract (0 clean, 1
 findings, 2 could not run) on a real evidence tree.
+
+With no path, the binary is $CARGO_TARGET_DIR (else this repository's target)/debug/fathom — the
+one scripts/ci.sh just built — and a missing default says how to build it instead of printing this.
 
 Options:
   -h, --help            this text
@@ -81,6 +89,7 @@ cache_dir=""
 workspace=""
 workspace_explicit=0
 binary=""
+binary_defaulted=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -129,8 +138,15 @@ repo_root=$(cd -- "$script_dir/.." && pwd)
 py=${PYTHON:-python3}
 
 if [[ -z "$binary" ]]; then
-    usage >&2
-    exit 2
+    # The default is the point: `fathom-doctor` is documented as `scripts/smoke_fathom.sh --check
+    # doctor`, a line a person pastes, and demanding the path made the documented form exit 2.
+    binary=${CARGO_TARGET_DIR:-$repo_root/target}/debug/fathom
+    binary_defaulted=1
+    if [[ ! -e "$binary" ]]; then
+        printf 'smoke_fathom: no binary named, and the default is not there: %s\n  fix: cargo build -p fathom --bin fathom, or name the binary to test as a positional argument\n' \
+            "$binary" >&2
+        exit 2
+    fi
 fi
 
 say() { [[ "$quiet" == 1 ]] || printf '  %s\n' "$*"; }
@@ -155,6 +171,9 @@ if [[ "$size" -lt 100000 ]]; then
     fail "$binary is $size bytes: too small to be a linked fathom"
 fi
 say "binary   $binary ($size bytes)"
+if [[ "$binary_defaulted" == 1 ]]; then
+    say "         defaulted from \${CARGO_TARGET_DIR:-$repo_root/target}; name a path to test another build"
+fi
 
 # ---------------------------------------------------------------------------
 # 1. --version, and it is the version this tree says it is
