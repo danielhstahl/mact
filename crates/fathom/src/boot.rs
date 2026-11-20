@@ -222,6 +222,9 @@ impl Boot {
 
     /// Check the workspace, resolve both roots, and prepare the cache root.
     ///
+    /// The workspace is canonicalised here, so every path this returns — and every path a refusal
+    /// names — is a place rather than a spelling, whatever the caller passed.
+    ///
     /// `access` decides whether an unwritable cache root is a refusal ([`Access::Write`]) or a
     /// warning ([`Access::Read`]); everything else is the same set of checks.
     ///
@@ -236,8 +239,17 @@ impl Boot {
     ) -> Result<Self, BootError> {
         let mut warnings = Vec::new();
 
-        let git_root = Self::git_root(workspace).ok_or_else(|| BootError::NotAGitWorkTree {
-            path: workspace.to_path_buf(),
+        // Resolve the workspace first, with the same rule the two roots get below. The CLI hands us
+        // an already-canonical path (`resolve_workspace`), but `validate` is public and called
+        // directly too, and macOS' `$TMPDIR` lives under `/var`, which is a symlink to
+        // `/private/var`: an unresolved workspace would leave `workspace` and `git_root` spelled one
+        // way and `evidence`/`cache` — which do go through `resolve_path` — spelled the other, in the
+        // same `--status` output and in the same warning line. A path the caller can `cd` to either
+        // way is a bug, not a platform quirk (docs/testing.md §2).
+        let workspace = resolve_path(workspace)?;
+
+        let git_root = Self::git_root(&workspace).ok_or_else(|| BootError::NotAGitWorkTree {
+            path: workspace.clone(),
         })?;
 
         // --- the evidence root: read-only for fathom, and its absence is only a warning --------
@@ -335,7 +347,7 @@ impl Boot {
         };
 
         Ok(Self {
-            workspace: workspace.to_path_buf(),
+            workspace,
             git_root: Some(git_root),
             evidence,
             cache: CacheRoot {
@@ -568,6 +580,36 @@ mod tests {
                 assert_eq!(path, dir.path().canonicalize().unwrap())
             }
             other => panic!("expected NotAGitWorkTree, got {other:?}"),
+        }
+    }
+
+    /// macOS' `$TMPDIR` is under `/var`, which is a symlink to `/private/var`, so a temp directory has
+    /// two spellings of one place and a test can only reproduce the confusion by making its own
+    /// symlink. `Boot` must not report both spellings: `--status` would print a `workspace` that the
+    /// `cache_root` beside it is not inside, and the nesting checks below compare paths component-wise.
+    #[cfg(unix)] // the symlink is the whole point, and only unix has the `$TMPDIR` that makes it bite
+    #[test]
+    fn one_directory_with_two_spellings_is_reported_as_one_of_them() {
+        let dir = tempfile::tempdir().expect("scratch");
+        let base = dir.path().canonicalize().expect("canonical scratch");
+
+        // A work tree, and a second name for it: `link` is a directory to everything that walks it.
+        let real = base.join("real");
+        std::fs::create_dir_all(real.join(".git")).expect("make the work tree");
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("make the symlink");
+        assert_ne!(link, real, "the test needs two spellings to mean anything");
+
+        // Entering through either spelling must give the same answer out: the place, once.
+        for entered in [&link, &real] {
+            let boot = Boot::validate(entered, &default_arguments(), Access::Read).expect("boot");
+            assert_eq!(
+                boot.workspace, real,
+                "the workspace is the place, not the spelling"
+            );
+            assert_eq!(boot.git_root.as_deref(), Some(real.as_path()));
+            assert_eq!(boot.evidence.path, real.join(EVIDENCE_DIR_NAME));
+            assert_eq!(boot.cache.path, real.join(CACHE_DIR_NAME));
         }
     }
 
