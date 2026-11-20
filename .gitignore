@@ -26,3 +26,8 @@ __pycache__/
 /lcov.info
 /benchmark.json
 .pi/*
+!.fathom/reviews/
+!.fathom/ratchet.toml
+.fathom/**/*.tmp
+.fathom/**/*.sqlite3-*
+mact.log
