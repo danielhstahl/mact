@@ -47,8 +47,15 @@ fn stub_act() -> std::path::PathBuf {
 }
 
 /// A run of the fixture workspace, optionally ignoring `SIGTERM` (to exercise the kill
-/// escalation) and optionally backgrounding a child (to prove the group is taken down).
-fn plan(workspace: &Path, run_id: &str, secs: &str, ignore_term: bool) -> RunPlan {
+/// escalation), optionally backgrounding a child (to prove the group is taken down), and
+/// optionally pointing the stub's arm signal at a path (`common::wait_until_stub_armed`).
+fn plan(
+    workspace: &Path,
+    run_id: &str,
+    secs: &str,
+    ignore_term: bool,
+    arm: Option<&Path>,
+) -> RunPlan {
     let id = RunId::parse(run_id).expect("test run id");
     let workflow = ".github/workflows/ci.yml";
     let mut spec = RunSpec::new(
@@ -66,6 +73,10 @@ fn plan(workspace: &Path, run_id: &str, secs: &str, ignore_term: bool) -> RunPla
     if ignore_term {
         spec.process_env
             .insert("STUB_IGNORE_TERM".to_owned(), "1".to_owned());
+    }
+    if let Some(arm) = arm {
+        spec.process_env
+            .insert("STUB_ARM_FILE".to_owned(), arm.display().to_string());
     }
     RunPlan::new(
         RunIdentity::new("ci", workflow, "test", "other", COMMIT),
@@ -159,7 +170,7 @@ async fn a_run_started_by_one_call_is_cancelled_by_another() {
     let run_id = RunId::generate().as_str().to_owned();
     let ticket = server
         .supervisor
-        .start(plan(fixture.workspace.path(), &run_id, "60", false))
+        .start(plan(fixture.workspace.path(), &run_id, "60", false, None))
         .await
         .expect("accepted");
 
@@ -215,7 +226,7 @@ async fn cancelling_a_finished_run_reports_instead_of_failing() {
     let run_id = RunId::generate().as_str().to_owned();
     let ticket = server
         .supervisor
-        .start(plan(fixture.workspace.path(), &run_id, "0", false))
+        .start(plan(fixture.workspace.path(), &run_id, "0", false, None))
         .await
         .expect("accepted");
     let _ = ticket.wait().await;
@@ -309,9 +320,16 @@ async fn a_run_that_ignores_sigterm_comes_back_as_a_kill() {
         std::sync::Arc::new(act_mcp::registry::RunSupervisor::with_policy(policy).expect("policy"));
     let server = TestServer::with_supervisor(fixture.config(), supervisor).await;
     let run_id = RunId::generate().as_str().to_owned();
+    let armed = common::stub_arm_file(fixture.workspace.path(), &run_id);
     let ticket = server
         .supervisor
-        .start(plan(fixture.workspace.path(), &run_id, "60", true))
+        .start(plan(
+            fixture.workspace.path(),
+            &run_id,
+            "60",
+            true,
+            Some(&armed),
+        ))
         .await
         .expect("accepted");
     for _ in 0..100 {
@@ -326,6 +344,9 @@ async fn a_run_that_ignores_sigterm_comes_back_as_a_kill() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
+    // The group has now installed its `trap '' TERM INT` and is in its wait, so what the cancel
+    // exercises is the escalation and not how fast `/bin/sh` on this machine reaches line 96.
+    common::wait_until_stub_armed(&armed).await;
     let payload = receipt(&server.url(), json!({ "run_id": &run_id })).await;
     assert_eq!(payload["status"], "cancelled");
     assert_eq!(payload["kill"]["method"], "kill", "{payload}");

@@ -26,6 +26,8 @@ use act_mcp::{
 };
 use serde_json::Value;
 
+mod common;
+
 /// The stub `act`, made executable in case a checkout dropped the bit.
 fn stub_act() -> PathBuf {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -98,6 +100,11 @@ impl Harness {
     ///
     /// `env` is the stub's seam (`STUB_SLEEP`, `STUB_EXIT_CODE`, `STUB_LINES_FILE`, …), which
     /// is exactly how `tests/runner_execution.rs` drives the same script.
+    /// Where the stub touches its arm signal for this run (see `common::wait_until_stub_armed`).
+    fn arm_file(&self, run_id: &str) -> std::path::PathBuf {
+        common::stub_arm_file(&self.workspace, run_id)
+    }
+
     fn plan(&self, run_id: &str, env: &[(&str, String)]) -> RunPlan {
         let id = RunId::parse(run_id).expect("test run id");
         let mut spec = RunSpec::new(
@@ -521,11 +528,18 @@ async fn a_run_that_ignores_sigterm_is_escalated_to_sigkill() {
                 ("STUB_SLEEP", "60".to_owned()),
                 ("STUB_CHILD_SECS", "120".to_owned()),
                 ("STUB_IGNORE_TERM", "1".to_owned()),
+                (
+                    "STUB_ARM_FILE",
+                    harness.arm_file(&run_id).display().to_string(),
+                ),
             ],
         ))
         .await
         .expect("accepted");
     wait_until_running(&supervisor, &run_id).await;
+    // Cancelling here is only a test of the escalation if the group has installed its ignore;
+    // `Running` means spawned, and the trap is later than that by however long the shell takes.
+    common::wait_until_stub_armed(&harness.arm_file(&run_id)).await;
     let pgid = supervisor
         .record(&run_id)
         .await

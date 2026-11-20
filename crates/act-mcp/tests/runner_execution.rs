@@ -32,6 +32,8 @@ use act_mcp::runner::{
     REDACTION_MARKER, WARNING_ORPHANED_CONTAINERS, WARNING_PROCESS_GROUP_KILLED, WARNING_TRUNCATED,
 };
 
+mod common;
+
 const SECRET: &str = "s3cr3t-value-do-not-leak";
 const TOKEN: &str = "ghp_also_do_not_leak";
 const RUN_ID: &str = "20261110T004203Z-a1b2c3";
@@ -616,16 +618,26 @@ async fn cancellation_ends_the_run_as_cancelled_and_leaves_no_orphan() {
 async fn an_act_that_ignores_sigterm_is_sigkilled_after_the_grace() {
     let harness = Harness::new();
     let mut spec = harness.spec();
-    spec.timeout = Duration::from_millis(300);
+    let armed = common::stub_arm_file(&harness.tree, "sigterm-grace");
+    // The act budget has to be longer than the stub's own startup, or the timeout fires while the
+    // shell is still on its way to `trap '' TERM INT` and the run dies to SIGTERM's default
+    // disposition — a measurement of how fast /bin/sh starts, not of the grace. The arm file is
+    // asserted below so the proof is on the record rather than assumed.
+    spec.timeout = Duration::from_secs(2);
     spec.process_env = BTreeMap::from([
         ("STUB_SLEEP".to_owned(), "60".to_owned()),
         ("STUB_IGNORE_TERM".to_owned(), "1".to_owned()),
         ("STUB_CHILD_SECS".to_owned(), "60".to_owned()),
+        ("STUB_ARM_FILE".to_owned(), armed.display().to_string()),
     ]);
 
     let started = Instant::now();
     let outcome = run(spec).await;
     let elapsed = started.elapsed();
+    assert!(
+        armed.exists(),
+        "the stub never armed before the timeout fired: {outcome:?}"
+    );
     assert_eq!(outcome.status, RunStatus::TimedOut);
     let kill = outcome.kill.expect("kill report");
     assert_eq!(kill.method, KillMethod::Kill);

@@ -23,11 +23,24 @@
 #   STUB_NO_NEWLINE       print bytes with no trailing newline (partial last line)
 #   STUB_CHILD_SECS N     background a `sleep N` (proves the whole group is killed)
 #   STUB_IGNORE_TERM      trap '' TERM, so SIGKILL escalation is exercised
+#   STUB_ARM_FILE F       touch F once the ignore is installed and the long wait is about to
+#                         begin — a test that is about to signal the group waits on F instead
+#                         of guessing how long a cold `/bin/sh` takes to get here
 #   STUB_KILL_SELF SIG    kill -SIG $$ (the act_crashed path)
 #   STUB_SLEEP N          sleep N (timeout test)
 #   STUB_EXIT_CODE N      exit status (default 0)
 
 set -u
+
+if [ -n "${STUB_IGNORE_TERM:-}" ]; then
+  # Before anything else, on purpose: every instruction between `exec` and this `trap` is a
+  # window in which the group still holds SIGTERM's default disposition, and a test that signals
+  # it inside that window gets a run that *died* to SIGTERM rather than one that ignored it. How
+  # long that window is comes down to how fast this shell starts, which is exactly the difference
+  # that made the escalation tests a coin flip on a slower `/bin/sh` (macOS) and quiet on a
+  # fast one. A test that must not race it waits on `STUB_ARM_FILE` below.
+  trap '' TERM INT
+fi
 
 emit() {
   printf '%s\n' "$1"
@@ -96,12 +109,15 @@ if [ -n "${STUB_NO_NEWLINE:-}" ]; then
 fi
 
 if [ -n "${STUB_CHILD_SECS:-}" ]; then
-  # A grandchild in the same process group, like act's docker clients and containers.
+  # A grandchild in the same process group, like act's docker clients and containers. Forked
+  # after the ignore above, so it inherits that too: "this act refuses to be cancelled" means
+  # the whole group, not only the shell that `killpg` was aimed at.
   sleep "$STUB_CHILD_SECS" &
 fi
 
-if [ -n "${STUB_IGNORE_TERM:-}" ]; then
-  trap '' TERM INT
+if [ -n "${STUB_ARM_FILE:-}" ]; then
+  # The arm signal: from this moment the group is immune for as long as the wait below lasts.
+  : > "$STUB_ARM_FILE" || exit 70
 fi
 
 if [ -n "${STUB_KILL_SELF:-}" ]; then

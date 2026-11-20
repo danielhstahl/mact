@@ -739,3 +739,33 @@ pub fn listen_addr_from_log_line(line: &str) -> Option<SocketAddr> {
         .trim_matches('"');
     token.parse::<SocketAddr>().ok()
 }
+
+/// Where [`stub-act.sh`](testdata/stub-act.sh) touches the arm signal for one run. It lives in
+/// the fixture's own workspace, so the fixture's `TempDir` drop cleans it up with everything
+/// else; the run id makes it unique when a binary's tests run in parallel.
+pub fn stub_arm_file(workspace: &std::path::Path, run_id: &str) -> std::path::PathBuf {
+    workspace.join(format!("stub-armed-{run_id}"))
+}
+
+/// Wait until the stub act reports that its `trap '' TERM INT` is installed and the long wait has
+/// begun — the only honest way for a cancellation test to know it is signalling a run that
+/// *ignores* SIGTERM rather than one that has not reached its trap yet.
+///
+/// `Running` is not that signal: it means the process was spawned, and `exec` to `trap` is a
+/// window whose length is the shell's startup cost. Signal inside that window and the group dies
+/// to SIGTERM's default disposition, so the receipt says `method: "term"` and the failure is
+/// about how fast `/bin/sh` starts on that machine — which is why these escalation tests were
+/// quiet on Linux and red on macOS rather than testing anything about the escalation.
+pub async fn wait_until_stub_armed(path: &std::path::Path) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !path.exists() {
+        if std::time::Instant::now() >= deadline {
+            panic!(
+                "the stub act never armed itself: {} still does not exist after 20s, so it never \
+                 reached its `trap '' TERM INT` and this test cannot say anything about SIGTERM",
+                path.display()
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
