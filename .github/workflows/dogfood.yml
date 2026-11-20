@@ -42,7 +42,10 @@ jobs:
     env:
       CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
     steps:
+      # Full history: the check step runs fathom's suite, which indexes this repository.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # One cache for the whole job: the registry (what cargo downloads) and ./target
       # (what it compiles). Keyed on Cargo.lock plus the toolchain pin, so a lockfile or

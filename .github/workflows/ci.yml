@@ -72,7 +72,13 @@ jobs:
     env:
       CARGO_BUILD_TARGET: ${{ matrix.target }}
     steps:
+      # Full history, not the action's default depth of one: `fathom`'s suite indexes *this*
+      # repository (`crates/fathom/tests/index_store.rs::it_indexes_this_repository_into_a_temporary_store`),
+      # and a checkout with a single commit has no history to index — the test would then report
+      # that it skipped instead of checking the thing it exists to check.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # One cache for the whole job: the registry (what cargo downloads) and ./target
       # (what it compiles). Keyed on Cargo.lock plus the toolchain pin, so a lockfile or

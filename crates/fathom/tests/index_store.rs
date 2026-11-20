@@ -172,6 +172,23 @@ fn a_workspace_with_no_evidence_directory_indexes_and_records_the_gap() {
     assert!(row.mi.is_some(), "git history alone still produces an MI");
 }
 
+/// Whether the checkout under test is a shallow clone, i.e. one fetched with `--depth`.
+/// `actions/checkout@v4` defaults to `fetch-depth: 1`, so a workflow that runs this suite without
+/// saying otherwise hands it a repository with one commit in it.
+fn shallow_checkout(workspace: &Path) -> bool {
+    std::process::Command::new("git")
+        .args([
+            "-C",
+            &workspace.display().to_string(),
+            "rev-parse",
+            "--is-shallow-repository",
+        ])
+        .output()
+        .is_ok_and(|out| {
+            out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "true"
+        })
+}
+
 #[test]
 fn it_indexes_this_repository_into_a_temporary_store() {
     // The ticket's first "Done when" line, on the real thing: a repository with merges, renames,
@@ -182,6 +199,17 @@ fn it_indexes_this_repository_into_a_temporary_store() {
         .parent()
         .and_then(Path::parent)
         .expect("crates/fathom sits two levels under the repo root");
+    // "On the real thing" is the precondition, so check that the checkout *has* the real thing.
+    // A shallow clone has one commit and nothing to index; the honest report is that the test could
+    // not run, not that the repository failed. CI fetches full history for exactly this reason
+    // (`.github/workflows/ci.yml`'s `fetch-depth: 0`).
+    if shallow_checkout(workspace) {
+        eprintln!(
+            "note: skipping; {} is a shallow clone (`git rev-parse --is-shallow-repository`), so \n            there is no history here to index — fetch full depth to run this",
+            workspace.display()
+        );
+        return;
+    }
     let scratch = tempfile::tempdir().expect("scratch");
     let cli = Cli::parse_from([
         "fathom",
