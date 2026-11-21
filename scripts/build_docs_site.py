@@ -59,6 +59,9 @@ Usage:
     --check runs the builder's own tests against a fixture tree in a temporary directory: nothing
     here needs the network, a toolchain or even this repository's docs, which is why CI can run it
     on every commit (`scripts/ci.sh docs-site`) and why it is the first step of the publish job.
+    One of those cases builds the fixture and then rebuilds it through a symlink to its own root, so
+    a path that compares a resolved path against an assembled one fails here on Linux instead of only
+    on a Mac, where `$TMPDIR` is symlinked by default (docs/testing.md §1).
 
 Exit status: 0 built (or every self-test passed), 1 a build error or a failed self-test, 2 bad
 usage or an unreadable tree. With --strict, a warning (a link that leaves the docs tree with no
@@ -518,7 +521,10 @@ class PageContext:
 
     def _where(self, href: str) -> str:
         try:
-            rel = self.doc.src.relative_to(REPO)
+            # Relative to the tree being built, not to the module's own repository: a finding a
+            # reader has to expand an absolute temporary path to read is a finding they skip, and the
+            # two spellings of a macOS temporary directory would make the same finding print two ways.
+            rel = self.doc.src.relative_to(self.site.repo_root)
         except ValueError:
             rel = self.doc.src
         for number, line in enumerate(self.doc.lines, start=1):
@@ -1132,7 +1138,16 @@ def build_site(
     caller decides whether a red build is fatal, because --check wants to report and carry on."""
     docs_dir = docs_dir.resolve()
     out_dir = out_dir.resolve()
-    site = Site(docs_dir=docs_dir, out_dir=out_dir, repo_root=(repo_root or REPO), github_url=github_url)
+    # Canonicalise the repository root too, or the two halves of every comparison disagree by
+    # construction. A link's target is resolved (`(doc.src.parent / target).resolve()`), so a root that
+    # arrives as the *other* spelling of the same directory makes `relative_to` raise ValueError, and
+    # ValueError is read as "this link leaves the repository". That is not hypothetical: on macOS
+    # `$TMPDIR` lives under `/var`, and `/var` is a symlink to `/private/var`, so `tempfile`'s own path
+    # and its resolved form are two names for one place — which is why `--check` was green on Linux and
+    # red on a Mac (docs/testing.md §1 states the hazard for the Rust tests; this is the builder's half
+    # of the same rule). One spelling in, one spelling everywhere.
+    repo_root = (repo_root or REPO).resolve()
+    site = Site(docs_dir=docs_dir, out_dir=out_dir, repo_root=repo_root, github_url=github_url)
 
     sources = discover_markdown(docs_dir)
     if not sources:
@@ -1167,7 +1182,7 @@ def build_site(
         return 0, site.errors, site.warnings
 
     if clean and out_dir.exists():
-        if out_dir == docs_dir or out_dir == REPO or docs_dir in out_dir.parents:
+        if out_dir == docs_dir or out_dir == site.repo_root or docs_dir in out_dir.parents:
             site.error(f"refusing to --clean {out_dir}: it is not a build output directory")
             return 0, site.errors, site.warnings
         shutil.rmtree(out_dir)
@@ -1419,6 +1434,7 @@ class _SelfTest:
         self.build_cases()
         self.link_cases()
         self.build_error_cases()
+        self.path_spelling_cases()
         for failure in self.failures:
             print(f"FAIL {failure}", file=sys.stderr)
         print(f"{'FAIL' if self.failures else 'OK'} docs site builder: "
@@ -1686,6 +1702,43 @@ Decided.
             _written, errors, _warnings = build_site(docs_dir=root / "docs", out_dir=root / "out",
                                                     repo_root=root, quiet=True)
             self.equal("a closed fence builds clean", errors, [])
+
+    def path_spelling_cases(self) -> None:
+        """One directory, two spellings — the macOS `$TMPDIR` trap, made reproducible on Linux.
+
+        On macOS `$TMPDIR` lives under `/var`, and `/var` is a symlink to `/private/var`, so every
+        temporary directory has two names for one place and a path assembled from `$TMPDIR` is not
+        `==` the same path resolved. `Path.relative_to` across the two spellings raises ValueError, and
+        the builder reads a ValueError as "this link leaves the repository" — so a link that was
+        plainly inside the tree was reported as outside it, and only on the Mac. docs/testing.md §1
+        calls out exactly this hazard for the Rust tests; this is the builder's own half of the rule:
+        resolve consistently at the boundary, and prove it here rather than waiting for a laptop.
+        """
+        with tempfile.TemporaryDirectory(prefix="docs-site-check-") as tmp:
+            real = self._write_fixture(Path(tmp) / "real")
+            link = Path(tmp) / "link"
+            try:
+                os.symlink(real, link)
+            except (OSError, NotImplementedError):  # pragma: no cover - a Windows box without the privilege
+                self.check("symlinked root spelling (no symlink support on this box)", True, "skipped")
+                return
+            url = "https://example.com/o/r/blob/main"
+            for label, root, out in (("real", real, real / "out-real"), ("symlinked", link, real / "out-link")):
+                _written, errors, warnings = build_site(
+                    docs_dir=root / "docs", out_dir=out, github_url=url,
+                    repo_url="https://example.com/o/r", repo_root=root, quiet=True)
+                self.equal(f"{label} spelling of the root builds clean", errors, [])
+                self.equal(f"{label} spelling of the root earns no warning", warnings, [])
+            guide = (real / "out-link" / "guide.html").read_text(encoding="utf-8")
+            self.check(
+                "the link that leaves docs/ is rewritten, not warned about, through the symlinked spelling",
+                'href="https://example.com/o/r/blob/main/outside.md"' in guide,
+                "the blob url is missing; the builder thought an inside link was outside the repository")
+            self.equal("both spellings write the same files",
+                       sorted(_tree_bytes(real / "out-real")), sorted(_tree_bytes(real / "out-link")))
+            both = _tree_bytes(real / "out-real"), _tree_bytes(real / "out-link")
+            self.equal("both spellings write the same bytes",
+                       sorted(name for name in both[0] if both[0][name] != both[1].get(name)), [])
 
 
 def _tree_bytes(root: Path) -> dict[str, bytes]:

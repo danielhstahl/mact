@@ -52,7 +52,12 @@ A few environment quirks worth knowing before the first red build:
   compares a path the code resolved (`Path::canonicalize`, or act's own `pwd`) against a path
   the test assembled can therefore disagree with itself on macOS and agree on Linux, where
   `/tmp` is a real directory. Reproduce it here without a Mac: `ln -s /tmp /tmp/link-tmp`
-  and run `TMPDIR=/tmp/link-tmp cargo test`;
+  and run `TMPDIR=/tmp/link-tmp cargo test` — the same trick works on the python checkers,
+  which honour `$TMPDIR` through `tempfile`, so `TMPDIR=/tmp/link-tmp python3
+  scripts/build_docs_site.py --check` runs that builder's fixture through the other spelling
+  of its own root. `--check` also does it by itself (`path_spelling_cases`), because the bug
+  this rule came from was a `relative_to` across the two spellings reading an inside link as
+  outside the repository: green on Linux, red on every Mac;
 * the process-group tests read `/proc` (`runner_execution`'s `live_pids_in_group`,
   `process_group_of`), which Linux has and macOS does not: a `/proc` assertion in a test is
   either gated `#[cfg(target_os = "linux")]` or cross-checked against a syscall that exists
