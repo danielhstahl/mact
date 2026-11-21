@@ -54,7 +54,9 @@ fetches the RUSTSEC database) and says so in the log. Nothing else needs the net
 
 Two environment notes, both from docs/testing.md: on a bind-mounted checkout rustc can take
 SIGBUS while linking into `./target`, so `CARGO_TARGET_DIR=/tmp/tt` is the fix when that is
-what you are fighting; and `PYTHON` names the interpreter the schema step uses, which
+what you are fighting — and `scripts/ci.sh` knows that failure's own signature, so it says which
+fault it is looking at and reruns the command once before believing it, because a fault that comes
+and goes is not a broken tree; and `PYTHON` names the interpreter the schema step uses, which
 matters on boxes where `pip` and `python3` disagree about where packages live.
 
 ## 2. The steps, and what each one is for
@@ -105,7 +107,7 @@ that needs a container daemon belongs behind `#[ignore]` with the reason in its
    the fourth — ADR-0005's load-bearing form *is* the manifests, so that checker reads them instead of
    a fourth schema — and `.gitignore` plus `.fathom/LAYOUT.md` for the last, because ADR-0006's
    artifacts are a directory contract and the ignore rules that grant it visibility; it is what makes
-   an orphaned `.fathom` whitelist entry a build failure instead of a mystery; and
+   an orphaned or unreachable `.fathom` rule a build failure instead of a mystery; and
    `schema/mi-definition.json` plus the golden vectors in `crates/act-mcp/tests/testdata/mi` for the sixth, because
    what ADR-0007 pins is a set of numbers and a set of closed enumerations — the checker diffs the
    ADR's own copy of the constants against the JSON, re-derives every golden vector twice

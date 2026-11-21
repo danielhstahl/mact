@@ -42,7 +42,11 @@ dependency firewalls, and a release build per artefact that is then run to prove
 A few environment quirks worth knowing before the first red build:
 
 * on this repo's dev box `rustc` takes SIGBUS while linking inside a bind-mounted `/workspace`,
-  so build and test with `CARGO_TARGET_DIR=/tmp/tt` if you see it;
+  so build and test with `CARGO_TARGET_DIR=/tmp/tt` if you see it. It comes and goes, which is how
+  a healthy tree ends up red: `scripts/ci.sh` recognises the signature (`interrupted by SIGBUS`,
+  `Bad address (os error 14)`), says that the fault is the mount and not the code, and reruns that
+  one command before believing it — and stops after the second one with the same advice, rather
+  than making someone read an LLVM backtrace to find out they are fighting their filesystem;
 * on macOS `$TMPDIR` is under `/var`, and `/var` is a symlink to `/private/var`, so every
   temp directory a test makes has two spellings of one directory. Anything in a test that
   compares a path the code resolved (`Path::canonicalize`, or act's own `pwd`) against a path

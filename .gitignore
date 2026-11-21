@@ -25,9 +25,8 @@ __pycache__/
 # $ACTMCP_EVIDENCE_OUT is set and they write into the evidence tree instead (ADR-0002 §3.2, §3.3)
 /lcov.info
 /benchmark.json
-.pi/*
-!.fathom/reviews/
-!.fathom/ratchet.toml
-.fathom/**/*.tmp
-.fathom/**/*.sqlite3-*
+
+# the harness's own act-mcp log when this checkout is used as a fixture workspace: an untracked
+# file here is a dirty worktree to the act runner (isolation_failed: dirty_worktree)
 mact.log
+.pi/*

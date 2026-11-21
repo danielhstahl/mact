@@ -162,7 +162,9 @@ Options:
 
 Environment:
   CARGO_TARGET_DIR    honoured as always. On a bind-mounted checkout rustc can take SIGBUS
-                      while linking into ./target (docs/testing.md) — point it at /tmp.
+                      while linking into ./target (docs/testing.md) — point it at /tmp. A cargo
+                      call that dies with exactly that signature is retried once by this script
+                      and says so; a second one stops and names the variable below.
   PYTHON              the interpreter used by the schema step (default: python3). The
                       step's second-opinion checks need the `jsonschema` package; without
                       it they are reported as skipped, and the hard checks (the Rust
@@ -310,6 +312,64 @@ group_end() {
 
 note() { printf '%s  note:%s %s\n' "$c_yellow" "$c_off" "$*"; }
 fix() { printf '%s  fix:%s %s\n' "$c_yellow" "$c_off" "$*"; }
+
+# ---------------------------------------------------------------------------
+# cargo, with the one failure this repo cannot fix saying so out loud
+# ---------------------------------------------------------------------------
+# rustc takes SIGBUS — or fails with `Bad address (os error 14)` — while writing into a target
+# directory that sits on a bind mount (README's build note, docs/testing.md §1, docs/ci.md §1). It is
+# an environment fault and it looks exactly like a broken tree: a step that was green an hour ago ends
+# in an LLVM backtrace, and the step's exit code says nothing about which. So every `cargo` call in
+# this script goes through the function below, which recognises that signature, says what it is, and
+# runs the command once more — a fault that comes and goes is worth one retry before it is worth a
+# bug report. An ordinary failure passes straight through, printed as itself.
+cargo_log=$(mktemp "${TMPDIR:-/tmp}/act-mcp-ci-cargo.XXXXXX" 2>/dev/null || true)
+trap '[[ -n "${cargo_log:-}" ]] && rm -f "$cargo_log"' EXIT
+
+cargo() {
+    if [[ -z "$cargo_log" ]]; then
+        command cargo "$@"
+        return $?
+    fi
+    local status=0 had_errexit=0 attempt=0 fault
+    [[ $- == *e* ]] && had_errexit=1
+    while :; do
+        attempt=$((attempt + 1))
+        : >"$cargo_log"
+        # tee, not a redirect: a step's output still has to reach the log the runner prints, and in
+        # quiet mode that log is a file this function would otherwise be writing twice into.
+        set +e
+        command cargo "$@" 2>&1 | tee "$cargo_log"
+        status=${PIPESTATUS[0]}
+        if (( had_errexit )); then
+            set -e
+        fi
+        grep -qE 'interrupted by SIGBUS|Bad address \(os error 14\)' "$cargo_log" && fault=1 || fault=0
+        if [[ $status -eq 0 ]]; then
+            if (( fault )); then
+                # It happens: rustc prints the backtrace, the unit gets written anyway, and the
+                # command is green. Say so, because the next one may not be, and a step that is
+                # green today and red tomorrow is what "seems flaky" means.
+                echo
+                note "rustc took a SIGBUS in that command and the build finished anyway: the"
+                note "bind-mounted-checkout fault in docs/testing.md §1. It costs nothing today;"
+                note "CARGO_TARGET_DIR=/tmp/tt is what it costs when it starts to fail."
+            fi
+            return 0
+        fi
+        if (( ! fault )); then
+            return "$status"   # an ordinary failure, printed as itself
+        fi
+        echo
+        note "rustc died taking SIGBUS writing into $target_dir: the bind-mounted-checkout fault in"
+        note "docs/testing.md §1, not a fault in this tree"
+        if (( attempt >= 2 )); then
+            fix "it repeated, so stop fighting the mount: CARGO_TARGET_DIR=/tmp/tt scripts/ci.sh ..."
+            return "$status"
+        fi
+        fix "running this command once more, since the fault is the environment's"
+    done
+}
 
 # ---------------------------------------------------------------------------
 # the steps
@@ -470,11 +530,7 @@ step_schema() {
     # --bin act-mcp` is the same spelling the release step uses.
     cargo build -p act-mcp --bin act-mcp
     local bin
-    if [[ -n "${CARGO_BUILD_TARGET:-}" ]]; then
-        bin="$target_dir/$CARGO_BUILD_TARGET/debug/act-mcp"
-    else
-        bin="$target_dir/debug/act-mcp"
-    fi
+    bin=$(debug_bin act-mcp)
     if [[ ! -x "$bin" ]]; then
         echo "schema: expected a built binary at $bin and did not find one" >&2
         return 1
@@ -500,7 +556,9 @@ step_schema() {
     #    manifests, and it is what stops the act-mcp ↔ fathom dependency edge from creeping in.
     #    validate_fathom_layout.py is the other one: ADR-0006's artifacts are a directory contract
     #    and an ignore file, so it diffs .gitignore, .fathom/LAYOUT.md and the ADR against each other
-    #    and fails on an orphaned whitelist entry (the state this repo was in when ADR-0006 was written).
+    #    and fails on an orphaned whitelist entry (the state this repo was in when ADR-0006 was written)
+    #    or on a `.fathom` rule git can never reach — which is exactly how the four rules §12.1 deletes
+    #    came back into `.gitignore` a week later, buried in a commit about something else.
     #    validate_mi_definition.py is the third one of that kind: ADR-0007's artifacts are numbers and
     #    closed enumerations, so it diffs the ADR's constants block against schema/mi-definition.json,
     #    re-derives every golden vector in tests/testdata/mi twice (binary64 through
@@ -529,11 +587,7 @@ step_schema() {
     "$py" scripts/validate_metric_model.py
     cargo build -p fathom --bin fathom
     local fbin
-    if [[ -n "${CARGO_BUILD_TARGET:-}" ]]; then
-        fbin="$target_dir/$CARGO_BUILD_TARGET/debug/fathom"
-    else
-        fbin="$target_dir/debug/fathom"
-    fi
+    fbin=$(debug_bin fathom)
     if [[ ! -x "$fbin" ]]; then
         echo "schema: expected a built fathom at $fbin and did not find one" >&2
         return 1
