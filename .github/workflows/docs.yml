@@ -1,0 +1,176 @@
+# Publish docs/ as a static HTML site on GitHub Pages.
+#
+# Same convention as every other file here: the workflow is setup plus one call into `scripts/`.
+# The Markdown-to-HTML transformation, the navigation, the anchor generation and the link checker all
+# live in `scripts/build_docs_site.py`, which is standard library only, runs in well under a second,
+# and proves itself with `--check`. That is what makes this file reviewable: a red run means either
+# the script's own tests failed or a link in docs/ stopped pointing at something, and both are
+# reproducible by one command on a laptop (`scripts/build_docs_site.py --check`, then
+# `scripts/build_docs_site.py --out /tmp/site`) with no toolchain, no container and no network.
+#
+# Why the site is a *site* and not a link to GitHub's Markdown renderer: docs/ is normative —
+# ADR-0002 is the evidence contract, docs/security.md is the threat model, docs/tool-contract.md is
+# what clients code against — and a reader who arrives at a rendered repository page has no index,
+# no cross-section anchors that survive being quoted, and no way to read the set of documents as a
+# set. The published page is the same bytes the repository holds, in one navigable place.
+#
+# Two jobs, and the split is the same one `coverage.yml` and `benchmarks.yml` imply: `build` is a fact,
+# `deploy` is an action.
+#
+#   build  — `--check` (the builder's own tests), then the real build, which doubles as the docs link
+#            check: a `[thing](adr/0002-….md#section)` whose file or section does not exist is an
+#            error, exactly as a broken intra-doc link is fatal in `scripts/ci.sh doc`.
+#   deploy — only on the default branch, through the Pages environment, publishing what `build`
+#            produced. A preview on a fork or a feature branch is the downloadable artefact, which is
+#            also the only way this path is testable without writing to someone's Pages setting.
+#
+# No `actions/configure-pages` step, deliberately: it exists to hand a builder the site's base path,
+# and this site is built with relative links throughout (`../adr/0002-….html`), so the same tree is
+# correct at a project page, a custom domain, a path under one, and `file://` from an unzipped
+# artefact. There is no base path to configure, which is the point of checking that claim in
+# `scripts/build_docs_site.py --check` by comparing two builds byte for byte.
+#
+# Pages must be enabled once, in the repository's Settings → Pages, with "Source: GitHub Actions"
+# selected. Until that switch is flipped `deploy` fails with "Pages not enabled on this repository",
+# which is a configuration answer rather than a build failure, and `build`'s artefact still has the
+# site in it.
+#
+# And `runs-on: ubuntu-24.04` is not a label act maps out of the box, so this workflow is not what the
+# MCP action runner runs — deliberately, because the same build is already act-runnable: `docs-site` is
+# in the step list `.github/workflows/dogfood-local.yml` hands to `scripts/ci.sh`, which is ci.yml's
+# check list shaped for a container act can start. Asking act to run this file would mean asking it to
+# run `actions/deploy-pages` too, and a runner inside a container cannot publish a site (ADR-0006 §10.1
+# refuses the same recursion for the evidence producers with `act_in_container`).
+name: Docs
+
+on:
+  push:
+    # Any branch: the deploy job is the one that decides whether to publish, and running `build`
+    # everywhere is what keeps the publish path exercised by ordinary pushes rather than only by the
+    # one push a release makes. docs/** is the subject; the script and this file are what change it.
+    paths:
+      - "docs/**"
+      - "scripts/build_docs_site.py"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    # Unfiltered, as everywhere else in this directory: a check that sometimes does not run is a check
+    # that blocks a merge, and this one costs seconds.
+  workflow_dispatch:
+
+# The Pages deployment API needs `pages: write`, and the OIDC token that authenticates a deployment to
+# a repository's Pages environment needs `id-token: write`. Both are declared here and used only by
+# the default-branch path: a pull request from a fork gets a downgraded token anyway, and its job
+# does nothing but build and upload an ordinary artefact, so there is nothing for the downgrade to
+# break. `contents: read` is the floor the checkout needs, and nothing in this workflow writes to the
+# repository.
+permissions:
+  contents: read
+
+# One Pages deployment at a time; a superseded push to the same branch has nothing new to publish, and
+# two deployments racing for one environment is how a half-published site happens.
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build the docs site
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # The named interpreter, not "whatever the image happens to carry". The builder is standard
+      # library only — nothing is pip-installed, so there is no dependency set to review and no
+      # requirement in deny.toml's favour to grant — but the version that rendered the published site
+      # should be a fact in the log rather than an attribute of a runner image nobody pinned.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Self-test the builder
+        # First, and for the same reason every other `--check` here runs first: it is pure logic, so it
+        # needs nothing, it fails in milliseconds with the failing rule named, and it covers the parts
+        # a successful build cannot observe — that an unterminated fence is an error, that a link to a
+        # missing section is an error, that two builds of one tree are byte-identical.
+        run: scripts/build_docs_site.py --check
+
+      - name: Build
+        # The real tree, into the directory the Pages action publishes. `--github-url` is what turns
+        # the links docs/ write to the rest of the repository — `../README.md`,
+        # `../../schema/evidence.schema.json`, `../scripts/validate_metric_model.py` — into working
+        # links instead of dead relative paths: only docs/ is published, so anything outside it has to
+        # resolve against the repository at this ref. Pinned to the commit being built, not to a branch
+        # name, so a link cannot drift to a newer file than the doc that cited it. `--strict` is the
+        # one place a link leaving docs/ with nowhere to go is a failure rather than a warning, and it
+        # is only a reasonable thing to demand because `--github-url` was passed.
+        id: build
+        run: |
+          set -euo pipefail
+          scripts/build_docs_site.py \
+            --out _site \
+            --clean \
+            --github-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$GITHUB_SHA" \
+            --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --footer-note "built from ${GITHUB_SHA:0:7}" \
+            --strict
+          echo "pages=$(find _site -name '*.html' | wc -l)" >>"$GITHUB_OUTPUT"
+
+      - name: Summarise
+        # The line a reviewer reads instead of the log: what was built, how big, and what is in it.
+        run: |
+          set -euo pipefail
+          {
+            echo "## Docs site"
+            echo
+            echo "${{ steps.build.outputs.pages }} page(s), $(du -sh _site | cut -f1) in the artefact."
+            echo
+            echo '```'
+            find _site -type f | sort | sed 's|^_site/||'
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      # Downloadable by anyone who can see the run, including on a fork PR, where the Pages artifact
+      # below is deliberately not produced. Unzip it and open index.html: the links are relative, so a
+      # preview needs no server.
+      - name: Upload the site as a job artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-site
+          path: _site
+          retention-days: 14
+
+      - name: Upload the Pages artifact
+        # Pushes only: a pull request run from a fork cannot hold `pages: write`, and this step is the
+        # one that needs it. The deploy job needs it and is gated the same way.
+        if: github.event_name == 'push'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: Publish to GitHub Pages
+    needs: build
+    # The default branch is the only thing that publishes, and it is named through the API rather than
+    # hardcoded: a hardcoded branch name is a workflow that silently stops publishing the day someone
+    # renames the default branch, and "silently" is the whole objection.
+    if: ${{ github.event_name == 'push' && github.ref_name == github.event.repository.default_branch }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Where it went
+        run: |
+          set -euo pipefail
+          printf '## Published\n\n%s\n' "${{ steps.deployment.outputs.page_url }}" >>"$GITHUB_STEP_SUMMARY"

@@ -869,7 +869,10 @@ The rule that keeps the two documents honest, and the ticket's acceptance criter
 executable: **every `.fathom` line in `.gitignore` appears verbatim in the block above, and every
 whitelist entry appears in §4.1's tree.** C2 of the checker compares the block literally and the
 whitelist set to the tree, and C3 compares the tree inside `.fathom/LAYOUT.md` to §4.1's, so an
-orphan is a failing build rather than another six months of mystery. If another program genuinely
+orphan is a failing build rather than another six months of mystery. C2 also refuses a rule git can
+never reach — a pattern naming a path below `.fathom/*` while the rule for `.fathom/*` itself stands,
+which is four of the six lines this section deletes — so a rule that only *looks* like a decision stops
+being added to this file. If another program genuinely
 wants a committed file under `.fathom/`, the act is: add the line here *and* to §4.1 in the same PR —
 one reviewable line, which is how this repo already treats a new licence in `deny.toml`.
 
@@ -896,17 +899,19 @@ directory has an opinion, and Fathom's append would silently contradict it.
 | claim | check | how |
 |---|---|---|
 | the ADR is accepted, complete, and states every token of the ticket's decision list | C1 | `python3 scripts/validate_fathom_layout.py` |
-| `.gitignore` carries the §12.1 block verbatim, and nothing else mentions `.fathom` | C2 | same |
-| no orphaned whitelist entry: every `!` rule names a top-level entry of §4.1's tree, that entry exists on disk, and it is tracked by git | C2 | same |
+| `.gitignore` carries the §12.1 block verbatim and contiguously — and if it does not, the finding names the line of the block that differs | C2 | same |
+| no orphaned whitelist entry: every `!` rule names a top-level entry of §4.1's tree, and git tracks something under it (git's index is what an ignore rule governs; a tracked entry this deleted-cache-root does not have is a `NOTE` with the restore command, not a verdict) | C2 | same |
+| no `.fathom` rule is unreachable: a rule naming a path below `.fathom/*`, which git never descends into while the directory-level rule stands, is refused as the dead rule it is (§12) | C2 | same |
 | `.fathom/LAYOUT.md` exists, is tracked, and its tree block equals §4.1's | C3 | same |
 | `.fathom/LAYOUT.md` is not duplicated anywhere (one copy of the contract's bytes) | C3 | same |
 | no sqlite, no embedded store in the dependency graph (`rusqlite`, `libsqlite3-sys`, `redb`, `sled`) and both bans are present in `deny.toml` | C4 | same, reading `Cargo.lock` + `deny.toml` |
 | the ignore rules ADR-0002 owns (`.evidence/`, `.act-mcp.lock`) survived this ADR's diff | C5 | same |
 | documentation wiring: ADR-0006 in README's ADR list, named in `docs/ci.md` and `docs/testing.md`, and this checker wired into `scripts/ci.sh` | C6 | same |
-| the foreign artifacts physically present in this checkout are each either Fathom-owned per §4.1 or named in §2's disposition | C7 | same (skipped, loudly, when `.fathom/` is absent, which it is on a fresh clone: it is gitignored) |
+| a foreign artifact physically present in this checkout is either Fathom-owned per §4.1 or named in §2's disposition — and one that is named by neither is a `NOTE`, because §4.2 already decided it stays and §10.4 asks for an advisory note, not a finding | C7 | same (skipped, loudly, when `.fathom/` is absent, which it is on a fresh clone: it is gitignored) |
+| a foreign artifact that *obstructs* a name Fathom owns — `index` a file, `LAYOUT.md` a directory, a store path symlinked out of the cache root — is a finding, because that is the case where deleting the cache stops being safe (§4.2) | C7 | same, comparing each existing §4.1 path against the shape §4.1's tree gives it |
 | the store rules are stated as rules: atomic publish, key derivation, refuse-on-version-mismatch, the `fix:` strings, readers-need-no-lock | C8 | same (token assertions on this document, the same technique as `validate_crate_layout.py`'s C1) |
 | `fathom.toml`'s key table is complete and every key is claimed by a consumer | C9 | same: the §7.2 table is parsed and every key must appear in the declared-consumer column |
-| the checker is not a lie: each named check fires when the rule it names is broken | C10 | `python3 scripts/validate_fathom_layout.py --self-test` (builds a scratch fixture, breaks one rule at a time, asserts the named check fires) — the `scripts/crate_layout_drill.sh` idea, self-contained |
+| the checker is not a lie: each named check fires when the rule it names is broken — as a finding, or as the advisory note §4.2 asks for, and nothing else fires | C10 | `python3 scripts/validate_fathom_layout.py --self-test` (builds a scratch fixture, breaks one rule at a time, asserts the named check fires and only that check) — the `scripts/crate_layout_drill.sh` idea, self-contained |
 | the code keeps its side of the pins: per-analyzer declared keys are honest (§7.3), golden block fixtures exist (§6.3), warm re-index writes nothing (§11.4) | by1.7 / by1.10's Rust tests | named there; this ADR states what they must assert |
 | cargo-deny accepts the new bans | mact-by1.16 | `cargo deny check` in the `supply-chain` step |
 

@@ -8,13 +8,14 @@ pipeline, one `scripts/ci.sh`, three crates, two binaries.
 
 | file | what it is |
 |---|---|
-| `scripts/ci.sh` | the whole check: `fmt`, `clippy`, `build`, `doc`, `test`, `tui-snapshot`, `fathom-report`, `fathom-doctor`, `coverage`, `benchmark`, `mcp-driver`, `schema`, `supply-chain`, `release-workspace`, `release`. Run it bare for everything, or name steps. `--help` is the reference |
+| `scripts/ci.sh` | the whole check: `fmt`, `clippy`, `build`, `doc`, `docs-site`, `test`, `tui-snapshot`, `fathom-report`, `fathom-doctor`, `coverage`, `benchmark`, `mcp-driver`, `schema`, `supply-chain`, `release-workspace`, `release`. Run it bare for everything, or name steps. `--help` is the reference |
 | `scripts/coverage.sh` | the coverage collector: `cargo llvm-cov` over the workspace into an lcov tracefile at `$ACTMCP_EVIDENCE_OUT/lcov.info` (ADR-0002 §3.2's first path), the totals printed the way the contract reads them, and `--check` for the parsing/path/floor logic that needs no toolchain |
 | `scripts/bench.sh` | the benchmark producer: cold, warm, store-open and index timings over a throwaway fixture, published as an ADR-0002 §3.3 `benchmark.json` that it validates against every bound the contract states before it claims success |
 | `scripts/mcp_run.sh` | the runner driver one job calls: asks a live `act-mcp serve` to run a task and fails unless the runner advertised it, ran it to `success` on a `runs-on` label act could actually map, and published a record — `--check` proves all five outcomes against a stub server, no act required |
 | `scripts/smoke_binary.sh` | proves a built `act-mcp` is a runnable binary (used by `ci.sh release` and by the release job) |
 | `scripts/smoke_fathom.sh` | proves a built `fathom` is a runnable binary, and that `report`/`doctor` keep their 0/1/2 promise on a real evidence tree (`--check artefact\|report\|doctor\|all`); the binary is a positional, defaulting to `$CARGO_TARGET_DIR`/`target/debug/fathom` so the step a doc prints is a line you can paste |
 | `scripts/check_dependency_firewalls.sh` | the two dependency-graph promises `deny.toml` cannot make: ADR-0005's forbidden edges are absent *transitively*, and no crate in any shipped target's graph needs a C toolchain |
+| `scripts/build_docs_site.py` | the docs site: `docs/` in, static HTML out, standard library only. `--check` is its own suite (anchors, the Markdown subset, the refusal cases, byte-for-byte reproducibility); a real build is the check that every link inside `docs/` still resolves |
 | `scripts/install_ci_tools.sh` | installs what `ci.sh` needs beyond rustup: `cargo-deny` (pinned, sha256-pinned) and python's `jsonschema` |
 | `scripts/ci_drill.sh` | injects one violation per step into a throwaway copy and asserts the step fails — proof that each check can fail |
 | `.github/workflows/ci.yml` | the pipeline: `check` (all of the above, one matrix-free job) and `release` (per-platform supply-chain gate, workspace release build, one artefact each for `act-mcp` and `fathom`) |
@@ -22,6 +23,7 @@ pipeline, one `scripts/ci.sh`, three crates, two binaries.
 | `.github/workflows/coverage.yml` | the coverage *producer*, hand-triggered because the runner runs it (`act -j coverage`); writes the tracefile to `$ACTMCP_EVIDENCE_OUT` |
 | `.github/workflows/benchmarks.yml` | the benchmark *producer*, same shape (`act -j benchmark`); writes `benchmark.json` to `$ACTMCP_EVIDENCE_OUT` |
 | `.github/workflows/mcp-evidence.yml` | the evidence jobs: on every push and PR, starts `act-mcp serve`, asks it over MCP to run each producer, and fails unless the run was advertised, succeeded and published a record. §3a is why this exists and why the producers are elsewhere |
+| `.github/workflows/docs.yml` | publishes `docs/` to GitHub Pages: `build` (self-test, build, artefact) and `deploy` (default branch only). §3b is what it publishes and why the logic is a script |
 
 ## 1. Running it locally
 
@@ -37,6 +39,8 @@ scripts/coverage.sh --check         # the lcov rules alone; drop --check to actu
 scripts/bench.sh --check            # the §3.3 payload rules alone
 scripts/mcp_run.sh --check          # the runner driver, against a stub MCP on loopback
 scripts/smoke_fathom.sh --check all             # the headless contract, alone, on ./target/debug/fathom
+scripts/build_docs_site.py --check            # the docs builder's own tests, no tree needed
+scripts/build_docs_site.py --out /tmp/site    # build docs/ as a site and look at it
 scripts/check_dependency_firewalls.sh                      # the graph's shape, alone
 ```
 
@@ -50,7 +54,9 @@ fetches the RUSTSEC database) and says so in the log. Nothing else needs the net
 
 Two environment notes, both from docs/testing.md: on a bind-mounted checkout rustc can take
 SIGBUS while linking into `./target`, so `CARGO_TARGET_DIR=/tmp/tt` is the fix when that is
-what you are fighting; and `PYTHON` names the interpreter the schema step uses, which
+what you are fighting — and `scripts/ci.sh` knows that failure's own signature, so it says which
+fault it is looking at and reruns the command once before believing it, because a fault that comes
+and goes is not a broken tree; and `PYTHON` names the interpreter the schema step uses, which
 matters on boxes where `pip` and `python3` disagree about where packages live.
 
 ## 2. The steps, and what each one is for
@@ -61,6 +67,7 @@ matters on boxes where `pip` and `python3` disagree about where packages live.
 | `clippy` | `cargo clippy --all-targets --all-features -- -D warnings` | lints, and — because warnings are fatal — a toolchain bump's new opinions. A suppress carries `reason =` |
 | `build` | `cargo build --workspace --all-features`, then a check that `act-mcp` **and** `fathom` exist under `target/debug/` | a binary that stopped linking. `clippy` and `test` compile the same graph as *their* targets and neither promises a shipped binary came out: this is the step that says the workspace still builds the two programs it ships (ADR-0005 §3) |
 | `doc` | `cargo doc --no-deps --all-features` with `RUSTDOCFLAGS=-D warnings -D rustdoc::broken_intra_doc_links` | a doc link that stopped pointing at the thing it meant — including a link into a `#[cfg(test)]` module, which rustdoc never builds and therefore can never resolve. These crates' module docs carry the reasoning for their design, so a dangling link is a lost argument, not cosmetics; the fix is to name a linkable path or write the reference as a code span, never to soften the lint |
+| `docs-site` | `scripts/build_docs_site.py --check`, then a real build of `docs/` into a scratch directory | the same promise one step earlier, about Markdown instead of Rust: a link from one document to another, or to a section of one, plus the rules that make a site out of a tree — GitHub-compatible heading anchors (so `#3-coverage-` means the section it says it means in a document and on the rendered page), a code fence that closes, front matter that closes. Takes about a second and needs no toolchain, and it is the same build `docs.yml` publishes |
 | `test` | `cargo test --all-features` | the contract: unit tests, one suite per tool, the MCP 2026-07-28 conformance matrix, and `crates/act-mcp/tests/e2e` (real server, stub `act`, `.evidence` on disk) |
 | `tui-snapshot` | `cargo test -p fathom --test tui_render --test tui_detail --test tui_detail_store --test tui_diff --test tui_bench --test tui_store` | the fathom screens, drawn into ratatui's `TestBackend` and compared against a golden written out in the test file. A mismatch is a *design* change wearing a test failure's clothes: read the diff, and re-record only what you meant to change (there is no `--accept` step here — the goldens are string literals in the test, so the diff is the review). Colour is asserted where it is decided, never in a snapshot |
 | `fathom-report` | `cargo test -p fathom --test report`, then `scripts/smoke_fathom.sh --check report <fathom>` | first the two envelope goldens (`report.json`, and `report-sample-tree.json`, which is `scripts/sample_evidence.py`'s tree re-stamped onto the fixture's commits): a renamed, dropped or re-typed field is a failing test, not a broken dashboard downstream. Then the *artefact*: the same binary over the sample tree, checking the envelope's shape, that the tsv header is still the columns a `cut -f` is written against, that `fathom index` lands where the report reads, and that `--fail-on` exits 1 exactly when its own `gate.status` says `findings` |
@@ -100,7 +107,7 @@ that needs a container daemon belongs behind `#[ignore]` with the reason in its
    the fourth — ADR-0005's load-bearing form *is* the manifests, so that checker reads them instead of
    a fourth schema — and `.gitignore` plus `.fathom/LAYOUT.md` for the last, because ADR-0006's
    artifacts are a directory contract and the ignore rules that grant it visibility; it is what makes
-   an orphaned `.fathom` whitelist entry a build failure instead of a mystery; and
+   an orphaned or unreachable `.fathom` rule a build failure instead of a mystery; and
    `schema/mi-definition.json` plus the golden vectors in `crates/act-mcp/tests/testdata/mi` for the sixth, because
    what ADR-0007 pins is a set of numbers and a set of closed enumerations — the checker diffs the
    ADR's own copy of the constants against the JSON, re-derives every golden vector twice
@@ -269,6 +276,48 @@ scripts/mcp_run.sh --workflow dogfood-local.yml --task check --category other \
   --commit "$(git rev-parse HEAD)" --timeout-secs 3600
 ```
 
+## 3b. Publishing `docs/` as a static site
+
+`docs/` is normative: ADR-0002 is the evidence contract, `docs/security.md` is the threat model,
+`docs/tool-contract.md` is what clients code against. A reader who is not in a terminal and has not
+cloned the tree still has to be able to read the set of documents as a set, so
+`.github/workflows/docs.yml` publishes it as static HTML on GitHub Pages.
+
+The builder is `scripts/build_docs_site.py`, standard library only — no mdBook, no Sphinx, no Hugo,
+no binary fetched off a release page — for the same reason the rest of the tooling is: a build nobody
+can audit is a build nobody can run offline, and this repository has refused a C dependency twice
+(ADR-0006 §5, ADR-0007 §6) while refusing to add an unaudited one never came up. It runs in under a
+second, needs no network, and does four things worth naming:
+
+| it | because |
+|---|---|
+| keeps the tree's shape — `docs/adr/0002-evidence-jsonl-contract.md` becomes `adr/0002-evidence-jsonl-contract.html` — and writes every link relative | the same tree is then correct at a project page, a custom domain, a path under either, and `file://` from an unzipped job artefact. There is no `base_url` to configure, so there is no `base_url` to get wrong |
+| generates GitHub-compatible heading anchors and checks section links against them | the links already written into these documents (`#3-coverage-`, `#5-action-success--the-durable-question`) are GitHub's slugs, odd trailing hyphen and all. A link to a section that is not a heading is a broken reference in a normative document, which is why it is an error in the `docs-site` step rather than a dead click on the published page |
+| rewrites links that leave `docs/` through `--github-url` | `../README.md` and `../../schema/evidence.schema.json` are real paths in the repository and dead paths on a site that publishes only `docs/`. In CI that URL is pinned to the commit being built, so a published link cannot drift to a newer file than the document that cited it. With no `--github-url` they are warnings instead, because a laptop build has nowhere to send them |
+| produces the same bytes twice | sorted paths, no timestamps, no run ids. "Did this change alter the site?" is a `diff`, and `--check` asserts exactly that by building a fixture tree twice and comparing |
+
+Run it locally before pushing:
+
+```sh
+scripts/build_docs_site.py --check                    # the builder's own tests
+scripts/build_docs_site.py --out /tmp/site            # the real build; also what ci.sh docs-site does
+python3 -m http.server -d /tmp/site 8000              # or open /tmp/site/index.html directly
+```
+
+The workflow is two jobs, for the same reason the evidence producers live apart from the jobs that ask
+for them: `build` is a fact and `deploy` is an action. `build` runs the self-test, builds `docs/`
+with `--strict` and `--github-url`, uploads a downloadable artefact (that is the preview a fork PR
+gets, and the only one that does not touch anyone's Pages settings) and, on a push, uploads the Pages
+artifact. `deploy` runs on the default branch only — named through the API rather than hardcoded, so
+renaming the branch cannot silently stop publication — and publishes through the `github-pages`
+environment.
+
+Two things to know before the first run. Pages has to be switched on once, in Settings → Pages, with
+"Source: GitHub Actions"; until then `deploy` says `Pages not enabled on this repository`, which is a
+configuration answer and not a build failure. And the workflow declares `pages: write` and
+`id-token: write` at the top: a fork's pull request gets a downgraded token regardless, and its job
+builds and uploads an ordinary artefact, so there is nothing for the downgrade to break.
+
 ## 4. Toolchain policy
 
 * The root manifest's `[workspace.package] rust-version = "1.88"` is the **floor**: rmcp 3.9's own
@@ -347,6 +396,7 @@ check, and asserts that the matching `scripts/ci.sh` step exits non-zero:
 | `clippy-lint` | `return x;` at the end of a function (`clippy::needless_return`) | `clippy` |
 | `doc-broken-intra-doc-link` | a public doc comment linking to a non-existent item | `doc` |
 | `doc-link-to-test-only-module` | a public doc comment linking to a `#[cfg(test)]` module — it compiles and tests pass, only rustdoc (which never builds `cfg(test)`) can see the link is dead | `doc` |
+| `docs-site-broken-cross-page-link` | a section link at the end of `docs/ci.md` pointing at a heading that was never written, in a file that does exist — the shape of rot no checker but the anchor comparison can see | `docs-site` |
 | `test-failing-assertion` | a unit test that asserts false | `test` |
 | `tui-snapshot-snapshot-mismatch` | one character changed inside a drawn timeline golden, so the screen still says what the code draws and the snapshot says what it does not | `tui-snapshot` |
 | `fathom-report-report-golden-drift` | `counts.with_evidence` nudged by one in `crates/fathom/tests/golden/report.json` — still valid JSON, still an integer, now describing something the tool did not compute | `fathom-report` |
@@ -383,10 +433,11 @@ has already been deleted, or (quieter and worse) at the real repository. A drill
 against the copy proves nothing.
 
 It is not a step in the pipeline, and that is a cost decision rather than an oversight: fifteen
-drills means fifteen compiles of the crate, which would double the check job to guard a file
+drills compile the crate fifteen times, which would double the check job to guard a file
 (`ci.sh`) that changes rarely. Running it is part of *changing* `ci.sh`, `ci_drill.sh`, or a
 checker they call — the same rule as re-running a test when you edit the test, not a rule the
-pipeline can enforce for you.
+pipeline can enforce for you. (`docs-site` is the sixteenth drill and the one that pays nothing: it
+injects a broken link into `docs/ci.md`, and the step it proves has no toolchain in it.)
 
 Two plumbing notes, because both cost an hour once:
 

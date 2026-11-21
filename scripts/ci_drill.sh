@@ -45,6 +45,7 @@ DRILLS=(
     "clippy-lint:clippy"
     "doc-broken-intra-doc-link:doc"
     "doc-link-to-test-only-module:doc"
+    "docs-site-broken-cross-page-link:docs-site"
     "test-failing-assertion:test"
     "tui-snapshot-snapshot-mismatch:tui-snapshot"
     "fathom-report-report-golden-drift:fathom-report"
@@ -53,6 +54,7 @@ DRILLS=(
     "schema-broken-schema-file:schema"
     "schema-bad-evidence-record:schema"
     "schema-undocumented-tool-io-fixture:schema"
+    "schema-dead-fathom-ignore-rule:schema"
     "supply-chain-disallowed-licence:supply-chain"
     "supply-chain-fathom-dependency-banned:supply-chain"
     "supply-chain-fathom-firewall-crossed:supply-chain"
@@ -119,6 +121,14 @@ mod ci_drill_test_only_module {
 RS
 }
 
+mut_docs_site_broken_cross_page_link() {
+    # The Markdown mirror of the drill above, and the same class of rot: a link that reads correctly
+    # and goes nowhere. It is a *section* link rather than a file link because the file exists, so
+    # nothing but the anchor check can notice, which is exactly why the step exists.
+    printf '\nSee [the section that is not there](adr/0001-tool-contract.md#the-heading-that-was-never-written).\n' \
+        >>"$1/docs/ci.md"
+}
+
 mut_test_failing_assertion() {
     cat >> "$1/crates/act-mcp/src/lib.rs" <<'RS'
 
@@ -166,6 +176,22 @@ lines = [line for line in text.splitlines(keepends=True)
 if len(lines) == len(text.splitlines(keepends=True)):
     sys.exit("drill setup: the fixture row this drill deletes is not in the README")
 open(path, "w", encoding="utf-8").write("".join(lines))
+PY
+}
+
+mut_schema_dead_fathom_ignore_rule() {
+    # The regression this repo actually shipped: `.gitignore` gains a `.fathom` rule that git can never
+    # reach, in a commit whose message is about something else. It changes nothing observable — the
+    # directory it names is already ignored — which is exactly why the layout checker has to read the
+    # file rather than its effect. Proves ADR-0006 §12 is fatal, not editorial.
+    python3 - "$1/.gitignore" <<'PY'
+import sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+if ".fathom/**/*.tmp" in text:
+    sys.exit("drill setup: the copy's .gitignore already carries the rule this drill injects")
+open(path, "a", encoding="utf-8").write("\n.fathom/**/*.tmp\n")
 PY
 }
 
@@ -316,9 +342,13 @@ copy_repo() {
     local dest=$1
     mkdir -p "$dest"
     local item
-    for item in Cargo.toml Cargo.lock rust-toolchain.toml deny.toml schema scripts crates docs .gitignore; do
+    for item in Cargo.toml Cargo.lock rust-toolchain.toml deny.toml README.md schema scripts crates docs .gitignore; do
         [[ -e "$repo_root/$item" ]] && cp -a "$repo_root/$item" "$dest/"
     done
+    # README.md and .gitignore are in that list for the same reason `.fathom/LAYOUT.md` is below: the
+    # ADR-to-artifact checkers read them (ADR-0006's C6 wants the ADR linked from README, its C2 wants
+    # the ignore file itself), so a copy without them runs a schema step that is red before anything
+    # has been injected — which is the failure mode in the paragraph below, arrived at by another road.
     # `.fathom/LAYOUT.md` is `include_str!`-ed by fathom's boot module (ADR-0006 §4.1), so a copy
     # without it cannot build the crate at all — and a step that fails because of a missing input is a
     # drill that "catches" every violation, including none of them. Only that one file: the rest of

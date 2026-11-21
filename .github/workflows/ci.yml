@@ -110,7 +110,7 @@ jobs:
       # The check itself. Everything except the release build, and `--keep-going` so one
       # red step reports the others instead of hiding them.
       - name: ci
-        run: scripts/ci.sh --keep-going fmt clippy build doc test tui-snapshot fathom-report fathom-doctor coverage benchmark mcp-driver schema supply-chain
+        run: scripts/ci.sh --keep-going fmt clippy build doc docs-site test tui-snapshot fathom-report fathom-doctor coverage benchmark mcp-driver schema supply-chain
 
   release:
     name: release build (${{ matrix.target }})

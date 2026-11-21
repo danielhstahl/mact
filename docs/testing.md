@@ -42,13 +42,22 @@ dependency firewalls, and a release build per artefact that is then run to prove
 A few environment quirks worth knowing before the first red build:
 
 * on this repo's dev box `rustc` takes SIGBUS while linking inside a bind-mounted `/workspace`,
-  so build and test with `CARGO_TARGET_DIR=/tmp/tt` if you see it;
+  so build and test with `CARGO_TARGET_DIR=/tmp/tt` if you see it. It comes and goes, which is how
+  a healthy tree ends up red: `scripts/ci.sh` recognises the signature (`interrupted by SIGBUS`,
+  `Bad address (os error 14)`), says that the fault is the mount and not the code, and reruns that
+  one command before believing it — and stops after the second one with the same advice, rather
+  than making someone read an LLVM backtrace to find out they are fighting their filesystem;
 * on macOS `$TMPDIR` is under `/var`, and `/var` is a symlink to `/private/var`, so every
   temp directory a test makes has two spellings of one directory. Anything in a test that
   compares a path the code resolved (`Path::canonicalize`, or act's own `pwd`) against a path
   the test assembled can therefore disagree with itself on macOS and agree on Linux, where
   `/tmp` is a real directory. Reproduce it here without a Mac: `ln -s /tmp /tmp/link-tmp`
-  and run `TMPDIR=/tmp/link-tmp cargo test`;
+  and run `TMPDIR=/tmp/link-tmp cargo test` — the same trick works on the python checkers,
+  which honour `$TMPDIR` through `tempfile`, so `TMPDIR=/tmp/link-tmp python3
+  scripts/build_docs_site.py --check` runs that builder's fixture through the other spelling
+  of its own root. `--check` also does it by itself (`path_spelling_cases`), because the bug
+  this rule came from was a `relative_to` across the two spellings reading an inside link as
+  outside the repository: green on Linux, red on every Mac;
 * the process-group tests read `/proc` (`runner_execution`'s `live_pids_in_group`,
   `process_group_of`), which Linux has and macOS does not: a `/proc` assertion in a test is
   either gated `#[cfg(target_os = "linux")]` or cross-checked against a syscall that exists
