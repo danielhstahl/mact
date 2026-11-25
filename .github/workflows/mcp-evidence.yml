@@ -66,6 +66,14 @@ jobs:
       - name: toolchain
         run: rustup show
 
+      - name: Act config
+        run: |
+          mkdir -p ~/.config/act
+          cat > ~/.config/act/actrc <<'EOF'
+          -P ubuntu-latest=catthehacker/ubuntu:act-latest
+          -P ubuntu-24.04=catthehacker/ubuntu:act-latest
+          EOF
+
       # Pinned and checksum-verified, exactly the way the nightly does it: this job runs workflows in
       # containers on a runner that has a docker daemon, and the version of act decides which log fields
       # the extractors see. A floating install would make an upstream change look like a regression here.
@@ -195,6 +203,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: toolchain
         run: rustup show
+
+      - name: Act config
+        run: |
+          mkdir -p ~/.config/act
+          cat > ~/.config/act/actrc <<'EOF'
+          -P ubuntu-latest=catthehacker/ubuntu:act-latest
+          -P ubuntu-24.04=catthehacker/ubuntu:act-latest
+          EOF
 
       - name: Install act ${{ env.ACT_VERSION }}
         run: |
