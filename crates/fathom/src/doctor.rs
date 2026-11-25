@@ -924,9 +924,10 @@ fn cache(boot: &Boot, head: Option<&str>) -> Check {
         // The other half of that mystery is a holder on *another* host — a shared cache root, or the
         // same checkout mounted into a container — where the pid is alive or dead somewhere this
         // process cannot ask. `index/run.json` is the answer: the writer publishes it when a run ends,
-        // so a body no newer than that finish is the finished run's own trace, not a live index.
-        let last_finished =
-            Runbook::read(&root.join(store::INDEX_DIR)).map(|book| book.last.finished_utc);
+        // so a body no newer than that finish is the finished run's own trace, not a live index. Same
+        // question `store::lock::acquire` asks before it warns a writer about a dead holder, so it is
+        // read the same way here.
+        let last_finished = store::lock::last_finished_utc(root);
         if lock.names_dead_local_pid() {
             check = check.note(
                 Status::Ok,

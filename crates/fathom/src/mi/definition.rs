@@ -418,7 +418,7 @@ impl Definition {
     ///
     /// Read from `scoring_unit.weight` rather than assumed by the caller, so that a definition cannot
     /// change what a file's MI is weighted by without saying so in the normative file — and cannot do
-    /// it silently, because [`Definition::from_value`] refuses any weight it cannot compute.
+    /// it silently, because the loader (`Definition::from_value`) refuses any weight it cannot compute.
     #[must_use]
     pub fn unit_weight(&self, loc: u64) -> f64 {
         match self.scoring_unit.weight.as_str() {
