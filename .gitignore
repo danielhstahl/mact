@@ -30,7 +30,3 @@ __pycache__/
 # file here is a dirty worktree to the act runner (isolation_failed: dirty_worktree)
 mact.log
 .pi/*
-!.fathom/reviews/
-!.fathom/ratchet.toml
-.fathom/**/*.tmp
-.fathom/**/*.sqlite3-*

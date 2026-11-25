@@ -101,6 +101,7 @@ the reader and the documented reader's-view of the contract cannot drift apart q
 | `crates/act-mcp/src/**` unit tests | argument shapes, argv construction, error vocabularies, extraction, the evidence writer |
 | `crates/act-mcp/tests/boot.rs` | CLI flags, the boot gates, refusing a routable bind, what gets logged |
 | `crates/act-mcp/tests/hardening.rs` | `Host`/`Origin` allowlists, body cap, redaction, run-dir cap |
+| `crates/act-mcp/tests/workflow_guards.rs` | the repository's own `.github/workflows` files: they parse with the runtime parser, no job gates itself on a context `jobs.<id>.if` does not receive, and a job that starts the runner refuses the nested case first |
 | `crates/act-mcp/tests/protocol.rs` | the smallest useful protocol surface: a stock client can list tools, `/mcp` is the only route |
 | **`crates/act-mcp/tests/protocol_conformance.rs`** | **the full MCP Streamable HTTP conformance matrix for both revisions — see §3** |
 | `crates/act-mcp/tests/tool_schema_parity.rs` | advertised `inputSchema`/`outputSchema` == `schema/tool-contract.schema.json` |
