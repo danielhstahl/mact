@@ -148,6 +148,7 @@ CONSTANT_KEYS = [
     "definition_version",
     "analyzer",
     "formula",
+    "scoring_unit",
     "precision",
     "measurability",
     "aggregation",
@@ -308,6 +309,7 @@ def canonical_constants(definition: dict) -> dict:
     an omitted key: adding a key to the JSON makes the ADR's block wrong until it is updated."""
     precision_keys = ("storage_decimals", "rounding", "ln", "log2", "arithmetic", "boundary_slack",
                       "volume_basis")
+    scoring_unit_keys = ("unit", "weight", "formula", "fallback", "kinds")
     aggregation_keys = ("weight", "formula", "hotspots_default", "hotspot_sort", "accumulation_order",
                         "sub_threshold_set", "parent", "delta_rule", "recompute_rule", "empty_population")
     measurability_keys = ("min_loc", "min_operator_unique", "ordered_reasons")
@@ -316,6 +318,8 @@ def canonical_constants(definition: dict) -> dict:
         "definition_version": definition["definition_version"],
         "analyzer": definition["analyzer"],
         "formula": definition["formula"],
+        "scoring_unit": {k: definition["scoring_unit"][k] for k in scoring_unit_keys
+                         if k in definition["scoring_unit"]},
         "precision": {k: definition["precision"][k] for k in precision_keys if k in definition["precision"]},
         "measurability": {k: definition["measurability"][k] for k in measurability_keys
                           if k in definition["measurability"]},

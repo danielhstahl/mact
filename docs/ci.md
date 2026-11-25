@@ -100,7 +100,10 @@ that needs a container daemon belongs behind `#[ignore]` with the reason in its
    `scripts/validate_mi_definition.py`,
    `scripts/validate_metric_model.py` and
    `scripts/validate_fathom_docs.py` — the eight
-   ADR↔contract checkers docs/testing.md calls CI's: ADR-0001's tool contract, ADR-0004's run
+   ADR↔contract checkers docs/testing.md calls CI's (plus
+   `scripts/sync_mi_adr_blocks.py --check`, which is not a checker of the same kind but a generator: it
+   rewrites ADR-0007's two normative blocks from `schema/mi-definition.json` and fails the build where the
+   committed ADR has drifted, so the schema and the ADR cannot land in separate commits): ADR-0001's tool contract, ADR-0004's run
    lifecycle, ADR-0003's isolation protocol, ADR-0005's crate layout, ADR-0006's `.fathom`
    workspace layout, ADR-0007's Maintainability Index, ADR-0008's per-commit metric model, each checked against the
    artifact that implements it (a `schema/*.json` for the first three, `Cargo.toml`/`Cargo.lock` for

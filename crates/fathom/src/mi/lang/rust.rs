@@ -20,7 +20,7 @@
 //! honest: `rust_generics.rs` pins maximal munch, the raw string, char-versus-lifetime, the
 //! attribute that emits nothing, and the turbofish consequence, one operator at a time.
 
-use super::{tally, value_preceded, Class, Counts, Front, LexError, Raw, RawKind};
+use super::{tally, value_preceded, Block, Class, Counts, Front, LexError, Raw, RawKind};
 
 /// The keywords whose *own name* is an operand, because they name the thing being defined:
 /// `schema/mi-definition.json`'s `name_rules_ordered[3]`, the R1 list.
@@ -106,11 +106,15 @@ impl<'a> Lexer<'a> {
     }
 
     fn push(&mut self, text: String, kind: RawKind) {
+        // Every caller advances the cursor past the token before pushing, so the token's own start is
+        // its end less its length. The block splitter depends on that and nothing else.
+        let start = self.i.saturating_sub(text.chars().count());
         self.raws.push(Raw {
             text,
             kind,
             newline_after: false,
             depth: self.depth(),
+            start,
         });
     }
 
@@ -509,6 +513,103 @@ fn lex(source: &str, tables: &super::LexTables) -> Result<Vec<Raw>, LexError> {
     Lexer::new(&chars, tables).run()
 }
 
+// -----------------------------------------------------------------------------------------------
+// scoring units: the function is the unit (ADR-0007 §4.1)
+// -----------------------------------------------------------------------------------------------
+
+/// Split a Rust blob into its function definitions, outermost first.
+///
+/// No parse and no symbol table, in keeping with the front end's whole design: the lexer's depth
+/// bookkeeping already answers every question a function boundary asks.
+///
+/// * A block starts at a `fn` word token, which catches `fn`, `pub fn`, `async fn`, `unsafe fn`,
+///   `const fn`, `extern "C" fn`, and a method inside an `impl` or `trait` alike — the modifiers are
+///   irrelevant, because the slice is widened to the whole statement (below) and every modifier is
+///   an operator token either way.
+/// * A block ends at the `}` that returns the depth to the `fn`'s own, so a nested `fn` — legal, and
+///   rare — is counted *inside* the function that declares it rather than twice.
+/// * A declaration with no body (a trait method signature, terminated by `;`) contributes no block:
+///   there is no body to weigh.
+/// * The slice is widened backwards to the nearest `;`, `}` or `{` at the `fn`'s own depth, so the
+///   statement a `fn` belongs to is the slice — which is what keeps `pub`, `async`, a doc comment and a
+///   `#[cfg]` attribute inside the block they decorate instead of floating between two blocks, and keeps
+///   an `impl Gate for Plain {` header out of the first method's volume.
+/// * Anything the lexer could not lex yields no blocks, which sends the caller down the whole-file
+///   fallback; the file's own `parse_error` was already decided by the ladder.
+///
+/// One lexical shape defeats the depth rule and is accepted rather than worked around: a brace
+/// *expression* in a signature — a const-generic array length, `fn f<const N: { 8 }>()` — reads as
+/// the body. It is unstable in Rust and vanishingly rare; a block cut short there mis-measures one
+/// function and nothing else.
+pub(crate) fn blocks(source: &str, front: &Front) -> Vec<Block> {
+    let Ok(raws) = lex(source, &front.tables) else {
+        return Vec::new();
+    };
+    let chars: Vec<char> = source.chars().collect();
+    let mut out: Vec<Block> = Vec::new();
+    let mut claimed = 0_usize;
+    for (index, raw) in raws.iter().enumerate() {
+        if raw.text != "fn" || raw.kind != RawKind::Word || raw.start < claimed {
+            continue;
+        }
+        let depth = raw.depth;
+        // The token after `fn` has to be the declared name: a word at the `fn`'s own depth. That is
+        // also what refuses a `fn` *type* — in `struct S { f: fn(u8) -> u8 }` the token after `fn` is
+        // the `(` of the argument list, and there is no definition here at all.
+        let Some(name) = raws
+            .get(index + 1)
+            .filter(|next| next.kind == RawKind::Word && next.depth == depth)
+            .map(|next| next.text.clone())
+        else {
+            continue;
+        };
+        // The body's `{` sits one depth below the `fn`, because an opening delimiter reports the depth
+        // it *entered*. A `;` at the `fn`'s own depth first is a trait signature with no body.
+        let mut open: Option<usize> = None;
+        for (offset, next) in raws[index + 1..].iter().enumerate() {
+            if next.text == "{" && next.depth == depth + 1 {
+                open = Some(index + 1 + offset);
+                break;
+            }
+            if next.text == ";" && next.depth == depth {
+                break;
+            }
+        }
+        let Some(open) = open else { continue };
+        // The `}` that returns the depth to the `fn`'s own closes the body; every brace the body opens
+        // and closes on its own sits deeper, which is what makes a nested `fn` part of this block.
+        let Some(close) =
+            (open + 1..raws.len()).find(|&at| raws[at].text == "}" && raws[at].depth == depth)
+        else {
+            continue;
+        };
+        let closing = &raws[close];
+        let end = closing.start + closing.text.chars().count();
+        // Widen to the start of the statement the `fn` sits in: the nearest previous `;`, `}` or `{`
+        // *at the `fn`'s own depth*. An opening delimiter reports the depth it entered, so the `{` that
+        // opened this scope sits at that same depth and is the boundary for a method inside an `impl`
+        // or a `mod`; a sibling block's `{` cannot be reached, because its own `}` is nearer and is a
+        // boundary too. Attributes and doc comments are not tokens at all, so they ride along with the
+        // definition they decorate, which is where they belong.
+        let start = raws[..index]
+            .iter()
+            .rev()
+            .find(|previous| {
+                previous.depth == depth && matches!(previous.text.as_str(), ";" | "}" | "{")
+            })
+            .map_or(0, |previous| previous.start + previous.text.chars().count());
+        if end <= start {
+            continue;
+        }
+        claimed = end;
+        out.push(Block {
+            name,
+            source: chars[start..end].iter().collect(),
+        });
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------------------------
 // pass 2: classify and count
 // ---------------------------------------------------------------------------------------------
@@ -879,5 +980,113 @@ mod tests {
             !counts.operators.contains_key(";"),
             "`;` is ignored punctuation (§3.2's third bucket), so it is not in the volume either"
         );
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // scoring units (ADR-0007 §4.1)
+    // -------------------------------------------------------------------------------------------
+
+    fn units(source: &str) -> Vec<Block> {
+        blocks(source, &front())
+    }
+
+    fn names(source: &str) -> Vec<String> {
+        units(source).into_iter().map(|block| block.name).collect()
+    }
+
+    #[test]
+    fn a_function_is_one_block_and_its_slice_is_the_whole_statement() {
+        let source =
+            "/// Add two bytes.\n#[inline]\npub fn add(a: u8, b: u8) -> u8 {\n    a + b\n}\n";
+        let found = units(source);
+        assert_eq!(names(source), vec!["add".to_owned()]);
+        let block = &found[0];
+        assert!(
+            block.source.starts_with("/// Add"),
+            "the doc comment and the attribute belong to the function they decorate, and the slice \
+             starts at the statement: {:?}",
+            block.source
+        );
+        assert!(block.source.ends_with('}'));
+        // The slice must stand on its own: a block that will not lex is a block that is silently
+        // missing from its file's mean.
+        tokenise(&block.source, &front()).expect("a block slice lexes on its own");
+    }
+
+    #[test]
+    fn every_kind_of_definition_is_a_block_and_nothing_else_is() {
+        let source = "use std::fmt;\n\
+                      pub trait Gate {\n    \n    fn name(&self) -> &str;\n}\n\
+                      impl Gate for Plain {\n    pub fn name(&self) -> &str { \"plain\" }\n}\n\
+                      async fn run() -> Result<()> { Ok(()) }\n\
+                      unsafe fn raw(p: *mut u8) { *p = 0 }\n\
+                      struct S { f: fn(u8) -> u8 }\n\
+                      const F: fn(u8) -> u8 = double;\n";
+        assert_eq!(
+            names(source),
+            vec!["name".to_owned(), "run".to_owned(), "raw".to_owned()],
+            "the trait's `fn name(&self) -> &str;` is a signature with no body, and a `fn` *type* — the\
+             struct field and the `const` — is a type position, not a definition: neither is a block"
+        );
+    }
+
+    #[test]
+    fn a_nested_function_belongs_to_the_one_that_declares_it() {
+        let source = "fn outer() {\n    fn inner() {}\n    inner();\n}\nfn next() {}\n";
+        let found = units(source);
+        assert_eq!(
+            found
+                .iter()
+                .map(|block| block.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["outer", "next"],
+            "`inner` is measured as part of `outer`, never twice"
+        );
+        assert!(found[0].source.contains("fn inner"));
+    }
+
+    #[test]
+    fn a_method_slice_does_not_carry_its_impl_header() {
+        // `impl Gate for Plain {` before the first method: had the slice started at the file's opening
+        // boundary, `impl` and the trait name would be counted inside the method's volume.
+        let source =
+            "impl Gate for Plain {\n    pub fn a(&self) -> u32 { 1 }\n    fn b(&self) {}\n}\n";
+        let found = units(source);
+        assert_eq!(names(source), vec!["a".to_owned(), "b".to_owned()]);
+        for block in &found {
+            assert!(
+                !block.source.contains("impl"),
+                "{}'s slice leaked its enclosing impl: {:?}",
+                block.name,
+                block.source
+            );
+        }
+        assert!(
+            !found[1].source.contains("fn a"),
+            "the second method's slice must start after the first one closes"
+        );
+    }
+
+    #[test]
+    fn a_block_slice_lexes_and_a_raw_string_inside_one_stays_one_operand() {
+        let source = "fn doc() -> &'static str {\n    r#\"if a && b {\"#\n}\n";
+        let found = units(source);
+        assert_eq!(found.len(), 1);
+        let counts = tokenise(&found[0].source, &front()).expect("the slice lexes");
+        assert_eq!(
+            counts.operands["r#\"if a && b {\"#"], 1,
+            "the raw string is one operand inside the block, exactly as it was in the file"
+        );
+        assert!(!counts.decision_points.contains_key("and_and"));
+    }
+
+    #[test]
+    fn a_definition_with_a_multi_line_signature_and_a_where_clause_is_one_block() {
+        let source = "pub async fn resolve<'a, T>(pool: &'a Pool, key: T) -> Result<Value>\n\
+                      where\n    T: AsRef<str>,\n{\n    pool.get(key).await\n}\n";
+        let found = units(source);
+        assert_eq!(found.len(), 1, "one signature, one body, one block");
+        assert_eq!(found[0].name, "resolve");
+        assert!(found[0].source.contains("where"));
     }
 }

@@ -187,6 +187,27 @@ pub struct Raw {
     pub newline_after: bool,
     /// Bracket depth *after* this token, so a caller can join physical lines without a second pass.
     pub depth: usize,
+    /// Where the token starts, as a char index into the lexed source (not a byte index: every other
+    /// offset the front ends trade in is a char index, and mixing the two is a UTF-8 bug waiting for a
+    /// commit message). The block splitter ([`Block`]) is the reason it exists: a scoring unit is a
+    /// range of source, and only the lexer knows where its tokens are.
+    pub start: usize,
+}
+
+/// One scoring unit: a function-like definition and the source that makes it (ADR-0007 §4.1).
+///
+/// The unit of analysis is a *function*, because MI's constants were calibrated on functions: the
+/// `-0.23·G` term is linear in the decision count and the `-16.2·ln(LOC)` term is logarithmic, so
+/// scored over a whole file they measure the file's size rather than its maintainability. A file's MI
+/// is the LOC-weighted mean of its blocks' MIs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Block {
+    /// The defined name: what a reader would call the block. Blocks are not stored (ADR-0007
+    /// §4.1), so this is for the reporter and the tests rather than for a `cat` of a block file.
+    pub name: String,
+    /// The block's own source — signature and body, as written (dedented to column zero in Python,
+    /// where indentation is syntax and a method's body arrives indented).
+    pub source: String,
 }
 
 /// The three kinds of leaf a lexer can produce.

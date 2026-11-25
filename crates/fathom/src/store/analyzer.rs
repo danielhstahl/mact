@@ -330,7 +330,12 @@ mod tests {
         assert_eq!(score.version, stamp.version);
         assert_eq!(score.input_kind, stamp.input_kind);
         let aggregate = find(&definition, "mi.aggregate").expect("mi.aggregate is registered");
-        assert_eq!(aggregate.depends, vec![format!("{}@1", stamp.score)]);
+        assert_eq!(
+            aggregate.depends,
+            vec![format!("{}@{}", stamp.score, stamp.version)],
+            "the aggregate depends on the scorer's current version, which is the definition's and not
+             a literal a version bump would leave behind"
+        );
         assert_ne!(score.dep_digest(), aggregate.dep_digest());
     }
 }

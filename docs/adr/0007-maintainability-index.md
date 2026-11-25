@@ -20,11 +20,13 @@ date: 2026-11-16
   (`LOC = D + E + A + B`), logical-line counting in Python (`LOC = L + H`) — so a `cargo fmt` commit
   moves the metric by exactly zero. A file that cannot be measured has **no MI**: `ln(0)` is
   undefined, and an unmeasurable file renders unknown with a named reason (§3.6); it is never 0, because
-  0 means "worst file in the repository" and would be a lie. The unit of analysis is the **file**
-  (one blob); a per-commit number is an aggregate, not a measurement — the **LOC-weighted mean** of
-  the file MIs, plus `delta_vs_parent` against the first parent, plus the watchlist transitions
-  (`sub_threshold_added` / `sub_threshold_removed`) and worst-N hotspots. Bands are declared here and
-  nowhere else: **green ≥ 50, amber ≥ 25, red < 25**, an exact edge belonging to the better band,
+  0 means "worst file in the repository" and would be a lie. The unit of analysis is a **function-like
+  definition** (amended by mact-by1.10 from the file, which §4.1 explains); a file's MI is the
+  **LOC-weighted mean of its blocks**, and a per-commit number is an aggregate, not a measurement — the
+  **LOC-weighted mean** of the file MIs, plus `delta_vs_parent` against the first parent, plus the
+  watchlist transitions (`sub_threshold_added` / `sub_threshold_removed`) and worst-N hotspots. Bands
+  are declared here and nowhere else: **green ≥ 50, amber ≥ 38, red < 38**, an exact edge belonging to the
+  better band,
   neither stored nor configurable. The front end is a **hand-written, pure-Rust per-language
   tokeniser** (`lexer1`) over one shared model — tree-sitter is rejected because it is C, which is
   the third time this repository has refused a C build dependency for the same five cross-compilation
@@ -110,7 +112,7 @@ Numbered pins. `MUST` / `MUST NOT` / `SHOULD` are normative; each is either enfo
 | P5 | LOC is logical: Rust `D + E + A + B`, Python `L + H`. Comments, blanks, `{-`only lines, attributes and doc comments (Rust) cost zero; a multi-line call costs one; a macro's token tree costs nothing. | C5, C6 |
 | P6 | A file with `LOC == 0` or Halstead vocabulary `n < 2` has **no** MI. The reason is recorded (`vacuous`), the value is absent, and it is never 0. | C4, C6 |
 | P7 | Reasons are the seven of §3.6, evaluated in that order; the four that mean "not analysed" are exactly the ones in `unanalysed_paths`, and the names are the ones ADR-0006's row `counts` already uses. | C4 |
-| P8 | The unit of analysis is one file at one blob. A per-commit number is an aggregate: the LOC-weighted mean over the files that produced a measurement, accumulated in path order, and it is a **pure function of that commit's own file set** — no carry-forward over history. | C8, C9 |
+| P8 | The unit of analysis is a **function-like definition** (§4.1): `V`, `G` and LOC are counted over one block and a file's MI is the LOC-weighted mean of its blocks, the kinds that make a block being closed per language in `scoring_unit.kinds`. A blob with no measurable block is its own unit and stores which rule made its number. A per-commit number is an aggregate: the LOC-weighted mean over the files that produced a measurement, accumulated in path order, and it is a **pure function of that commit's own file set** — no carry-forward over history. | C8, C9, C2 |
 | P9 | The commit row also carries `loc`, `files`, `counts`, `delta_vs_parent` (against the first parent, absent for a root commit), worst-N `hotspots` (worst-first, `loc` then path as tie-breaks), the watchlist transitions, and `unanalysed_paths`. | C8, C9 |
 | P10 | Bands are §5.1's, declared here, not stored in the cache, not configuration; an exact edge belongs to the better band. | C3 |
 | P11 | The MI file set is the diffstat's file set: ADR-0006 §7.2's `paths.source` / `paths.noise` / `paths.exclude`, plus the extension map of §7.1 and one new key, `paths.include_tests` (default `false`, opt-in). | C11 |
@@ -169,7 +171,7 @@ this ADR's copy below is diffed against field by field:
 <!-- mi-constants:begin -->
 ```json
 {
-  "definition_version": 1,
+  "definition_version": 2,
   "analyzer": {
     "frontend_id": "lexer1",
     "tokenize": {
@@ -179,18 +181,19 @@ this ADR's copy below is diffed against field by field:
     },
     "score": {
       "id": "mi.score",
-      "version": 1,
+      "version": 2,
       "input_kind": "blob_path"
     },
     "bump_rules": {
       "tokenize": "any change to a token stream, a keyword/punctuation enumeration, a decision-point rule, a statement rule, or a lexer bug fix that moves a count",
-      "score": "any change to formula, rounding, clamping, band edges, measurability thresholds or aggregation arithmetic"
+      "score": "any change to formula, rounding, clamping, band edges, measurability thresholds, the scoring unit or aggregation arithmetic",
+      "score_v2": "v2 is the scoring unit: MI is computed per function-definition block and a file's MI is the LOC-weighted mean of its blocks (section 4.1), where v1 scored the whole file as one unit. The token stream itself did not change, so `mi.tokenize` stays 1 in this document; note that the store stamps both MI analyzers with one version (ADR-0007 section 8), so a warm store re-analyses every blob in scope on this commit, which is what a change of unit needs anyway."
     }
   },
   "formula": {
-    "reference": "Coleman, DeMers, Ramani & Sweet, \"Integrating software metrics into a commercial software development environment\", IEEE Software 13(5), 1996 \u2014 the original MI, scaled by the 100/171 Microsoft published with it so the score is 0-100. This is the formula ADR-0006 line 98 points here for.",
+    "reference": "Coleman, DeMers, Ramani & Sweet, \"Integrating software metrics into a commercial software development environment\", IEEE Software 13(5), 1996 — the original MI, scaled by the 100/171 Microsoft published with it so the score is 0-100. This is the formula ADR-0006 line 98 points here for.",
     "halstead_volume": "V = N * log2(n)",
-    "cyclomatic": "G = 1 + decision points, counted over the whole file",
+    "cyclomatic": "G = 1 + decision points, counted over the scoring unit — one function (section 4.1); a file's own whole-file G is reported alongside as a diagnostic and is not what its MI is made of",
     "raw": "MI_raw = 171 - 5.2*ln(V) - 0.23*G - 16.2*ln(LOC)",
     "scaled": "MI = clamp(MI_raw * 100 / 171, 0, 100)",
     "a": 171.0,
@@ -201,6 +204,21 @@ this ADR's copy below is diffed against field by field:
     "scale_denominator": 171.0,
     "clamp_min": 0.0,
     "clamp_max": 100.0
+  },
+  "scoring_unit": {
+    "unit": "function",
+    "weight": "loc",
+    "formula": "MI_file = MI_1( sum(MI_b * LOC_b) / sum(LOC_b) ), b over the blocks of one file that produced a measurement, accumulated in source order",
+    "fallback": "file",
+    "kinds": {
+      "rust": [
+        "fn"
+      ],
+      "python": [
+        "def",
+        "async def"
+      ]
+    }
   },
   "precision": {
     "storage_decimals": 1,
@@ -380,13 +398,17 @@ that were judgement calls are recorded here, because these are the places tools 
    `println!` format string is one operand token whose `{}` slots are never tokenised; a Rust
    attribute's contents and a Python f-string's `{}` slots are the same kind of nothing.
 
-### 3.3 Cyclomatic complexity: `G = 1 + decision points`, over the whole file
+### 3.3 Cyclomatic complexity: `G = 1 + decision points`, over the scoring unit
 
-The base is 1 and the ticket states it, so the whole file is treated as one entry point rather than
-as a set of disconnected functions. The alternative (§11.4) — sum one graph per function — would add
-`(#functions − 1)` to every `G`, which at weight 0.23 moves MI by ~1.2 points for a ten-function file;
-it is refused because it needs a definition of "function" (closures? `async` blocks? `impl` items?
-module-level statements in Python?) and that is a second closed enumeration nobody asked for.
+The base is 1 and the ticket states it, so the scoring unit is treated as one entry point rather than
+as a set of disconnected graphs (§4.1 fixes what the unit is; before mact-by1.10 it was the whole
+file, and `G` was therefore the file's). The alternative (§11.4) — sum one graph per function — would
+add `(#functions − 1)` to every `G`, which at weight 0.23 moves MI by ~1.2 points for a ten-function
+file; it is refused because it needs a definition of "function" (closures? `async` blocks? `impl`
+items? module-level statements in Python?) and that is a second closed enumeration nobody asked for.
+Counting `G` per function would need the same enumeration, and §4.1 explains why it is worth paying
+for once — with the answer being the front end's own block kinds, which are closed per language and
+already enumerated for Halstead.
 
 A decision point is one occurrence of an enumerated rule. The full lists live in the JSON
 (per-language `decision_points.rules`); the rules
@@ -509,11 +531,70 @@ file is not re-parsed on every index forever.
 
 ## 4. The unit of analysis and the per-commit aggregate
 
-### 4.1 Per file, per blob
+### 4.1 The unit is a function, and a file's MI is the mean of its functions
 
-One file at one commit is the unit; the MI is a property of a blob and a path (the path picks the
-language), and never of a working tree. That is what lets ADR-0006 §6.3 key it at all, and it is the
-reason `git ls-tree` and not `std::fs` is the walk: a row describes a commit, never the checkout.
+**Amended by mact-by1.10.** The unit of a MI measurement was the file, and publishing the first real
+corpus (§5.3) showed that was wrong in a way no fixture would have caught: the bands graded the tree
+by size. The formula is `171 − 5.2·ln(V) − 0.23·G − 16.2·ln(LOC)`; scale a plain function up by
+replication and `V`, `N` and `LOC` all multiply, so the two volume terms cancel and `−16.2·ln(LOC)`
+remains alone. The whole file was a replicated plain function, so a whole file was graded by its
+length, and a 1 400-line module scored 19.5 next to a 12-line one at 66.9.
+
+The unit is now a **function-like definition**, and a file's MI is the LOC-weighted mean of its
+blocks. Three things follow, and each is a test rather than an intention:
+
+- `V`, `G` and LOC are counted over one block, so the `ln(LOC)` a block pays for is the length of the
+  code whose density it is paying for. §5.2's size-dominance arithmetic still holds — a 250-logical-line
+  function is capped at 28 no matter how regular — but it now describes a function, which is the
+  granularity Coleman's `V` was derived at, instead of a file, which it never was.
+- A file cannot be rescued by the plain functions it happens to sit next to, and cannot be condemned
+  by the length of a module whose individual functions are all reasonable. Its number is the average
+  of its parts, weighted by how much of the file each part is.
+- A blob with no function-like definition in it is its own unit: a Rust type module, a Python script
+  of top-level statements, a `build.rs` that is all configuration. It is measured as one block, and
+  it *says* which rule made it — `unit` is `block` or `file`, and `blocks` carries how many fed the
+  mean. That pair is stored, so a number from 2026 can still be read correctly in 2031.
+
+The kinds that make a block are closed per language, in `scoring_unit.kinds` in the JSON, and they are
+lexical rather than syntactic because the front end is a tokeniser and has no parse to consult (§6): in
+Rust, a `fn` word token followed by a name, which catches `fn`, `pub fn`, `async fn`, `unsafe fn`,
+`const fn` and a method in an `impl` or `trait` alike, and refuses a `fn` *type* (in
+`struct S { f: fn(u8) -> u8 }` the token after `fn` is `(`, and there is no definition there); in Python,
+a `def` or `async def` at any indentation. A block runs to the `}` that returns the brace depth to the
+`fn`'s own — so a nested `fn` is measured inside the function that declares it rather than twice — and it
+is widened back to the nearest `;`, `}` or `{` at that depth, which is what keeps `pub`, a `#[cfg]` and a
+doc comment inside the block they decorate and keeps an `impl Gate for Plain {` header out of the first
+method's volume. A definition with no body, a trait method signature, contributes no block: there is
+nothing to weigh. Python has no braces to count, so a block is its `def` line plus every following line
+indented deeper than that `def`, and it is dedented to column zero before being measured because
+indentation is syntax there and a method arrives indented by its class — which is also why a Python
+*class* is not a block of its own but each of its methods is.
+
+Three consequences are worth naming, and the third is a weakness rather than a feature. A block whose own
+numbers are not measurable (`status != ok`: fewer than two operators, no logical lines) is excluded from
+its file's mean rather than scored 0, exactly as §3.5 refuses to borrow a zero for a whole file. The number
+of blocks a blob can yield is bounded by the blob being in scope at all: a file over
+`index.file_size_cap_mib` is `oversized` before anything is tokenised, so there is no separate per-blob
+block ceiling to declare and no unbounded loop to find. And **code that is not inside a function belongs to
+no block and is not weighed** — a Rust `use` and `struct` preamble, a Python script of top-level
+statements, a class header. A Python file of sixty assignments and one two-line `def` reads green on the
+strength of that `def`, and the rule does not notice; what it does instead is put the tell on the screen,
+`blocks: 1` beside a `loc` sixty times the code that was measured, and report the file's own `V`, `G` and
+`LOC` whole so the gap between a file and the weighed part of it is visible. `module_level_code` in the
+JSON says the same thing to a machine, and `module_level_code_is_not_weighed_and_the_row_says_so` is the
+test that keeps this paragraph honest rather than aspirational.
+
+What has *not* changed is that a measurement is a property of one blob at one commit, never of a
+working tree: the slice is a slice of a blob, the path still picks the language, and the walk is still
+`git ls-tree` rather than `std::fs` (ADR-0006 §6.3 keys on exactly that). The amendment is about which
+part of the blob the arithmetic is about, not about what is stored or where it came from.
+
+The reason the change is honest rather than cosmetic is that the *tree aggregate* is untouched by it: it
+still weights files by their LOC (§4.3), so `fathom report` still answers "how much of this tree is hard
+to keep" and does not answer it a different way. What moved is the number that weight is averaging. A
+store holding the same blobs measured two ways would be a drift artifact, so `mi.tokenize`, `mi.score`
+and `definition_version` all moved 1 → 2 in this commit and the cache re-analysed everything rather than
+serving two definitions out of one store (§8).
 
 ### 4.2 The commit aggregate is an aggregate, not a measurement
 
@@ -574,8 +655,8 @@ the exact failure mode this ticket exists to prevent.
 ```json
 {
   "green_min": 50.0,
-  "amber_min": 25.0,
-  "rule": "band(mi) = red if mi < 25.0, amber if mi < 50.0, green otherwise; an exact edge belongs to the better band",
+  "amber_min": 38.0,
+  "rule": "band(mi) = red if mi < 38.0, amber if mi < 50.0, green otherwise; an exact edge belongs to the better band",
   "names": [
     "green",
     "amber",
@@ -583,24 +664,42 @@ the exact failure mode this ticket exists to prevent.
   ],
   "names_by_threshold": {
     "amber_below": 50.0,
-    "red_below": 25.0
+    "red_below": 38.0
   },
   "edge_ownership": "better band",
   "stored_in_cache": false,
   "is_config": false,
   "note": "declared here, not invented in the view layer (ticket rule). Not stored: a band change must not invalidate a cache full of numbers that did not move. Not config: two readers of one repository must not see different traffic lights for one commit, and a per-user band would make `fathom report --json` disagree between CI and a laptop for a non-measurement reason.",
-  "calibration": "the ticket suggested < 85 amber and < 65 red, and those edges cannot be used with the formula this ticket pins. They belong to the UPDATED MI, which estimates Halstead volume from LOC instead of measuring it, so it lands 60-90 for ordinary code. With a measured volume the 5.2*ln(V) term is 25-55 points instead of ~5, and the 16.2*ln(LOC) term dominates: this ADR's own hand-counted 16-statement fixture scores 55.9, and section 5.2 shows a 1000-line file scoring 0. Bands at 85/65 would call an entire real repository red, and a band that everything fails is not a signal. The edges here are placed where the formula separates the corpus: green is a file nobody needs to argue about, amber is a file worth a look, red is a file whose size and density is the finding. Section 5.2 carries the arithmetic and the line counts each edge falls at.",
-  "provenance": "the hand-counted golden vectors in tests/testdata/mi plus the extrapolation table in ADR-0007 section 5.2, both computed from the pinned formula",
-  "revisit_when": "mact-by1.7's first full-corpus run: its histogram is attached to ADR-0007 section 5 or these two numbers are amended, in one commit. Spent by mact-by1.7: the histogram is ADR-0007 section 5.3, the edges stand, and the next trigger is a second corpus of a different shape."
+  "calibration": "the edges are the two thresholds the 1996 paper published with the formula, converted to this definition's own 100/171 scale: `MI_raw < 65` was 'difficult to maintain' and `MI_raw > 85` was 'easy', and 65*100/171 = 38.0 while 85*100/171 = 49.7, which this definition rounds to the round number it already used. The ticket's `< 85 amber, < 65 red` cannot be used as *stored* numbers: they belong to the UPDATED MI, which estimates Halstead volume from LOC instead of measuring it, lands 60-90 for ordinary code, and pays ~5 points where a measured volume pays 25-55; applied to stored values they would call an entire real repository red, and a band that everything fails is not a signal. Placed against the scoring unit of section 4.1 — a function, which is the granularity the paper's own numbers were meant for — the two literature edges separate this repository's corpus into 77% green, 16% amber and 1% red blocks (section 5.3), which is a traffic light rather than a verdict. Section 5.2 carries the arithmetic and the line counts each edge falls at.",
+  "provenance": "Coleman et al. (1996) section 'Metric Interpretation', converted by this document's own scale factor, plus the hand-counted golden vectors in tests/testdata/mi and the extrapolation table in ADR-0007 section 5.2",
+  "revisit_when": "consumed twice. mact-by1.7 published the first corpus histogram (then per file) and left 50/25. The scoring-unit correction of section 4.1 put the numbers under the paper's own thresholds: the green edge was already one of them, and the red edge moves from 25.0 to 38.0 to become the other. The next trigger is a second corpus of a different shape whose block histogram places its fiftieth percentile more than a band width from this one."
 }
 ```
 <!-- mi-bands:end -->
 
-**green ≥ 50, amber ≥ 25, red < 25**, and an exact edge belongs to the better band, so a file that
-measures exactly 50.0 is green and one that measures exactly 25.0 is amber. Declared here and not invented in the view layer: the TUI, `fathom report --json` and CI all read the same constants, and
+**green ≥ 50, amber ≥ 38, red < 38**, and an exact edge belongs to the better band, so a file that
+measures exactly 50.0 is green and one that measures exactly 38.0 is amber. Declared here and not
+invented in the view layer: the TUI, `fathom report --json` and CI all read the same constants, and
 the numbers are *not stored* in the cache (a band change must not invalidate a store full of numbers
 that did not move) and *not configuration* (two clones of one repository must not disagree about a
 measurement for a non-measurement reason).
+
+**Where the edges come from, mact-by1.10.** They are Coleman's own two thresholds, converted to this
+scale. The 1996 paper publishes `MI_raw < 65` as "difficult to maintain" and `MI_raw > 85` as "easy
+to maintain"; this definition's scale is the raw scale divided by 1.71 (§2.1), so 65 × 100/171 = 38.0
+and 85 × 100/171 = 49.7, which rounds to the 50 this ADR already used. The green edge did not move —
+it had been sitting on the paper's "easy" line by accident — and the red edge moved from 25 to the
+paper's "difficult" line. Nothing was fitted to a histogram to get here, which is the point: the old
+red edge was placed by eye against one corpus (§5.2), and this one has a citation.
+
+That is also the answer to "why not the ticket's 85/65 directly", whose arithmetic §5.2 keeps. Those
+numbers belong to the UPDATED variant, which *estimates* `V` from LOC and so pays ~5 points where this
+definition *measures* it and pays 25–55; applied to stored values they call an entire repository red,
+and a band nothing passes is not a signal. What §5.2 disclosed in favour of the old edges — that at
+*file* granularity a 170-line file could never be green — was not an argument for 25 either. It was an
+argument that the unit was wrong, and §4.1 took it. At block granularity the same arithmetic says a
+function is out of green above 190 logical lines and out of amber above 658, which are sizes at which
+"hard to maintain" is a fair thing to say about a function.
 
 ### 5.2 The edges the ticket suggested do not work here, and here is the arithmetic
 
@@ -639,68 +738,96 @@ runbook (mact-by1.15):
 2. **It is a poor gate.** Nothing in this epic gates on MI; if anyone ever wants to, the argument to
    re-litigate is this table, not a threshold.
 
-### 5.3 The first full-corpus run: the histogram this section was waiting for
+**mact-by1.10 added a fifth reading.** Disclosures 1 and 2 were written as facts about the metric, and
+the edges were chosen to live with them. Disclosure 1 was not a fact about the metric: it was a fact
+about the *unit*, and the answer is §4.1 rather than an edge move. So this table is still load-bearing
+and still read the same way — as the arithmetic of the **whole-blob** unit, which after mact-by1.10 is
+the path a blob takes when it contains no function (§4.1). That is precisely why it stays: a `build.rs`,
+a 900-line validator and a Python script of top-level statements all take that path, and whoever reads
+their number needs to know it was size before it was anything else. The same table computed per block
+says a *function* is out of green past 190 logical lines and out of amber past 658, which is a
+disclosure a reader can act on, because splitting a 700-line function is a thing one can do.
+
+### 5.3 The full-corpus run, republished: what the numbers look like when the unit is a function
 
 §5.1's `revisit_when` and §5.2's closing paragraph made one promise: the analyzer's first corpus run
-publishes its histogram here, in the same commit as the analyzer, or these two edges are amended.
-mact-by1.7 is that commit, and this is the histogram. It is a snapshot of the tree at the commit that
-added this section, produced by the test the ticket asked for —
-`cargo test -p fathom --test mi the_repositorys_own_source_measures_plausibly -- --nocapture` — and
-measured exactly the way production measures: each file handed to the analyzer as `(path, bytes)`
-content, the shared classifier deciding what is in scope, the edges of §5.1 applied afterwards.
+publishes its histogram here, in the same commit as the analyzer, or the edges are amended. mact-by1.7
+spent that trigger with a histogram measured per file; mact-by1.10 amends the edges (§5.1) and
+republishes the run on the same terms — same test,
+`cargo test -p fathom --test mi the_repositorys_own_source_measures_plausibly -- --nocapture`, same
+measurement path as production (each file handed to the analyzer as `(path, bytes)`, the shared
+classifier deciding scope, the edges of §5.1 applied afterwards) — with the unit of §4.1 in force. The
+numbers below are that test's stdout, copied.
 
-Corpus: `crates/**/*.rs` and `scripts/**/*.py`. 125 files in scope, **84 measurable**, 41
-`skipped_noise` (the `tests/` and `testdata/` trees the classifier sets aside), 19,186 logical LOC,
-and zero gaps — every file in scope lexed, which is the front end's own pass criterion and the reason
-the corpus is worth reading.
+Corpus: this repository at the commit that added this section. 166 files in scope, **112 measurable**,
+54 `skipped_noise` (the `tests/` and `testdata/` trees the classifier sets aside), 26 931 logical LOC,
+and zero gaps: every file in scope lexed, which is the front end's own pass criterion. The unit rule
+cut 3 984 blocks out of those files, and 109 of the 112 measurable files are scored as a mean of
+blocks; the three that are not are blobs whose whole body is configuration, and they say so.
 
 | MI | files | |
 |---|---|---|
-| 0–9 | 27 | `########################################` |
-| 10–19 | 16 | `#######################` |
-| 20–29 | 17 | `#########################` |
-| 30–39 | 14 | `####################` |
-| 40–49 | 4 | `#####` |
-| 50–59 | 2 | `##` |
-| 60–69 | 3 | `###` |
-| 70–79 | 1 | `#` |
+| 40–49 | 9 | `#########` |
+| 50–59 | 36 | `####################################` |
+| 60–69 | 50 | `##################################################` |
+| 70–79 | 15 | `###############` |
+| 80–89 | 2 | `##` |
 
 | band | files | logical LOC of the files in that band |
 |---|---|---|
-| green (`>= 50`) | 6 | 8 – 17 |
-| amber (25 – 49.9) | 25 | 38 – 131 |
-| red (`< 25`) | 53 | 124 – 903 |
+| green (`>= 50`) | 103 | 8 – 1284 |
+| amber (38 – 49.9) | 9 | 131 – 903 |
+| red (`< 38`) | 0 | – |
 
-Aggregate **9.2** (red) over the corpus, median per-file MI **19.7**, files under 60 logical lines
-averaging **52.2** and files of 300+ averaging **1.9**, and **13 files clamped to 0.0** — the bottom of
-the scale is a pile, not a tail.
+Aggregate **56.7** (green) over the corpus; median per-file MI **61.6**; **nothing clamped to 0.0**,
+which is the sentence this section used to fail to be able to write. The scoring units themselves spread
+p05 48.9 / p25 61.5 / p50 71.9 / p75 85.8 / p95 93.5, splitting **green 3 744 / amber 204 / red 36** at
+the same edges, and the ten densest of them are:
 
-Three things follow, and the first is the one §5 was asking about.
+| block | file | logical LOC | MI |
+|---|---|---|---|
+| `render_blocks` | `scripts/build_docs_site.py` | 126 | 26.6 |
+| `self_test` | `scripts/validate_metric_model.py` | 129 | 29.3 |
+| `classify` | `crates/fathom/src/mi/lang/rust.rs` | 82 | 30.3 |
+| `cmd_shape` | `scripts/realdata_report.py` | 113 | 30.3 |
+| `build_site` | `scripts/build_docs_site.py` | 101 | 30.5 |
+| `main` | `scripts/metric_model_reference.py` | 110 | 30.9 |
+| `check_live_gate` | `scripts/validate_isolation.py` | 104 | 31.0 |
+| `check_vector` | `scripts/mi_reference.py` | 102 | 31.2 |
+| `run` | `crates/fathom/src/tui.rs` | 73 | 31.8 |
+| `parse` | `crates/act-mcp/src/evidence/coverage/lcov.rs` | 73 | 32.7 |
 
-1. **The edges are not wrong by more than a few points, so they stay.** The bands came out separated by
-   file size almost perfectly: the largest green file here is 17 logical lines and the smallest red one
-   is 124. That is §5.2's disclosure 1 — "at file granularity this metric is substantially a size
-   metric" — confirmed on real files instead of on an extrapolation table, and it says the edges would
-   have to move by twenty or thirty points, not by a few, to re-sort this corpus. A red file is a file
-   the formula wants split; §5.2 already said that, and the histogram agrees with it rather than
-   contradicting it.
-2. **A whole-repository aggregate sits deep in red, and that is not a verdict.** 9.2 over 19k LOC is
-   what §4.3's weighting does to a corpus whose median file is 19.7: the `16.2*ln(LOC)` penalty is
-   applied per file and then weighted by LOC, which multiplies the size penalty instead of averaging it
-   away. §4.2's rule — the aggregate is an aggregate and not a measurement — is what keeps this honest.
-   The timeline plots the delta against the parent and the hotspot list; a view that paints 9.2 as "this
-   repository is unmaintainable" is misusing the number, and the runbook (mact-by1.15) owes its readers
-   that sentence in one line.
-3. **The trigger is spent, so name the next one.** "mact-by1.7's first full-corpus run" has now happened,
-   on one repository of one shape. What would honestly reopen the edges is a second corpus of a
-   different shape — a workspace of 30-line modules, or a Python tree of 500-line scripts — whose median
-   sits more than a band width from this one. That is an amendment to `revisit_when`, and it belongs to
-   whichever ticket runs a second repository; this section deliberately changes no number.
+Four things follow, and the first two are the difference between this table and the one it replaced.
 
-The five worst files were `scripts/validate_metric_model.py` (903 LOC, 0.0),
-`scripts/validate_mi_definition.py` (872, 0.0), `scripts/metric_model_reference.py` (834, 0.0),
-`scripts/mi_reference.py` (600, 0.0) and `scripts/validate_isolation.py` (586, 0.0) — this repository's
-own largest validators, which is exactly the kind of thing a hotspot list exists to say out loud.
+1. **The bands stopped being a file-size sort.** Under the file unit the largest green file was 17
+   logical lines and the smallest red one 124: the traffic light was reading `wc -l`. Now green runs
+   from 8 to 1 284 logical lines, and the ten worst scoring units are a docs renderer, a self-test, the
+   Rust front end's own classifier and a handful of large validators — findings a reader will agree are
+   the dense things in this tree, named at the function they belong to rather than at the file that
+   happens to be long. Nothing sits at the floor of the scale, because nothing in this repository is a
+   250-line function; §5.2's arithmetic, applied per block, says the scale runs out above roughly 650
+   logical lines per block and no block here is close.
+2. **The edges did not have to be fitted to get here.** They are Coleman's (§5.1), and this corpus is
+   what applying them produces: 92% of files green, 94% of blocks green, 0.9% of blocks red. That is a
+   traffic light with room in it, on a repository that is not unusual; the same tree read 3% green
+   before §4.1, when the unit inflated the size penalty. The temptation now will be to raise the green
+   edge toward 60 to make the light look busier. §5.1 exists to say no to that: an edge fitted to a
+   histogram is a percentile with a colour on it, and the next corpus invalidates it.
+3. **The tree aggregate still reads green because aggregate-LOC weighting is what it is.** 56.7 is a mean
+   over 26 931 LOC with big files voting big, and §4.2's rule — an aggregate is an aggregate, not a
+   measurement — is what keeps that honest. It moved from 9.2 because the unit changed, not because the
+   tree did.
+4. **The trigger is spent twice, so name the next one honestly.** The corpus of one is now a corpus of
+   one, measured twice; `revisit_when` asks for a second corpus of a different shape — a workspace of
+   30-line modules, or a Python tree of 500-line scripts — whose *block* median sits more than a band
+   width from 61.6. That is an amendment to §5.1 and §5.3 together, in one commit, and it belongs to
+   whichever ticket runs a second repository.
+
+The five files with the lowest MI are `scripts/validate_metric_model.py` (903 logical LOC, 41.5),
+`scripts/sample_evidence.py` (131, 43.1), `scripts/realdata_report.py` (419, 45.2),
+`scripts/validate_run_lifecycle.py` (343, 46.6) and `scripts/validate_mi_definition.py` (873, 47.1) —
+this repository's own largest and densest validators, which is what a hotspot list exists to say out
+loud. Under the file unit the same list was five files scoring 0.0, which told a reader nothing.
 
 ## 6. The front end
 
@@ -850,7 +977,7 @@ refuses `[mi]` as an unknown table.
 ADR-0006 §6.3 owns the derivation; this ADR fills in the two MI analyzers it already named:
 
 ```
-analyzer id / version   mi.tokenize/1   mi.score/1        frontend id: lexer1 (in code, not config)
+analyzer id / version   mi.tokenize/1   mi.score/2        frontend id: lexer1 (in code, not config)
 input_kind              blob_path       (path picks the language, so `blob` alone would be a lie)
 config_digest(mi.tokenize) = fk1 of the resolved values of { languages.enabled, index.file_size_cap_mib }
 config_digest(mi.score)    = fk1 of the resolved values of { languages.enabled, paths.noise,
@@ -861,8 +988,10 @@ Two analyzers rather than one, because they fail and change differently: tokenis
 expensive part and depends on the language, the size cap and the lexer's rules; scoring is arithmetic
 and depends on the scope rules and the formula. So:
 
-- **a formula or band tweak** bumps `mi.score` and invalidates the `mi` blocks and the rows' `mi`
-  sections — no blob is re-tokenised (ADR-0006 §7.3's table row for exactly this change);
+- **a formula tweak** bumps `mi.score` and invalidates the `mi` blocks and the rows' `mi` sections
+  (ADR-0006 §7.3's table row for exactly this change); a **band tweak** bumps nothing, because a band is
+  not stored (§5.1). Whether the tokeniser's blocks survive a `mi.score` bump depends on the store stamping
+  the two analyzers with separate versions, and it does not yet \u2014 see the paragraph below, and §13;
 - **a tokeniser fix** ("`'a` inside a macro was counted as an operand") bumps `mi.tokenize` and
   invalidates the token blocks; `mi.score` blocks built from them are rebuilt by the dependency digest;
 - **editing `paths.noise`** changes only which files are in scope; nothing is re-tokenised;
@@ -870,6 +999,16 @@ and depends on the scope rules and the formula. So:
   tree-sitter front end were ever added after a policy change, it would be `mi.tokenize_ts` with its own
   ids, because two front ends that disagree about `Vec<Vec<u8>>` must never be able to serve each
   other's cached rows.
+
+**mact-by1.10 moved `definition_version`, `mi.score` and `mi.aggregate` to 2, and left `mi.tokenize` at 1.**
+The scoring unit of §4.1 changes what a *number* is, and it does not change one token: the front end emits
+the stream it emitted in v1, and a block is now cut out of that stream and scored per definition. So the
+tokeniser's version stands. Two things a reader should know rather than guess: the store stamps both MI
+analyzers with **one** version (`AnalyzerStamp` carries a single `version`, and `mi.aggregate` takes the
+scorer's rather than a literal a bump would leave behind), so a warm store re-analyses every blob in scope
+on this commit instead of serving two definitions out of one store \u2014 which is what a change of unit needs
+anyway; and §5.1's band edges are still not a version at all, because they are not stored, so re-banding a
+repository stays a re-render rather than a re-analysis.
 
 Every block body repeats its `analyzer`, `version`, `input_kind`, `input_hash`, `config_digest` and
 `result`, per ADR-0006 §6.3, so a stray block can be explained by `cat`, and a cached **failure** (the
@@ -903,6 +1042,49 @@ different numeric representations (C6 and C7).
 | `python_while` | rule coverage for Python's `while`: four logical lines plus two block headers (`def`, `while`) = 6, one decision point. Small on purpose: a file this size is one a human can count, and that is the point of a golden vector. |
 | `python_docstring` | `LOC == 1` but Halstead vocabulary `n == 0`: the **second** way a file is vacuous, since `ln(1)` was fine and `log2(0)` is not. |
 | `rust_deep_nesting` | the deep-nesting case the ticket named: seven block headers inside one another, two `else if` rungs, a two-arm `match`, both short-circuit operators as forks, and `fn grade(` as an *operand* because §3.2's name rules are ordered and rule 3 outranks rule 4. Added by mact-by1.7. |
+
+**What pins the unit rule of §4.1, and what cannot.** A vector pins `Analyzer::measure_blob`: the
+arithmetic over a *whole blob*, with its `V`, `G` and `LOC` counted over the whole fixture. That is
+deliberate and it is what makes the vectors unit-independent — §4.1 moved none of the numbers in them and
+C6 passes on the same digits it always did. It also means a vector's `mi` is no longer the number
+`fathom` will print for the same bytes, because production scores the blob's functions and averages
+them. Four of the fixtures, measured both ways at this commit:
+
+| fixture | the vector's `mi`, over the whole blob | the same file scored per §4.1 | blocks |
+|---|---|---|---|
+| `rust_basic` | 55.9 | 58.2 | 1 |
+| `rust_generics` | 61.8 | 65.0 | 1 |
+| `python_basic` | 45.3 | 50.4 | 2 |
+| `python_while` | 73.0 | 73.0 | 1 |
+
+`python_while` is the case that says what is going on: it is one function and a couple of headers, so
+the blob and the block are the same code and the two numbers are identical. Where a fixture has more than
+one function, or a preamble of `use` and `struct` lines around a single one, the mean is higher, because
+the plain code is no longer charged with the dense code's decisions. Both numbers are in the tree, the
+oracle derives the first and the Rust tests pin the second, and neither is a substitute for the other.
+
+What §4.1 added is a rule about *slicing*, and a slice is only wrong if you already know where the cuts
+belong — so it is pinned in Rust, where the front end that does the slicing lives:
+
+- `mi::lang::rust` and `mi::lang::python` pin the block kinds, the nesting rule (an inner block belongs
+  to its enclosing definition), the `impl`/body pairing that stops one `impl` being counted twice, and
+  the statement-level boundaries in Python (a `def` header and its body are one block; a top-level `for`
+  is not a block at all).
+- `crates/fathom/tests/mi.rs` pins the consequences: a file's `mi` is exactly the LOC-weighted mean of
+  the blocks `blocks_of` reports — asserted against an independent fold of the same block list, not
+  against the production fold; an unmeasurable block is *out* of the mean rather than in it as 0.0, which
+  is §3.5 one level down; a blob with no function is `unit: file` with no `blocks` count; and
+  reformatting a file moves neither its blocks nor its number.
+- `the_repositorys_own_source_measures_plausibly` re-derives the mean for every block-scored file in
+  this repository, and fails if any scoring unit in the corpus is unreachable by the red band, because
+  an edge nothing in the corpus reaches is a decoration (§5.3).
+
+What is *not* claimed: `scripts/mi_reference.py` has no block front end, so it cannot re-derive a block
+list and does not pretend to. The mean is the same weighted-mean arithmetic C9 already pins at file
+level, over `scoring_unit.weight`, with the same rounding and the same clamp, so the second engine
+checks that arithmetic wherever a weighted mean of measurements appears; what only the Rust engine can
+check is where the cuts go. Saying so here is cheaper than a fixture that checks a slice against
+itself.
 
 `definition.vectors.required_cases` is the list the ticket demanded and C6 refuses a set that stops
 covering it: one normal file per language, the comment-only/`LOC == 0` case, the `LOC == 1` case, the
@@ -1023,6 +1205,7 @@ codebase, and collapsing them would make the caveat line a lie in one direction 
 | a second implementation of the arithmetic agrees on the stored digit | C7 | 40-digit `decimal` recomputation of every vector |
 | the commit fixtures re-derive, and the aggregation properties hold | C8 | fixture diff + properties (watchlist, hotspot order, LOC sum, empty population, order independence) |
 | the aggregation rules in prose are the ones in the JSON | C9 | weight, parent rule, recompute rule, required reported fields |
+| the scoring unit of §4.1 is the one in the JSON, and a file's number is the mean of its blocks | C2 + `mi.rs` | `scoring_unit` diffed against the ADR block; then `a_file_is_the_mean_of_its_function_blocks` (folded by hand in the test, not by the production fold), `an_unmeasurable_block_is_out_of_the_mean_and_not_in_it_as_zero`, `a_blob_with_no_function_is_its_own_unit`, `a_reformatted_file_scores_identically_under_the_unit_rule`, and the per-file re-fold inside `the_repositorys_own_source_measures_plausibly` |
 | the front-end decision holds in the graph | C10 | no `tree-sitter*` in `Cargo.lock` or any `Cargo.toml`, and each is banned in `deny.toml`, and §6's argument names `cc`, musl, the grammars and error recovery |
 | MI and the diffstat share one classifier and one noise list | C11 | ADR-0006 §7.2's `paths.noise` default cell versus this ADR's, verbatim; `paths.include_tests` declared here |
 | the checker is wired where CI runs it | C12 | `scripts/ci.sh`, `docs/ci.md`, `docs/testing.md`, README's ADR list |
@@ -1036,7 +1219,25 @@ codebase, and collapsing them would make the caveat line a lie in one direction 
 - **Anything about storage layout, digests as bytes, or the row's JSON shape** — ADR-0006 owns those and
   this ADR fills in two analyzers and three additive `mi` fields inside its rules.
 - **Coverage and benchmark semantics** — ADR-0008.
-- **The first real histogram.** `revisit_when` in the bands block: mact-by1.7's first full-corpus run
-  attaches the distribution to §5.2 or amends the two edges, in the same commit, and C3 keeps the ADR
-  and the JSON in lockstep when someone does.
+- **The first real histogram.** Spent twice: mact-by1.7 published it per file, and mact-by1.10
+  republished it per function (§5.3) while amending the edges to the paper's own thresholds. What would
+  reopen the edges now is in `revisit_when`: a **second** corpus, of a different shape than this
+  repository, whose block median sits more than a band width from 61.6.
+- **Whether a block is ever worth its own row.** §4.1 scores blocks and stores one number per file; the
+  blocks themselves are not stored, though each file's `mi` record says how many of them there were and
+  which rule made the number (`unit`, `blocks`) and the `mi.score` block body repeats both. That is enough
+  to re-derive a stored number from its blob. It is not enough for a per-function history, and growing one
+  would be a new analyzer id with its own blocks rather than a wider `mi` section.
+- **Whether the block kinds are right for a language nobody has run yet.** `scoring_unit.kinds` is closed
+  per language, and a kind this repository's own corpus never reaches is a kind nobody has checked. The
+  corpus test fails if the red band describes no scoring unit in the tree (§5.3's finding 1), which is the
+  closest thing to a tripwire for that.
 - **A third language.** It is a table, a lexer and three vectors (§6.5), and nothing in §2–§5 changes.
+- **Separating the two MI analyzer versions in the store.** This ADR names two analyzers precisely so a
+  scoring change does not re-tokenise a tree (ADR-0006 §7.3's table row), and `schema/mi-definition.json`
+  keeps two versions to that end \u2014 but `AnalyzerStamp` carries one `version` and `store::analyzer::registry`
+  gives both MI analyzers the scorer's, so today a `mi.score` bump invalidates the tokeniser's blocks too.
+  Nothing in §2\u2013§5 depends on that being fixed; the cost is that a warm store re-analyses a tree it had
+  already tokenised, which for a repository of this size is a second and is not worth a schema change. The
+  first time it is worth one, the fix is in `store/analyzer.rs`'s registry and in the stamp's one version
+  field, and §8's bullet list is the statement of what it must then deliver.

@@ -15,7 +15,7 @@
 //! Everything else is the same shared model: operator/operand/ignored classes, decision points keyed
 //! by rule id from `schema/mi-definition.json`, and no parse.
 
-use super::{tally, value_preceded, Class, Counts, Front, LexError, RawKind};
+use super::{tally, value_preceded, Block, Class, Counts, Front, LexError, RawKind};
 
 /// One lexed token, carrying what the logical-line rules need: the column it started at, whether a
 /// physical newline follows it, and the bracket depth after it.
@@ -26,6 +26,8 @@ struct Token {
     column: usize,
     newline_after: bool,
     depth: usize,
+    /// Char index into the lexed source, so a caller can slice it back out (ADR-0007 §4.1's blocks).
+    start: usize,
 }
 
 /// A logical line: the tokens a single statement is made of, and the indentation of its first one.
@@ -93,6 +95,7 @@ impl<'a> Lexer<'a> {
 
     fn push(&mut self, text: String, kind: RawKind) {
         self.tokens.push(Token {
+            start: self.line_start + self.column,
             text,
             kind,
             column: self.column,
@@ -271,6 +274,97 @@ impl<'a> Lexer<'a> {
 fn lex(source: &str, front: &Front) -> Result<Vec<Token>, LexError> {
     let chars: Vec<char> = source.chars().collect();
     Lexer::new(&chars, front).run()
+}
+
+// -----------------------------------------------------------------------------------------------
+// scoring units: the function is the unit (ADR-0007 §4.1)
+// -----------------------------------------------------------------------------------------------
+
+/// Split a Python blob into its function definitions, outermost first.
+///
+/// Indentation *is* the structure here, and the lexer already reads it, so a block is a `def` header
+/// plus every following line indented deeper than it:
+///
+/// * `def` and `async def` both, at bracket depth zero (a `def` inside parentheses is not a
+///   statement), and both a module-level function and a method — the class body is just an
+///   indentation level, and its own statements carry no `def`.
+/// * A `def` already inside another block is skipped: a nested function is measured as part of the
+///   function that declares it, never twice.
+/// * The slice is **dedented** to column zero, because the front end reads indentation and a method
+///   body arrives indented by its class. Dedenting preserves the block's own indentation exactly.
+/// * A decorator stays with the function it decorates: the block begins at the `def`, and the
+///   decorator line above it belongs to no block (a decorator is one line of annotation, and counting
+///   it in neither the file's scoring nor a neighbour's is the only neutral answer).
+pub(crate) fn blocks(source: &str, front: &Front) -> Vec<Block> {
+    let Ok(tokens) = lex(source, front) else {
+        return Vec::new();
+    };
+    let chars: Vec<char> = source.chars().collect();
+    let mut out: Vec<Block> = Vec::new();
+    let mut claimed = 0_usize;
+    for (index, token) in tokens.iter().enumerate() {
+        if token.text != "def" || token.kind != RawKind::Word || token.depth != 0 {
+            continue;
+        }
+        if token.start < claimed {
+            continue;
+        }
+        // `async def` is one statement, and its indentation is the column of `async`, not of `def`:
+        // read the other way the suite would look dedented by six and the block would end after its own
+        // signature line. The slice widens to include the modifier for the same reason, so the block a
+        // reader sees is the statement that was measured.
+        let (head, indent) = match index.checked_sub(1).map(|at| &tokens[at]) {
+            Some(previous)
+                if previous.text == "async"
+                    && previous.kind == RawKind::Word
+                    && !previous.newline_after =>
+            {
+                (previous.start, previous.column)
+            }
+            _ => (token.start, token.column),
+        };
+        let name = tokens[index + 1..]
+            .iter()
+            .find(|next| next.kind == RawKind::Word && next.depth == 0)
+            .map_or_else(|| "def".to_owned(), |next| next.text.clone());
+        // The block ends at the first following token that starts a physical line at this indentation
+        // or shallower — the dedent that closes the suite. `newline_after` on the *previous* token is
+        // what says "this token begins a line", and only a depth-zero newline ends a logical one.
+        let mut end_token = tokens.len();
+        for at in index + 1..tokens.len() {
+            let begins_a_line = tokens[at - 1].newline_after && tokens[at - 1].depth == 0;
+            if begins_a_line && tokens[at].depth == 0 && tokens[at].column <= indent {
+                end_token = at;
+                break;
+            }
+        }
+        let last = &tokens[end_token.saturating_sub(1)];
+        let end = last.start + last.text.chars().count();
+        if end <= head {
+            continue;
+        }
+        claimed = end;
+        let body: String = chars[head..end].iter().collect();
+        out.push(Block {
+            name,
+            source: dedent(&body, indent),
+        });
+    }
+    out
+}
+
+/// Strip up to `indent` leading whitespace characters from every line, so a method's body can be
+/// lexed on its own. Lines that were not indented that far (blank ones, mostly) lose what they have.
+fn dedent(text: &str, indent: usize) -> String {
+    text.lines()
+        .map(|line| {
+            let whitespace = line.chars().take_while(|c| *c == ' ' || *c == '\t').count();
+            line.chars()
+                .skip(whitespace.min(indent))
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -558,5 +652,72 @@ mod tests {
     fn an_unclosed_string_is_a_refusal() {
         let error = tokenise("x = \"open\n", &front()).expect_err("the literal never closes");
         assert_eq!(error, LexError::UnterminatedString { line: 1 });
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // scoring units (ADR-0007 §4.1)
+    // -------------------------------------------------------------------------------------------
+
+    fn units(source: &str) -> Vec<Block> {
+        blocks(source, &front())
+    }
+
+    fn names(source: &str) -> Vec<String> {
+        units(source).into_iter().map(|block| block.name).collect()
+    }
+
+    #[test]
+    fn a_method_is_dedented_before_it_is_measured() {
+        let source = "class Gate:\n    def name(self):\n        return self._name\n";
+        let found = units(source);
+        assert_eq!(names(source), vec!["name".to_owned()]);
+        assert_eq!(
+            found[0].source, "def name(self):\n    return self._name",
+            "the slice keeps the block's own indentation and loses the class's: a body measured at\n\
+             its file indentation would still lex, but a `match` inside it would read its own columns\n\
+             through the class's, which is how an indentation front end drifts"
+        );
+        counts(&found[0].source);
+    }
+
+    #[test]
+    fn a_module_function_and_a_method_are_both_blocks_and_a_decorator_stays_out() {
+        let source = "import sys\n\n\n@cache\ndef load(path):\n    return path\n\n\nclass C:\n    \n    def go(self):\n        return 1\n\n\nif __name__ == '__main__':\n    load(sys.argv[0])\n";
+        assert_eq!(names(source), vec!["load".to_owned(), "go".to_owned()]);
+        let load = &units(source)[0];
+        assert!(
+            !load.source.contains('@'),
+            "the decorator line belongs to no block: {:?}",
+            load.source
+        );
+        assert!(
+            !load.source.contains("__main__"),
+            "the dedent after the function ends its block: {:?}",
+            load.source
+        );
+    }
+
+    #[test]
+    fn async_multi_line_and_nested_definitions_are_split_the_same_way_as_rust() {
+        let source = "async def run(\n    a,\n    b,\n):\n    def helper():\n        return a\n    return helper() + b\n\n\ndef later():\n    pass\n";
+        assert_eq!(names(source), vec!["run".to_owned(), "later".to_owned()]);
+        let run = &units(source)[0];
+        assert!(
+            run.source.contains("def helper"),
+            "a nested def is inside its outer def"
+        );
+        assert_eq!(
+            tokenise(&run.source, &front())
+                .expect("the slice lexes")
+                .statements,
+            6,
+            "header, the nested def, its body, a return — the parenthesised signature is one line"
+        );
+    }
+
+    #[test]
+    fn a_class_with_no_methods_is_a_file_with_no_scoring_unit() {
+        assert!(units("class Point:\n    x = 0\n    y = 0\n").is_empty());
+        assert!(units("import os\nprint(os.getcwd())\n").is_empty());
     }
 }

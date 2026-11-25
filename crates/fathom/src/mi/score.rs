@@ -358,8 +358,8 @@ mod tests {
         let d = definition();
         assert_eq!(band_of(&d, 50.0), Band::Green);
         assert_eq!(band_of(&d, 49.9), Band::Amber);
-        assert_eq!(band_of(&d, 25.0), Band::Amber);
-        assert_eq!(band_of(&d, 24.9), Band::Red);
+        assert_eq!(band_of(&d, 38.0), Band::Amber);
+        assert_eq!(band_of(&d, 37.9), Band::Red);
     }
 
     #[test]

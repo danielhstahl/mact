@@ -38,7 +38,7 @@ independent derivations, and one column's `—` says nothing about another's:
 |---|---|---|---|
 | `cov` | one pooled line-coverage percentage, or `—` | the newest successful run per `(kind, workflow, task)`, pooled | [§3](#3-coverage) · [ADR-0008 §3](adr/0008-per-commit-metric-model.md#3-coverage-) |
 | `+/-` | added and deleted lines in that commit, headline totals with noise counted separately | git's own numstat output, classified by `paths.*` | [ADR-0006 §7.2](adr/0006-fathom-workspace-layout.md#72-the-keys) |
-| `MI` | the LOC-weighted mean of the per-file Maintainability Index over that commit's whole tree | Fathom's own front end, over the blobs in that commit | [§2](#2-the-maintainability-index-mi) · [ADR-0007 §4](adr/0007-maintainability-index.md#4-the-unit-of-analysis-and-the-per-commit-aggregate) |
+| `MI` | the LOC-weighted mean of the per-file Maintainability Index over that commit's whole tree (a file's own MI is the mean of its functions) | Fathom's own front end, over the blobs in that commit | [§2](#2-the-maintainability-index-mi) · [ADR-0007 §4](adr/0007-maintainability-index.md#4-the-unit-of-analysis-and-the-per-commit-aggregate) |
 | `bench` | one benchmark group — the first comparable, non-context group by name — with `+N` for the rest | the newest successful benchmark run, grouped by `(name, labels, unit)` | [§4](#4-benchmarks) · [ADR-0008 §4](adr/0008-per-commit-metric-model.md#4-benchmark-results) |
 | `action` | `✓` / `✗` / `◐` / `—`: did the workflows that ran here pass | the `run_status` field on the records themselves | [§5](#5-action-success) · [ADR-0008 §5](adr/0008-per-commit-metric-model.md#5-action-success--the-durable-question) |
 
@@ -106,8 +106,9 @@ The three inputs, as a reader needs them
 * **`V = N · log2(n)`** — Halstead volume over **operator tokens only**: `N` occurrences, `n` distinct
   operator texts. Literals are one operand each and their contents are never tokenised, so a doc comment
   containing `if a && b` cannot move your score.
-* **`G = 1 + decision points`**, counted over the whole file (one entry point, not one graph per
-  function). `if`, `elif`, each `match` arm (a guarded arm costs 2), `for`/`while`/`loop`, `&&`/`||`
+* **`G = 1 + decision points`**, counted over the **scoring unit** — one function, which is what the
+  whole formula is counted over (see §2.5). `if`, `elif`, each `match` arm (a guarded arm costs 2),
+  `for`/`while`/`loop`, `&&`/`||`
   *when they follow a value*, Rust `?`, `let … else`, Python `except`. `else`, `return`, `break`,
   `continue`, `panic!`, `assert!`, `with`, `lambda`, `yield` and `not` cost **zero** — so a flat guard
   clause and a nested block cost the same two forks.
@@ -144,20 +145,49 @@ python3 scripts/validate_mi_definition.py           # re-derives every vector tw
 
 | band | edge | reading |
 |---|---|---|
-| green | `MI ≥ 50.0` | nobody needs to argue about this file |
-| amber | `25.0 ≤ MI < 50.0` | worth a look |
-| red | `MI < 25.0` | size and density *are* the finding |
+| green | `MI ≥ 50.0` | nobody needs to argue about this unit |
+| amber | `38.0 ≤ MI < 50.0` | worth a look |
+| red | `MI < 38.0` | size and density *are* the finding |
 
 An exact edge belongs to the better band. The edges are declared in
 [ADR-0007 §5.1](adr/0007-maintainability-index.md#51-the-declared-edges), are **not** stored in the cache
 and are **not** configuration — two readers of one repository must not see different traffic lights for
-one commit. They are not Microsoft's familiar `< 85 / < 65` edges, which belong to the *updated* MI that
-estimates volume from LOC;
+one commit. They are Coleman's own two thresholds converted to this scale: the 1996 paper published
+`MI_raw < 65` as "difficult to maintain" and `MI_raw > 85` as "easy", and this scale divides the raw
+number by 1.71, so 65 lands on 38.0 and 85 lands on 49.7 ≈ 50. They are not Microsoft's familiar
+`< 85 / < 65` edges, which belong to the *updated* MI that estimates volume from LOC;
 [ADR-0007 §5.2](adr/0007-maintainability-index.md#52-the-edges-the-ticket-suggested-do-not-work-here-and-here-is-the-arithmetic)
 does that arithmetic out loud. A 16-statement file measuring 55.9 is normal, and a 1 000-line file can
 legitimately measure 0: the `16.2·ln(LOC)` term dominates when volume is measured rather than estimated.
 
-### 2.4 From files to the commit's number
+### 2.4 What one MI is a number *about*
+
+A MI is a measurement of **one function**, not of a file (
+[ADR-0007 §4.1](adr/0007-maintainability-index.md#41-the-unit-is-a-function-and-a-files-mi-is-the-mean-of-its-functions)).
+`V`, `G` and `LOC` are counted over one `fn`, `def`, `async def` or class definition, and a **file's** MI
+is the LOC-weighted mean of its functions — so a module is judged on the code it contains rather than on
+how long the file it stores it in happens to be. A blob with no function in it (a Rust type module, a
+Python script of top-level statements, a `build.rs` that is all configuration) is measured as one unit
+and says so: the stored record carries `unit` (`block` or `file`) and, for a block-scored file, `blocks` —
+how many functions fed the mean.
+
+One honesty note, because the column is easier to trust when its blind spot is named: **code outside a
+function is not weighed**. A Python script of sixty top-level assignments and one two-line `def` reads green
+on the strength of that `def`. What the rule does instead of noticing is put the tell on the screen —
+`blocks: 1` next to a `loc` sixty times the size of the code that was measured — and the file's own `V`, `G`
+and `LOC` are still reported whole, so the gap between a file and the weighed part of it is visible.
+[ADR-0007 §4.1](adr/0007-maintainability-index.md#41-the-unit-is-a-function-and-a-files-mi-is-the-mean-of-its-functions)
+argues it, and `scoring_unit.module_level_code` in the JSON says the same thing to a machine.
+
+Why it works that way: `0.23·G` is linear in a unit's decision count while `16.2·ln(LOC)` is logarithmic
+in its length, so the two only balance at the size the constants were calibrated for. Scored over whole
+files, this repository's own tree read **8.9 with 20 files pinned at exactly 0.0** and the bands sorted
+the tree by length; scored per function at the same commit the same tree reads **56.7 with nothing
+clamped**, and the worst-scoring units are the dense functions a reader would name. A file that cannot be
+measured has no MI, and a *function* that cannot be measured (a one-line stub with a vocabulary of one) is
+excluded from its file's mean rather than scored 0.
+
+### 2.5 From files to the commit's number
 
 The `MI` column is an aggregate over **every file in scope in that commit's tree** — not only the files
 the commit touched ([ADR-0007 §4.2](adr/0007-maintainability-index.md#42-the-commit-aggregate-is-an-aggregate-not-a-measurement)):
@@ -175,7 +205,7 @@ parent, because then a float's addition order would decide a stored digit. The s
 files   src/huge.rs 22.0·400  src/python_basic.py 45.3·45  src/rust_basic.rs 55.9·16
         src/rust_generics.rs 61.8·10  src/rust_reformat_a.rs 70.9·6  src/rust_question.rs 73.4·6
         src/rust_tiny.rs 95.1·1
-Σ(MI·LOC) = 13311.8   Σ LOC = 484   →   27.504…  →  MI_commit = 27.5   (amber)
+Σ(MI·LOC) = 13311.8   Σ LOC = 484   →   27.504…  →  MI_commit = 27.5   (red: below 38.0)
 ```
 
 One 400-line file at 22.0 outweighs a one-line file at 95.1 because the weight is lines, not files. The
@@ -201,7 +231,7 @@ the per-file numbers are on screen.
 The row also carries:
 
 * **hotspots** — the worst *N* files (default 5), sorted MI ascending, then LOC descending, then path;
-* **the watchlist** — files that entered or left the **red** band (`MI < 25.0`) against the parent, as
+* **the watchlist** — files that entered or left the **red** band (`MI < 38.0`) against the parent, as
   `sub_threshold_added` / `sub_threshold_removed`. Not the amber band: a set that large churns on every
   commit and says nothing
   ([ADR-0007 §4.3](adr/0007-maintainability-index.md#43-the-arithmetic));
@@ -212,7 +242,7 @@ The row also carries:
 The detail view (`enter`) shows per-file MI for the selected commit; `i` (or `t`) there shows each file's
 `V`, `G` and `LOC`, which is what a score is actually made of.
 
-### 2.5 When there is no MI, and which files count
+### 2.6 When there is no MI, and which files count
 
 Seven reasons, evaluated in this order, first match wins
 ([ADR-0007 §3.6](adr/0007-maintainability-index.md#36-the-measurability-ladder-seven-reasons-in-order)):

@@ -1,6 +1,6 @@
 {
   "fixture": "commit_small",
-  "notes": "Six measurable files and five gaps, over a parent whose two worst files got better and whose big file is gone. Accumulation is path-bytes ascending. The weighted mean is (400*22.0 + 45*45.3 + 16*55.9 + 10*61.8 + 6*70.9 + 6*73.4 + 1*95.1) / 484. Corrected by mact-by1.7 to carry src/rust_reformat_a.rs at the MI its own vector now derives.",
+  "notes": "Six measurable files and five gaps, over a parent whose two worst files got better and whose big file is gone. Accumulation is path-bytes ascending. The weighted mean is (400*22.0 + 45*45.3 + 16*55.9 + 10*61.8 + 6*70.9 + 6*73.4 + 1*95.1) / 484. Corrected by mact-by1.7 to carry src/rust_reformat_a.rs at the MI its own vector now derives. Re-banded when ADR-0007 section 5.1 moved the red edge from 25.0 to 38.0 (Coleman's own 65 on the raw scale, converted by this definition's 100/171 factor): the aggregate is 27.5 either way and is now on the wrong side of an edge it used to sit above, and nothing about the arithmetic moved.",
   "files": [
     {
       "path": "src/huge.rs",
@@ -98,7 +98,7 @@
   ],
   "expect": {
     "aggregate": 27.5,
-    "band": "amber",
+    "band": "red",
     "loc": 484,
     "files": 7,
     "counts": {

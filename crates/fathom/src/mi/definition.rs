@@ -43,6 +43,9 @@ pub enum DefinitionError {
         path: String,
         source: serde_json::Error,
     },
+
+    #[error("{path} names a rule this build cannot execute: {reason}")]
+    Unsupported { path: String, reason: String },
 }
 
 /// One analyzer's identity: `id`, `version`, and the input kind it is keyed by (ADR-0006 §6.3).
@@ -141,9 +144,11 @@ pub struct StatusReason {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(from = "BandsDoc")]
 pub struct Bands {
-    /// 50.0: below this, amber.
+    /// 50.0, the green edge: below this, amber. Coleman's "easy to maintain" line (`MI_raw > 85`) on
+    /// this document's scale, rounded to the round number ADR-0007 had already used.
     pub amber_below: f64,
-    /// 25.0: below this, red.
+    /// 38.0, the red edge: below this, red. Coleman's "difficult to maintain" line (`MI_raw < 65`)
+    /// converted by this definition's own 100/171 factor (ADR-0007 §5.1).
     pub red_below: f64,
 }
 
@@ -261,6 +266,21 @@ pub struct StatementRules {
     pub formula: String,
 }
 
+/// `scoring_unit.*` — what the formula is actually applied to (ADR-0007 §4.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScoringUnit {
+    /// `function`: the unit is one function-like definition. The only unit this build implements;
+    /// anything else is refused at load rather than silently ignored.
+    pub unit: String,
+    /// `loc`: how each block's MI is weighted into its file's mean. Also the only weight implemented.
+    pub weight: String,
+    /// `file`: what a blob with no measurable block is scored as — itself, as one unit.
+    pub fallback: String,
+    /// Which header token introduces a block in each language, for the ADR's `kinds` table and for a
+    /// test that wants to notice a language whose splitter does not exist.
+    pub kinds: BTreeMap<String, Vec<String>>,
+}
+
 /// The parts of `schema/mi-definition.json` this analyzer executes.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Definition {
@@ -270,6 +290,8 @@ pub struct Definition {
     pub analyzer: Analyzers,
     /// The formula's constants.
     pub formula: Formula,
+    /// What a MI is computed over: a function, and how the blocks fold back into a file (§4.1).
+    pub scoring_unit: ScoringUnit,
     /// Rounding, clamping and the log rules.
     pub precision: Precision,
     /// The bottom of the ladder and its order.
@@ -308,7 +330,8 @@ impl Definition {
     /// # Errors
     ///
     /// [`DefinitionError::Parse`] if the text is not JSON or is missing a section this analyzer
-    /// needs.
+    /// needs, or [`DefinitionError::Unsupported`] if it names a scoring unit or weight this build
+    /// does not implement.
     pub fn from_json(json: &str) -> Result<Self, DefinitionError> {
         let raw: serde_json::Value =
             serde_json::from_str(json).map_err(|source| DefinitionError::Parse {
@@ -317,7 +340,6 @@ impl Definition {
             })?;
         Self::from_value(raw)
     }
-
     /// Read and parse a definition from disk, for a test or a checker that names a file.
     ///
     /// # Errors
@@ -342,6 +364,28 @@ impl Definition {
                 path: "<json>".to_owned(),
                 source,
             })?;
+        // A definition naming a scoring unit or a weight this build does not implement is refused
+        // here rather than measured some other way in silence: the JSON is the normative text, and a
+        // build that quietly fell back to "whole file" would be reporting a different metric under
+        // the same analyzer id.
+        if definition.scoring_unit.unit != "function" {
+            return Err(DefinitionError::Unsupported {
+                path: "scoring_unit.unit".to_owned(),
+                reason: format!(
+                    "the scoring unit {:?} is not implemented; this build scores `function` blocks",
+                    definition.scoring_unit.unit
+                ),
+            });
+        }
+        if definition.scoring_unit.weight != "loc" {
+            return Err(DefinitionError::Unsupported {
+                path: "scoring_unit.weight".to_owned(),
+                reason: format!(
+                    "the weight {:?} is not implemented; blocks are weighted by `loc`",
+                    definition.scoring_unit.weight
+                ),
+            });
+        }
         definition.raw = raw;
         Ok(definition)
     }
@@ -368,6 +412,21 @@ impl Definition {
     pub fn sub_threshold_below(&self) -> f64 {
         self.resolve(&self.aggregation.sub_threshold_set.below)
             .expect("aggregation.sub_threshold_set.below names a band edge that exists")
+    }
+
+    /// The weight one scoring unit carries in its file's mean (ADR-0007 §4.1).
+    ///
+    /// Read from `scoring_unit.weight` rather than assumed by the caller, so that a definition cannot
+    /// change what a file's MI is weighted by without saying so in the normative file — and cannot do
+    /// it silently, because [`Definition::from_value`] refuses any weight it cannot compute.
+    #[must_use]
+    pub fn unit_weight(&self, loc: u64) -> f64 {
+        match self.scoring_unit.weight.as_str() {
+            "loc" => loc as f64,
+            // Unreachable for a definition that loaded; the arm is what keeps the load-time check
+            // load-bearing.
+            _ => 0.0,
+        }
     }
 
     /// Whether a reason counts toward `unanalysed_paths`.
@@ -403,12 +462,16 @@ mod tests {
     #[test]
     fn the_shipped_definition_loads() {
         let definition = Definition::embedded();
-        assert_eq!(definition.definition_version, 1);
+        assert_eq!(definition.definition_version, 2);
         assert_eq!(definition.analyzer.tokenize.id, "mi.tokenize");
         assert_eq!(definition.analyzer.tokenize.input_kind, "blob_path");
         assert_eq!(definition.formula.a, 171.0);
         assert_eq!(definition.bands.amber_below, 50.0);
-        assert_eq!(definition.bands.red_below, 25.0);
+        assert_eq!(definition.bands.red_below, 38.0);
+        assert_eq!(definition.scoring_unit.unit, "function");
+        assert_eq!(definition.scoring_unit.weight, "loc");
+        assert_eq!(definition.scoring_unit.fallback, "file");
+        assert_eq!(definition.unit_weight(12), 12.0);
         assert_eq!(definition.aggregation.weight, "loc");
         assert_eq!(definition.aggregation.hotspots_default, 5);
     }

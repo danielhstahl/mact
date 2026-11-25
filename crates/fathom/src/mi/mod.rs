@@ -62,11 +62,10 @@ use crate::classify::Classifier;
 use crate::config::Config;
 
 pub use aggregate::{aggregate, band_tally, commit_row, CommitAggregate, Hotspot};
-pub use definition::{AnalyzerId, Definition};
-pub use lang::{tokenise, Counts, LexError};
-pub use score::{band_of, measure, round_storage, Band, Measurement, Status};
-
 use definition::Language;
+pub use definition::{AnalyzerId, Definition, DefinitionError, ScoringUnit};
+pub use lang::{tokenise, Block, Counts, LexError};
+pub use score::{band_of, measure, round_storage, Band, Measurement, Status};
 
 /// The config keys `mi.tokenize` declares and reads (ADR-0007 §8's table). A value in a CI job's
 /// environment that never reaches the digest of the run that used it is a cache that lies, which is
@@ -133,7 +132,83 @@ impl Definition {
     }
 }
 
-/// One file's metrics: the ticket's `FileMetrics`, and the reason when there is no MI.
+/// One scoring unit of a file, measured: ADR-0007 §4.1 made visible.
+///
+/// A block is what a MI is a number *about*, and this is the list a reader would write down if asked
+/// "which functions, and what does each score?" — which is why `Analyzer::blocks_of` is public and why a
+/// file's `mi` is required to be the mean of exactly these numbers. A block that did not measure carries
+/// `status` and no `mi`, and is absent from its file's mean rather than present in it as a zero.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BlockMeasurement {
+    /// The defined name — `run`, `impl Block for X::len`, the `def` of a Python method.
+    pub name: String,
+    /// The rung of the measurability ladder this block landed on.
+    pub status: Status,
+    /// Logical lines of the block, which is the weight it carries in its file's mean.
+    pub loc: Option<u64>,
+    /// Halstead volume of the block alone.
+    pub halstead_volume: Option<f64>,
+    /// Cyclomatic complexity of the block alone.
+    pub cyclomatic: Option<u64>,
+    /// The block's own MI, which is what the file's mean is made of.
+    pub mi: Option<f64>,
+    /// The band of `mi`.
+    pub band: Option<Band>,
+}
+
+/// The analyzer's answer for one blob, before it is dressed as a [`FileMetrics`].
+///
+/// `file` is always the whole-file measurement — the counts, `V`, `G` and `LOC` a reader inspects with
+/// `cat`, and the number the fallback scores with — while `mi` is what the unit rule produced.
+struct Scored {
+    /// `ok`, or the rung of the ladder the file landed on.
+    status: Status,
+    /// The file's MI: the mean of its blocks, or the file's own when there are none.
+    mi: Option<f64>,
+    /// The pre-rounding double, only when one exists (a mean of blocks has none).
+    mi_raw: Option<f64>,
+    /// Which rule produced `mi`.
+    unit: Unit,
+    /// How many blocks fed the mean; absent when the unit is the file.
+    blocks: Option<u64>,
+    /// The whole-file measurement.
+    file: Measurement,
+}
+
+/// What produced a file's MI (ADR-0007 §4.1).
+///
+/// `Block` is the normal answer: the file's MI is the LOC-weighted mean of the MI of each of its
+/// function definitions. `File` is the documented fallback for a source file that declares no
+/// function at all — a module of types and constants, a Python script that is all top-level
+/// statements — where the only unit available is the whole file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unit {
+    /// One MI per function-like definition, averaged into the file's MI.
+    Block,
+    /// The file as a single scoring unit.
+    File,
+}
+
+impl Unit {
+    /// The spelling a cached block and a `cat` of it use.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Block => "block",
+            Self::File => "file",
+        }
+    }
+}
+
+impl std::fmt::Display for Unit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// One file's metrics: the ticket's `FileMetrics`, the reason when there is no MI, and — since
+/// mact-by1.10 — which rule produced the number.
 ///
 /// Every measurement field is an `Option` and every absent one is *skipped* on serialisation, which
 /// is the whole "a file with no MI is not a file with MI 0" rule expressed in the type: there is no
@@ -170,9 +245,18 @@ pub struct FileMetrics {
     /// The decision points behind `G`, keyed by the model's rule ids.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub decision_points: BTreeMap<String, u64>,
-    /// The unrounded formula output: a diagnostic, never a comparison (P2).
+    /// The unrounded formula output: a diagnostic, never a comparison (P2). Absent when the file's MI
+    /// is a mean of blocks — a mean has no single pre-rounding double to show, and inventing one would
+    /// be a number that cannot be re-derived from anything.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mi_raw: Option<f64>,
+    /// What produced `mi`: the file's function blocks, or the file itself. Absent on a gap, and on a
+    /// number rebuilt from a stored row, which records a file's MI and not how it was arrived at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<Unit>,
+    /// How many function blocks produced the mean. Absent for a `file` unit and for a gap.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocks: Option<u64>,
     /// The stored MI, one decimal, half away from zero. Absent means *unknown*.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mi: Option<f64>,
@@ -211,6 +295,8 @@ impl FileMetrics {
             cyclomatic: None,
             decision_points: BTreeMap::new(),
             mi_raw: None,
+            unit: None,
+            blocks: None,
             mi,
             band: mi.map(|value| band_of(definition, value)),
             analyzer: definition.stamp(),
@@ -218,7 +304,7 @@ impl FileMetrics {
     }
 }
 
-/// A compiled front end and the function that runs it.
+/// A compiled front end and the functions that run it.
 ///
 /// This table *is* the set of languages this build can lex, which is the shorter list than the
 /// model's on purpose: a language in `schema/mi-definition.json` without an entry here is
@@ -226,6 +312,8 @@ impl FileMetrics {
 struct Frontend {
     front: lang::Front,
     run: fn(&str, &lang::Front) -> Result<Counts, LexError>,
+    /// The scoring units of a blob: its function definitions (ADR-0007 §4.1).
+    blocks: fn(&str, &lang::Front) -> Vec<lang::Block>,
 }
 
 /// The one place that knows which front ends exist.
@@ -235,9 +323,15 @@ fn frontend_for(language: &str, table: &Language) -> Option<Frontend> {
         "python" => lang::python::tokenise,
         _ => return None,
     };
+    let blocks: fn(&str, &lang::Front) -> Vec<lang::Block> = match language {
+        "rust" => lang::rust::blocks,
+        "python" => lang::python::blocks,
+        _ => return None,
+    };
     Some(Frontend {
         front: lang::Front::new(table),
         run,
+        blocks,
     })
 }
 
@@ -418,29 +512,147 @@ impl Analyzer {
                 );
             }
         };
-        // 6–7. `vacuous` or `ok`, from the counts.
+        // 6–7. `vacuous` or `ok`, over the scoring unit the definition names (ADR-0007 §4.1).
         let base = self
             .definition
             .languages
             .get(language)
             .map_or(1, |table| table.decision_points.base);
-        let measurement = measure(&self.definition, &counts, Status::Ok, base);
+        let scored = self.score_units(frontend, text, counts.clone(), base);
+        let file = &scored.file;
         FileMetrics {
             path: path.to_owned(),
             language: Some(language.to_owned()),
-            status: measurement.status,
+            status: scored.status,
             detail: None,
-            loc: measurement.loc,
+            loc: file.loc,
             operators: Some(counts.operator_total()),
             vocabulary: Some(counts.operator_unique()),
-            halstead_volume: measurement.volume,
-            cyclomatic: measurement.cyclomatic,
+            halstead_volume: file.volume,
+            cyclomatic: file.cyclomatic,
             decision_points: counts.decision_points.clone(),
-            mi_raw: measurement.mi_raw,
-            mi: measurement.mi,
-            band: measurement.band,
+            mi_raw: scored.mi_raw,
+            unit: Some(scored.unit),
+            blocks: scored.blocks,
+            mi: scored.mi,
+            band: scored.mi.map(|value| band_of(&self.definition, value)),
             analyzer: self.definition.stamp(),
         }
+    }
+
+    /// Score one blob over its **scoring units** (ADR-0007 §4.1).
+    ///
+    /// The unit is a function definition, not a file, because MI's constants are calibrated on
+    /// functions: `-0.23·G` is linear in the decision count and `-16.2·ln(LOC)` is logarithmic, so
+    /// over a whole file the two terms stop measuring the code and start measuring how big the file
+    /// is — on this repository's own source, per-file scoring put every file over ~120 logical lines
+    /// in the red band and 20 of them at exactly 0.0, while the same files scored per function sat at
+    /// a mean of 75.8. See ADR-0007 §4.1 and §5.3.
+    ///
+    /// The file's MI is `MI_1( Σ mi_i·loc_i / Σ loc_i )` over the blocks that measured, the same
+    /// LOC-weighted mean §4.3 pins one level up, so a 400-line function is not outvoted by twelve
+    /// one-liners beside it. Blocks that do not measure (a one-line stub with no vocabulary, a slice
+    /// the lexer would not accept) are excluded from the mean rather than scored as zero — the
+    /// never-borrow-a-number rule, applied inside the file.
+    ///
+    /// A blob with no measurable block is scored as its own single unit (`Unit::File`), which is what
+    /// keeps a module of types, or a Python script of top-level statements, a measurement instead of
+    /// a gap.
+    fn score_units(&self, frontend: &Frontend, text: &str, counts: Counts, base: u64) -> Scored {
+        let file = measure(&self.definition, &counts, Status::Ok, base);
+        let blocks = self.block_measurements(frontend, text, base);
+        let mut weighted = 0_f64;
+        let mut weight_total = 0_f64;
+        let mut counted = 0_u64;
+        for (_, measurement) in &blocks {
+            let (Some(mi), Some(loc)) = (measurement.mi, measurement.loc) else {
+                continue;
+            };
+            // The weight is the definition's, not this function's (ADR-0007 §4.1).
+            let weight = self.definition.unit_weight(loc);
+            if weight <= 0.0 {
+                continue;
+            }
+            weighted += mi * weight;
+            weight_total += weight;
+            counted += 1;
+        }
+        if counted == 0 || weight_total <= 0.0 {
+            return Scored {
+                status: file.status,
+                mi: file.mi,
+                mi_raw: file.mi_raw,
+                unit: Unit::File,
+                blocks: None,
+                file,
+            };
+        }
+        Scored {
+            status: Status::Ok,
+            mi: Some(round_storage(&self.definition, weighted / weight_total)),
+            // A mean has no single pre-rounding double that means anything; say so rather than
+            // reconstruct one from the rounded parts.
+            mi_raw: None,
+            unit: Unit::Block,
+            blocks: Some(counted),
+            file,
+        }
+    }
+
+    /// Measure each scoring unit of a blob (ADR-0007 §4.1). One code path serves both the file's mean
+    /// and [`Analyzer::blocks_of`], so a block a reader inspects is provably the block that was
+    /// averaged.
+    fn block_measurements(
+        &self,
+        frontend: &Frontend,
+        text: &str,
+        base: u64,
+    ) -> Vec<(String, Measurement)> {
+        (frontend.blocks)(text, &frontend.front)
+            .into_iter()
+            .filter_map(|block| {
+                let counts = (frontend.run)(&block.source, &frontend.front).ok()?;
+                Some((
+                    block.name,
+                    measure(&self.definition, &counts, Status::Ok, base),
+                ))
+            })
+            .collect()
+    }
+
+    /// The **scoring units** of a blob and each one's MI (ADR-0007 §4.1).
+    ///
+    /// A file's stored MI is the mean of these, so this is the only way to see *why* a file sits where
+    /// it does: a file averaging 48 could be one 900-line function or thirty small ones. Exposed for
+    /// the corpus test that derives the band edges from the block histogram, and for any view that
+    /// wants the breakdown; the store keeps the file row and not these.
+    ///
+    /// `None` when the language has no front end in this build, or the blob did not lex.
+    #[must_use]
+    pub fn blocks_of(&self, path: &str, bytes: &[u8]) -> Option<Vec<BlockMeasurement>> {
+        let language = self.definition.language_for_path(path)?;
+        let frontend = self.frontends.get(language)?;
+        let text = lexable(bytes).ok()?;
+        (frontend.run)(text, &frontend.front).ok()?;
+        let base = self
+            .definition
+            .languages
+            .get(language)
+            .map_or(1, |table| table.decision_points.base);
+        Some(
+            self.block_measurements(frontend, text, base)
+                .into_iter()
+                .map(|(name, measurement)| BlockMeasurement {
+                    name,
+                    status: measurement.status,
+                    loc: measurement.loc,
+                    halstead_volume: measurement.volume,
+                    cyclomatic: measurement.cyclomatic,
+                    mi: measurement.mi,
+                    band: measurement.band,
+                })
+                .collect(),
+        )
     }
 
     /// The front-end counts and the score for one blob, exposed for the golden-vector tests, which
@@ -482,6 +694,8 @@ impl Analyzer {
             cyclomatic: None,
             decision_points: BTreeMap::new(),
             mi_raw: None,
+            unit: None,
+            blocks: None,
             mi: None,
             band: None,
             analyzer: self.definition.stamp(),
