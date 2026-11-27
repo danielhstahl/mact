@@ -92,6 +92,25 @@ jobs:
 
       - name: Build
         run: cargo build --release --bin act-mcp --bin fathom
+      # The runner gates every run on a `docker info` it runs itself — scrubbed environment, a
+      # three-second deadline, no `DOCKER_*` passed through — and its refusal says only `no container
+      # runtime answered`. That is a stricter question than "is docker installed on this runner", and
+      # the two come apart in exactly the three ways this prints: the scrub, the deadline (measured
+      # against the real constant, read out of the source rather than copied), and the endpoint it
+      # dials. Here rather than in the refusal because the refusal cannot say any of it, and here
+      # rather than after the fact because a run that cannot start still costs an image pull to find
+      # out. --prereq-only is the script's own two-second mode; it wants the binary, so it follows the
+      # build.
+      - name: Ask the runtime the way the runner will
+        # Deliberately not gating. A diagnostic that can fail a job which would otherwise pass is a
+        # second gate nobody designed, and if the runtime really is unreachable the run below says so
+        # with the contract's own error code. What this step owes the reader is the numbers.
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')
+          scripts/smoke-real-act.sh --prereq-only --bin "$TARGET_DIR/release/act-mcp"
+
 
       # `serve` binds loopback and has no authentication, so there is nothing else to configure: no
       # `--allow-host`, no non-loopback bind. act resolves it from PATH. There is no tool allowlist in
@@ -112,6 +131,14 @@ jobs:
             fi
             sleep 2
           done
+          # If it never came up, say so now and show why: `serve` refuses to boot rather than serve a
+          # workspace it cannot check (no `act` on PATH, a routable bind, an unreadable workspace), and
+          # without this the next step spends its whole endpoint budget talking to a dead port.
+          if ! scripts/mcp_call.sh -u http://127.0.0.1:8080/mcp list_tasks '{}' >/dev/null 2>&1; then
+            echo "::error::act-mcp never answered list_tasks; its log is below"
+            cat /tmp/act-mcp.log || true
+            exit 1
+          fi
           mkdir -p "$HOME/.config/act-mcp"
           printf 'http://127.0.0.1:8080/mcp\n' >"$HOME/.config/act-mcp/endpoint"
 
@@ -230,6 +257,25 @@ jobs:
 
       - name: Build
         run: cargo build --release --bin act-mcp --bin fathom
+      # The runner gates every run on a `docker info` it runs itself — scrubbed environment, a
+      # three-second deadline, no `DOCKER_*` passed through — and its refusal says only `no container
+      # runtime answered`. That is a stricter question than "is docker installed on this runner", and
+      # the two come apart in exactly the three ways this prints: the scrub, the deadline (measured
+      # against the real constant, read out of the source rather than copied), and the endpoint it
+      # dials. Here rather than in the refusal because the refusal cannot say any of it, and here
+      # rather than after the fact because a run that cannot start still costs an image pull to find
+      # out. --prereq-only is the script's own two-second mode; it wants the binary, so it follows the
+      # build.
+      - name: Ask the runtime the way the runner will
+        # Deliberately not gating. A diagnostic that can fail a job which would otherwise pass is a
+        # second gate nobody designed, and if the runtime really is unreachable the run below says so
+        # with the contract's own error code. What this step owes the reader is the numbers.
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')
+          scripts/smoke-real-act.sh --prereq-only --bin "$TARGET_DIR/release/act-mcp"
+
 
       - name: Start the MCP action runner
         run: |
@@ -247,6 +293,14 @@ jobs:
             fi
             sleep 2
           done
+          # If it never came up, say so now and show why: `serve` refuses to boot rather than serve a
+          # workspace it cannot check (no `act` on PATH, a routable bind, an unreadable workspace), and
+          # without this the next step spends its whole endpoint budget talking to a dead port.
+          if ! scripts/mcp_call.sh -u http://127.0.0.1:8080/mcp list_tasks '{}' >/dev/null 2>&1; then
+            echo "::error::act-mcp never answered list_tasks; its log is below"
+            cat /tmp/act-mcp.log || true
+            exit 1
+          fi
           mkdir -p "$HOME/.config/act-mcp"
           printf 'http://127.0.0.1:8080/mcp\n' >"$HOME/.config/act-mcp/endpoint"
 
