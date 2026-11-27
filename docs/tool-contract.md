@@ -296,7 +296,7 @@ ADR, `$defs/error_code`, `x-error-codes`), `isError` and `retryable` columns inc
 | `not_a_git_repository` | true | false | precondition | Workspace is not inside a git work tree, so no commit can resolve. `detail.path` |
 | `workflows_dir_missing` | true | false | precondition | `.github/workflows` absent, not a directory, or holds no `.yml`/`.yaml` — "this is not an Actions repo". `detail.path` |
 | `act_missing` | true | true | precondition | act not on PATH, not executable, or older than the minimum supported version (probe cached 30 s). `detail.probed`, `detail.reason`, `detail.found_version`, `detail.minimum_version` |
-| `docker_unreachable` | true | true | precondition | No container runtime answered (`docker info` failed or timed out). `detail.reason`, `detail.detail` — and every `detail` names the endpoint the probe dialled, as `asked \`$DOCKER_HOST=…\`` or `asked the pinned socket … (--container-daemon-socket)` |
+| `docker_unreachable` | true | true | precondition | No container runtime answered (`docker info` failed or timed out). `detail.reason`, `detail.detail` |
 | `workflow_not_found` | true | false | resolution | No workflow file matches `workflow`. `detail.workflow`, `detail.workflows_dir`, `detail.available` |
 | `ambiguous_workflow` | true | false | resolution | Two or more files match one bare name; pass the file name. `detail.workflow`, `detail.candidates` |
 | `task_not_found` | true | false | resolution | That job id is not declared in the resolved workflow. `detail.workflow_file`, `detail.task`, `detail.jobs` |

@@ -17,10 +17,7 @@ use axum::http::HeaderValue;
 use clap::Args;
 use thiserror::Error;
 
-use crate::workspace::{
-    IsolationPolicy, SemVer, DEFAULT_CONTAINER_PROBE_TIMEOUT, DEFAULT_CONTAINER_PROBE_TIMEOUT_SECS,
-    MAX_CONTAINER_PROBE_TIMEOUT, MAX_GIT_TIMEOUT, MINIMUM_ACT_VERSION,
-};
+use crate::workspace::{IsolationPolicy, SemVer, MAX_GIT_TIMEOUT, MINIMUM_ACT_VERSION};
 
 /// Default bind address. Loopback only, always: act-mcp has **no
 /// authentication** (mact-f1w.5), and `act` runs arbitrary container images, so
@@ -126,13 +123,6 @@ pub struct Config {
     /// Container-runtime socket the reachability probe dials, when the operator
     /// pinned one (`--container-daemon-socket`). `None` probes the runtime default.
     pub container_daemon_socket: Option<PathBuf>,
-    /// How long the container-runtime probe may run (`--container-probe-timeout-secs`).
-    ///
-    /// The probe is the gate every `run_workflow` passes through, so this is the knob for the two
-    /// ways it can be wrong: a daemon that is busy (a cold image pull in flight) answers `docker
-    /// info` slower than the default, and a daemon reached through `$DOCKER_HOST` answers only if
-    /// the probe is allowed to see that variable. Both are `docker_unreachable` otherwise.
-    pub container_probe_timeout: Duration,
     /// `--list-tasks-act-cross-check`: ask `act list` which workflow files it can
     /// actually load during `list_tasks`, and report the files it refuses.
     ///
@@ -298,9 +288,6 @@ pub enum ConfigError {
     #[error("--git-timeout-secs {value} is out of range (1..={})", MAX_GIT_TIMEOUT.as_secs())]
     GitTimeoutOutOfRange { value: u32 },
 
-    #[error("--container-probe-timeout-secs {value} is out of range (1..={})", MAX_CONTAINER_PROBE_TIMEOUT.as_secs())]
-    ContainerProbeTimeoutOutOfRange { value: u32 },
-
     #[error("--minimum-act-version {value:?} is not a major.minor.patch version ({reason})")]
     MinimumActVersionInvalid { value: String, reason: String },
 
@@ -427,16 +414,6 @@ pub struct ServeArgs {
     )]
     pub container_daemon_socket: Option<String>,
 
-    /// ADR-0003 §5.3 container probe budget.
-    #[arg(
-        long,
-        value_name = "SECS",
-        default_value_t = DEFAULT_CONTAINER_PROBE_TIMEOUT_SECS,
-        env = "ACT_MCP_CONTAINER_PROBE_TIMEOUT_SECS",
-        help = "Deadline for the `docker info` reachability probe that gates every run. Raise it for a daemon that is busy (a cold image pull) rather than lowering it; 1..=60."
-    )]
-    pub container_probe_timeout_secs: u32,
-
     /// The [`UNAUTH_ACK_FLAG`] escape hatch: bind outside loopback on purpose.
     #[arg(
         long = "i-understand-this-is-unauthenticated",
@@ -537,7 +514,6 @@ impl Default for ServeArgs {
             git_timeout_secs: 30,
             minimum_act_version: MINIMUM_ACT_VERSION.to_owned(),
             container_daemon_socket: None,
-            container_probe_timeout_secs: DEFAULT_CONTAINER_PROBE_TIMEOUT_SECS,
             list_tasks_act_cross_check: false,
             i_understand_this_is_unauthenticated: false,
             allow_host: Vec::new(),
@@ -567,8 +543,6 @@ impl Config {
 
         let isolation = Self::resolve_isolation(&args.isolation)?;
         let git_timeout = Self::resolve_git_timeout(args.git_timeout_secs)?;
-        let container_probe_timeout =
-            Self::resolve_container_probe_timeout(args.container_probe_timeout_secs)?;
         let minimum_act_version = Self::resolve_minimum_act_version(&args.minimum_act_version)?;
         // `-` is act's own "do not mount the daemon socket into the job" value. It
         // says nothing about whether a runtime is reachable — act always needs one —
@@ -610,7 +584,6 @@ impl Config {
             isolation,
             allow_dirty_worktree: args.allow_dirty_worktree,
             git_timeout,
-            container_probe_timeout,
             minimum_act_version,
             container_daemon_socket,
             list_tasks_act_cross_check: args.list_tasks_act_cross_check,
@@ -654,7 +627,6 @@ impl Config {
                 .parse::<SemVer>()
                 .expect("the pinned floor is a valid version"),
             container_daemon_socket: None,
-            container_probe_timeout: DEFAULT_CONTAINER_PROBE_TIMEOUT,
             list_tasks_act_cross_check: false,
             non_loopback_bind_acknowledged: false,
             allowed_hosts: Self::resolve_allowed_hosts(bind, &[]),
@@ -780,13 +752,6 @@ impl Config {
     fn resolve_git_timeout(secs: u32) -> Result<Duration, ConfigError> {
         if secs == 0 || Duration::from_secs(u64::from(secs)) > MAX_GIT_TIMEOUT {
             return Err(ConfigError::GitTimeoutOutOfRange { value: secs });
-        }
-        Ok(Duration::from_secs(u64::from(secs)))
-    }
-
-    fn resolve_container_probe_timeout(secs: u32) -> Result<Duration, ConfigError> {
-        if secs == 0 || Duration::from_secs(u64::from(secs)) > MAX_CONTAINER_PROBE_TIMEOUT {
-            return Err(ConfigError::ContainerProbeTimeoutOutOfRange { value: secs });
         }
         Ok(Duration::from_secs(u64::from(secs)))
     }
@@ -996,9 +961,7 @@ pub fn is_loopback(ip: IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::{
-        IsolationPolicy, DEFAULT_CONTAINER_PROBE_TIMEOUT, DEFAULT_GIT_TIMEOUT, MINIMUM_ACT_VERSION,
-    };
+    use crate::workspace::{IsolationPolicy, DEFAULT_GIT_TIMEOUT, MINIMUM_ACT_VERSION};
     use std::time::Duration;
 
     fn args_with(workspace: &Path, act: &Path) -> ServeArgs {
@@ -1090,11 +1053,6 @@ mod tests {
         // The CLI default and the documented constant are one number, not two.
         assert_eq!(config.git_timeout, DEFAULT_GIT_TIMEOUT);
         assert_eq!(DEFAULT_GIT_TIMEOUT, Duration::from_secs(30));
-        // The flag's default and the probe's own constant are one number, not two documents.
-        assert_eq!(
-            config.container_probe_timeout,
-            DEFAULT_CONTAINER_PROBE_TIMEOUT
-        );
         assert_eq!(
             config.minimum_act_version,
             MINIMUM_ACT_VERSION.parse().expect("valid version")
@@ -1128,31 +1086,6 @@ mod tests {
             Config::build(&args).expect_err("0 is not a budget"),
             ConfigError::GitTimeoutOutOfRange { .. }
         ));
-
-        // Same rule for the container probe: it gates every run, so it is bounded rather than free,
-        // and an operator with a busy daemon raises it instead of the code guessing.
-        let mut args = args_with(workspace.path(), &act);
-        args.container_probe_timeout_secs = 0;
-        assert!(matches!(
-            Config::build(&args).expect_err("0 is not a budget"),
-            ConfigError::ContainerProbeTimeoutOutOfRange { value: 0 }
-        ));
-
-        let mut args = args_with(workspace.path(), &act);
-        args.container_probe_timeout_secs = 61;
-        assert!(matches!(
-            Config::build(&args).expect_err("past the ceiling"),
-            ConfigError::ContainerProbeTimeoutOutOfRange { value: 61 }
-        ));
-
-        let mut args = args_with(workspace.path(), &act);
-        args.container_probe_timeout_secs = 12;
-        assert_eq!(
-            Config::build(&args)
-                .expect("12s is inside the range")
-                .container_probe_timeout,
-            Duration::from_secs(12)
-        );
 
         let mut args = args_with(workspace.path(), &act);
         args.git_timeout_secs = 301;

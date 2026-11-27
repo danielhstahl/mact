@@ -17,7 +17,6 @@
 //! has a default that does nothing — the wiring ticket supplies the real prober.
 
 use std::{
-    collections::BTreeMap,
     io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -33,20 +32,7 @@ use thiserror::Error;
 /// Deliberately far shorter than [`crate::config`]’s git budget: `docker info`
 /// against a live daemon is milliseconds, and a hung daemon must not be able to
 /// hold up the pre-start budget for as long as a `git status` may.
-pub const DEFAULT_CONTAINER_PROBE_TIMEOUT_SECS: u32 = 3;
-
-/// [`DEFAULT_CONTAINER_PROBE_TIMEOUT_SECS`] as a [`Duration`].
-pub const DEFAULT_CONTAINER_PROBE_TIMEOUT: Duration =
-    Duration::from_secs(DEFAULT_CONTAINER_PROBE_TIMEOUT_SECS as u64);
-
-/// The most an operator may ask for with `--container-probe-timeout-secs`.
-///
-/// The ceiling exists because the probe is on the pre-start path: ADR-0003 §10 bounds that whole
-/// path, and an unbounded runtime probe would let a daemon that never answers hold every later
-/// refusal for its length — and the failed probe is then cached for [`DEFAULT_PROBE_TTL`]. A busy
-/// daemon (a cold image pull in flight) is the case that needs more than the default; a minute is
-/// far beyond it without letting the gate outlive the budget it sits inside.
-pub const MAX_CONTAINER_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+pub const DEFAULT_CONTAINER_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Result of one bounded subprocess: exit code plus captured output.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -366,29 +352,22 @@ impl Environment for SystemEnvironment {
         argv.push(std::ffi::OsString::from("--format"));
         argv.push(std::ffi::OsString::from("{{.ServerVersion}}"));
 
-        // One read of the environment, used for both the rule and the wording, so the refusal can
-        // never name a different endpoint than the one this call dialled.
-        let env = runtime_env_from(std::env::vars());
-        let dialled = dialled_endpoint(socket, &env);
         match run(&docker, &argv, timeout, |command| {
-            command.env_clear();
-            command.envs(env);
+            scrub_environment(command)
         }) {
             Err(CommandError::Timeout { timeout, .. }) => {
                 Err(ContainerProbeError::Timeout(format!(
-                "the container runtime did not answer `docker info` within {}s (asked {dialled})",
-                timeout.as_secs_f64()
-            )))
+                    "the container runtime did not answer `docker info` within {}s",
+                    timeout.as_secs_f64()
+                )))
             }
-            Err(other) => Err(ContainerProbeError::Error(format!(
-                "{other} (asked {dialled})"
-            ))),
+            Err(other) => Err(ContainerProbeError::Error(other.to_string())),
             Ok(output) if output.success() => Ok(ContainerRuntime {
                 program: "docker".to_owned(),
                 version: (!output.first_line().is_empty()).then(|| output.first_line()),
             }),
             Ok(output) => Err(ContainerProbeError::Error(format!(
-                "`docker info` exited {}: {} (asked {dialled})",
+                "`docker info` exited {}: {}",
                 output.code.map(i64::from).unwrap_or(-1),
                 output.first_error_line()
             ))),
@@ -405,73 +384,14 @@ fn drain<R: Read>(pipe: Option<R>) -> Vec<u8> {
     buffer
 }
 
-/// The environment every scrubbed probe starts from: three keys, nothing else (ADR-0003 §7.8).
-const BASE_ENV_KEYS: [&str; 3] = ["PATH", "HOME", "LC_ALL"];
-
-/// Keys the container-runtime probe carries on top of [`BASE_ENV_KEYS`].
-///
-/// ADR-0003 §7.6 passes act's environment through untouched *precisely because* `DOCKER_HOST` and
-/// `DOCKER_CONTEXT` are how a daemon is found at all on a rootless, colima, podman-socket or TCP
-/// setup — and this probe is the gate that stands in front of that same act. With them stripped it
-/// dialled the runtime default while act would have dialled the operator's endpoint, so a commit act
-/// could run was refused as `docker_unreachable`, with a message that could not say which daemon had
-/// been asked. An allowlist, not a `DOCKER_` prefix: a variable that happens to start with
-/// `DOCKER_` and carries a credential stays where it was.
-const RUNTIME_ENV_KEYS: [&str; 5] = [
-    "DOCKER_HOST",
-    "DOCKER_CONTEXT",
-    "DOCKER_CERT_PATH",
-    "DOCKER_TLS_VERIFY",
-    "DOCKER_CONFIG",
-];
-
 fn scrub_environment(command: &mut Command) {
     command.env_clear();
-    for key in BASE_ENV_KEYS {
+    for key in ["PATH", "HOME", "LC_ALL"] {
         if let Ok(value) = std::env::var(key) {
             command.env(key, value);
         }
     }
     command.env("LC_ALL", "C");
-}
-
-/// The environment of the container-runtime probe: [`scrub_environment`]'s base plus
-/// [`RUNTIME_ENV_KEYS`], as a pure function of the environment it starts from so the rule can be
-/// checked without spawning anything.
-fn runtime_env_from(
-    source: impl IntoIterator<Item = (String, String)>,
-) -> BTreeMap<String, String> {
-    let mut picked = BTreeMap::new();
-    for (key, value) in source {
-        if BASE_ENV_KEYS.contains(&key.as_str()) || RUNTIME_ENV_KEYS.contains(&key.as_str()) {
-            picked.insert(key, value);
-        }
-    }
-    // The scrub's last word, exactly as `scrub_environment` leaves it: a locale the caller set is
-    // not allowed to change what `docker info` prints.
-    picked.insert("LC_ALL".to_owned(), "C".to_owned());
-    picked
-}
-
-/// What the probe dialled, in the words the refusal prints.
-///
-/// Without this the detail cannot answer the one question that matters: a `docker_unreachable` from a
-/// socket nobody configured reads identically to one from the operator's own daemon, and the two have
-/// opposite fixes — "your docker is down" versus "you told the gate to ask somewhere else".
-fn dialled_endpoint(pinned: Option<&Path>, env: &BTreeMap<String, String>) -> String {
-    if let Some(path) = pinned {
-        return format!(
-            "the pinned socket `{}` (--container-daemon-socket)",
-            path.display()
-        );
-    }
-    if let Some(host) = env.get("DOCKER_HOST") {
-        return format!("`$DOCKER_HOST={host}`");
-    }
-    if let Some(context) = env.get("DOCKER_CONTEXT") {
-        return format!("the docker context `{context}` (`$DOCKER_CONTEXT`)");
-    }
-    "the runtime default (`/var/run/docker.sock`)".to_owned()
 }
 
 /// Spawn, capture and bound one subprocess.
@@ -766,110 +686,6 @@ mod tests {
         assert_eq!(
             SystemEnvironment.resolve_program(&ok).expect("resolves"),
             which::which(&ok).expect("which agrees")
-        );
-    }
-
-    #[test]
-    fn the_runtime_probe_carries_the_endpoint_it_is_asked_to_dial() {
-        // The probe is the gate in front of act, and act is given its environment untouched
-        // (ADR-0003 §7.6) because `DOCKER_HOST`/`DOCKER_CONTEXT` are how a daemon is found at all on
-        // a rootless, colima, podman-socket or TCP setup. Stripping them made the gate ask a
-        // different daemon than the run would use, and refuse a commit act could have run.
-        let source = || {
-            [
-                ("PATH".to_owned(), "/usr/bin".to_owned()),
-                ("HOME".to_owned(), "/home/operator".to_owned()),
-                ("LC_ALL".to_owned(), "en_US.UTF-8".to_owned()),
-                (
-                    "DOCKER_HOST".to_owned(),
-                    "unix:///run/user/1000/docker.sock".to_owned(),
-                ),
-                ("DOCKER_CONTEXT".to_owned(), "colima".to_owned()),
-                (
-                    "DOCKER_CERT_PATH".to_owned(),
-                    "/home/operator/certs".to_owned(),
-                ),
-                ("DOCKER_TLS_VERIFY".to_owned(), "1".to_owned()),
-                (
-                    "DOCKER_CONFIG".to_owned(),
-                    "/home/operator/.docker".to_owned(),
-                ),
-                // Everything else stays out — including anything that merely looks docker-shaped and
-                // anything that smells like a credential.
-                ("DOCKER_PASSWORD".to_owned(), "hunter2".to_owned()),
-                ("AWS_SECRET_ACCESS_KEY".to_owned(), "hunter2".to_owned()),
-                ("SSH_AUTH_SOCK".to_owned(), "/tmp/sock".to_owned()),
-                ("GITHUB_TOKEN".to_owned(), "hunter2".to_owned()),
-            ]
-        };
-        let picked = runtime_env_from(source());
-        for key in [
-            "PATH",
-            "HOME",
-            "DOCKER_HOST",
-            "DOCKER_CONTEXT",
-            "DOCKER_CERT_PATH",
-            "DOCKER_TLS_VERIFY",
-            "DOCKER_CONFIG",
-        ] {
-            assert!(
-                picked.contains_key(key),
-                "{key} must reach the probe: {picked:?}"
-            );
-        }
-        assert_eq!(
-            picked.get("DOCKER_HOST").expect("host"),
-            "unix:///run/user/1000/docker.sock"
-        );
-        // The scrub's locale wins, exactly as it does for `git`: a caller's locale must not be able
-        // to change what `docker info` prints.
-        assert_eq!(picked.get("LC_ALL").expect("locale"), "C");
-        for key in [
-            "DOCKER_PASSWORD",
-            "AWS_SECRET_ACCESS_KEY",
-            "SSH_AUTH_SOCK",
-            "GITHUB_TOKEN",
-        ] {
-            assert!(
-                !picked.contains_key(key),
-                "{key} must not reach the probe: {picked:?}"
-            );
-        }
-        // And an environment with nothing docker-shaped in it is not an error: the runtime default is
-        // what gets dialled, which is the behaviour that predates this.
-        let plain = runtime_env_from([("PATH".to_owned(), "/bin".to_owned())]);
-        assert_eq!(
-            plain.keys().collect::<Vec<_>>(),
-            vec!["LC_ALL", "PATH"],
-            "no DOCKER_* set is not an error"
-        );
-    }
-
-    #[test]
-    fn a_refusal_names_the_daemon_it_dialled() {
-        // "your container runtime is down" and "the gate was told to ask somewhere else" look
-        // identical without this, and they are opposite problems.
-        let empty = BTreeMap::new();
-        assert_eq!(
-            dialled_endpoint(None, &empty),
-            "the runtime default (`/var/run/docker.sock`)"
-        );
-        let with_host =
-            BTreeMap::from([("DOCKER_HOST".to_owned(), "tcp://build-box:2376".to_owned())]);
-        assert_eq!(
-            dialled_endpoint(None, &with_host),
-            "`$DOCKER_HOST=tcp://build-box:2376`",
-            "a host beats a context, the way docker itself orders them"
-        );
-        let with_context = BTreeMap::from([("DOCKER_CONTEXT".to_owned(), "colima".to_owned())]);
-        assert_eq!(
-            dialled_endpoint(None, &with_context),
-            "the docker context `colima` (`$DOCKER_CONTEXT`)"
-        );
-        assert_eq!(
-            dialled_endpoint(Some(Path::new("/run/docker.sock")), &with_host),
-            "the pinned socket `/run/docker.sock` (--container-daemon-socket)",
-            "the pin is what was asked for, so the pin is what gets named"
         );
     }
 
