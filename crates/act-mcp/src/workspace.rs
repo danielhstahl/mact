@@ -52,7 +52,8 @@ pub use act_platforms::{
 pub use environment::{
     parse_act_version, Clock, CommandError, CommandOutput, ContainerProbeError, ContainerRuntime,
     Environment, ProgramError, SemVer, SystemClock, SystemEnvironment,
-    DEFAULT_CONTAINER_PROBE_TIMEOUT,
+    DEFAULT_CONTAINER_PROBE_TIMEOUT, DEFAULT_CONTAINER_PROBE_TIMEOUT_SECS,
+    MAX_CONTAINER_PROBE_TIMEOUT,
 };
 pub use validator::{
     DefaultTreeSelector, TreePlan, TreeRoot, TreeSelector, ValidatedRunTarget, ValidationPolicy,

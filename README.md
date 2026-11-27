@@ -49,7 +49,10 @@ ADRs; the links are at the bottom.
 * **A working container runtime** — the boot probe runs `docker info` (through the runtime's
   client, `docker`, found on `PATH`), and a `run_workflow` call refuses with
   `docker_unreachable` if nothing answers. Rootless podman with the docker socket present works;
-  `--container-daemon-socket` pins a non-default one.
+  `--container-daemon-socket` pins a non-default one. The probe sees `DOCKER_HOST`,
+  `DOCKER_CONTEXT`, `DOCKER_CERT_PATH`, `DOCKER_TLS_VERIFY` and `DOCKER_CONFIG`, so it asks the same
+  daemon act will — a colima, rootless, podman-socket or TCP endpoint reached through those variables
+  needs no pin.
 * **A workspace that is a git repo containing `.github/workflows/`.** Boot only checks the
   `.github` directory exists; workflow resolution happens per call.
 
@@ -134,6 +137,7 @@ every value is validated at boot rather than at call time. Nothing here is requi
 | `--allow-dirty-worktree` | `ACT_MCP_ALLOW_DIRTY_WORKTREE` | `false` | run a dirty HEAD anyway, stamping the `dirty_worktree` warning; `commit` then means "HEAD plus whatever is in it" |
 | `--git-timeout-secs <SECS>` | `ACT_MCP_GIT_TIMEOUT_SECS` | `30` | deadline for each read-only `git` call made while validating a run (1…300) |
 | `--container-daemon-socket <PATH>` | `ACT_MCP_CONTAINER_DAEMON_SOCKET` | *(runtime default)* | socket the reachability probe dials instead of the default. act's own `-` ("do not mount it") is treated as unset here |
+| `--container-probe-timeout-secs <SECS>` | `ACT_MCP_CONTAINER_PROBE_TIMEOUT_SECS` | `3` | how long the `docker info` probe may take before `docker_unreachable` is the answer (1…60). Raise it for a daemon that is busy — a cold image pull — not for one you believe is broken |
 | `--list-tasks-act-cross-check` | `ACT_MCP_LIST_TASKS_ACT_CROSS_CHECK` | `false` | have `list_tasks` also run `act list` and report files act refuses to load. Costs a subprocess per call |
 | `--allow-host <HOST>` | `ACT_MCP_ALLOWED_HOSTS` | `localhost,127.0.0.1,::1` | extra accepted `Host:` values, repeatable or comma-separated. Name your front-end here for a deliberate port-forward |
 | `--allow-origin <ORIGIN>` | `ACT_MCP_ALLOWED_ORIGINS` | *(empty: every `Origin` is refused)* | extra accepted browser `Origin`s, repeatable; must carry a scheme, e.g. `http://localhost:8080`. You need this for a browser-based client ([docs/testing.md §4](docs/testing.md#4-reproducing-by-hand-the-mcp-inspector)) |
@@ -863,6 +867,21 @@ act-mcp serve --workspace … --container-daemon-socket /run/user/1000/docker.so
 
 `detail.reason` tells you which half failed: `not_found` (no `docker` client), `timeout` (it
 never answered in the probe window), `error` (it answered non-zero — read `detail.detail`).
+
+Every `timeout` and `error` detail ends with `(asked …)`, naming the endpoint the probe dialled:
+the runtime default, `$DOCKER_HOST=…`, a `$DOCKER_CONTEXT`, or the pinned socket. Believe it,
+because "the daemon is down" and "the gate was pointed somewhere else" are otherwise
+indistinguishable and have opposite fixes. To check what the probe can reach, run the same call with
+the same environment it uses — it is `docker info --format {{.ServerVersion}}` with the process
+environment filtered to `PATH`, `HOME`, `LC_ALL` and the `DOCKER_*` variables above:
+
+```sh
+env -i PATH="$PATH" HOME="$HOME" LC_ALL=C DOCKER_HOST="$DOCKER_HOST" \
+    docker info --format '{{.ServerVersion}}'
+```
+
+If that answers slowly rather than never, `--container-probe-timeout-secs` is the knob; a cold
+image pull in flight is the usual reason a healthy daemon takes longer than three seconds.
 
 ### act missing, or too old
 

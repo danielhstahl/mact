@@ -18,8 +18,8 @@ use crate::{
         display_path, parse_act_version, ActMissingReason, ArgumentError, Clock, CommandError,
         CommandOutput, CommitUnknownReason, ContainerRuntime, Environment, IsolationMode,
         IsolationPolicy, ProgramError, RunRequest, SemVer, SystemClock, ValidationError,
-        COMMIT_MAX_LEN, COMMIT_MIN_LEN, DEFAULT_CONTAINER_PROBE_TIMEOUT, WARNING_DIRTY_WORKTREE,
-        WARNING_ISOLATION_WORKTREE, WARNING_RUNS_ON_UNMAPPED, WORKFLOWS_DIR,
+        COMMIT_MAX_LEN, COMMIT_MIN_LEN, WARNING_DIRTY_WORKTREE, WARNING_ISOLATION_WORKTREE,
+        WARNING_RUNS_ON_UNMAPPED, WORKFLOWS_DIR,
     },
 };
 
@@ -63,7 +63,8 @@ pub struct ValidationPolicy {
     /// `--container-daemon-socket`, when the operator pinned one: the socket the
     /// reachability probe dials instead of the runtime's default.
     pub container_daemon_socket: Option<PathBuf>,
-    /// How long the container-runtime probe may take.
+    /// `--container-probe-timeout-secs`: how long the container-runtime probe may take before
+    /// `docker_unreachable` is the answer.
     pub container_probe_timeout: Duration,
     /// Probe cache lifetime ([`DEFAULT_PROBE_TTL`]).
     pub probe_ttl: Duration,
@@ -82,7 +83,7 @@ impl ValidationPolicy {
             allow_dirty_worktree: config.allow_dirty_worktree,
             git_timeout: config.git_timeout,
             container_daemon_socket: config.container_daemon_socket.clone(),
-            container_probe_timeout: DEFAULT_CONTAINER_PROBE_TIMEOUT,
+            container_probe_timeout: config.container_probe_timeout,
             probe_ttl: DEFAULT_PROBE_TTL,
         }
     }

@@ -77,7 +77,8 @@ Runs one workflow job through a running `act-mcp serve` and asserts it published
                          runs-on label act has no image for and therefore skipped (default: refuse)
   --url URL              MCP endpoint (default http://127.0.0.1:8080/mcp, or $MCP_URL)
   --evidence-dir PATH    evidence root to look in (default <repo>/.evidence, or $EVIDENCE_DIR)
-  --wait-secs N          how long to wait for the endpoint to answer (default 120)
+  --wait-secs N          how long to wait for the ENDPOINT to answer list_tasks — before any run
+                         exists (default 120)
   --timeout-secs N       how long to wait for the run to reach a terminal state (default 2400)
   --poll-secs N          poll interval for run_status (default 15)
       --check            self-test against a stub server: no act, no docker, no network
@@ -221,15 +222,30 @@ RUN_STATUS=
 # that the server resolved a workspace, and a refused connection is retryable, so this is a loop.
 wait_for_endpoint() {
     local deadline=$((SECONDS + WAIT_SECS))
+    # Each failed attempt's reason is kept rather than dropped into /dev/null. This loop used to
+    # turn two different problems into the same line: a server that never started (no `act` on
+    # PATH, an unacknowledged routable bind, a workspace it refused) and a server that is merely
+    # slow both produced "did not answer list_tasks within 120s" — and the first one was never a
+    # problem with the run, which is what a reader then goes looking for.
+    local stderr_file last rc
+    stderr_file=$(mktemp -t mcp-run-endpoint.XXXXXX)
+    last="not attempted"
     while true; do
-        if TASKS_JSON=$(mcp list_tasks '{}' 2>/dev/null) &&
+        rc=0
+        TASKS_JSON=$(mcp list_tasks '{}' 2>"$stderr_file") || rc=$?
+        if (( rc == 0 )) &&
             [[ -n $(json_get result.structuredContent.workflows_dir <<<"$TASKS_JSON") ]]; then
+            rm -f "$stderr_file"
             printf '  endpoint   %s answered list_tasks (%s)\n' "$URL" \
                 "$(json_get result.structuredContent.workflows_dir <<<"$TASKS_JSON")"
             return 0
         fi
-        ((SECONDS < deadline)) ||
-            die "unreachable: $URL did not answer list_tasks within ${WAIT_SECS}s"
+        last=$(tr '\n' ' ' < "$stderr_file")
+        [[ -n ${last// /} ]] || last="no diagnostic (exit $rc)"
+        if (( SECONDS >= deadline )); then
+            rm -f "$stderr_file"
+            die "unreachable: $URL never answered list_tasks within ${WAIT_SECS}s. That is --wait-secs, the budget for the ENDPOINT: no run was submitted. Is act-mcp serve listening there, and did it boot (its own stderr names the refusal)? last attempt said: $last"
+        fi
         sleep 2
     done
 }
@@ -584,11 +600,28 @@ PY
         port=$((port + 1))
     done
 
+    # And the case with no stub at all: nothing is listening, which is the failure this script used
+    # to report as a run timeout. It must be refused fast, and it must say it is the endpoint.
+    local silent_code=0
+    local silent
+    silent=$("$script_dir/mcp_run.sh" \
+        --workflow dogfood.yml --task coverage --category coverage \
+        --commit "$commit" --url "http://127.0.0.1:$port/mcp" \
+        --wait-secs 2 --timeout-secs 5 2>&1) || silent_code=$?
+    if (( silent_code != 1 )) || ! grep -q 'never answered list_tasks' <<<"$silent" ||
+        ! grep -q 'ENDPOINT' <<<"$silent"; then
+        printf 'FAIL %-20s expected the endpoint refusal, got exit %s: %s\n' \
+            endpoint-silent "$silent_code" "$silent"
+        failures=$((failures + 1))
+    else
+        printf 'ok   %-20s refused with no server and said so\n' endpoint-silent
+    fi
+
     ((failures == 0)) || {
         printf 'mcp_run --check: %s scenario(s) failed\n' "$failures" >&2
         return 1
     }
-    printf 'mcp_run --check: 5 scenarios went through a real MCP call and answered as designed\n'
+    printf 'mcp_run --check: 6 scenarios went through the real code path and answered as designed\n'
 }
 
 # ------------------------------------------------------------------ main
