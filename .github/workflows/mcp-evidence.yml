@@ -99,7 +99,9 @@ jobs:
       - name: Start the MCP action runner
         run: |
           set -euo pipefail
-          nohup ./target/release/act-mcp serve \
+          TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')
+          echo "$TARGET_DIR/release/act-mcp"
+          nohup $TARGET_DIR/release/act-mcp serve \
             --workspace "$PWD" \
             --bind 127.0.0.1:8080 \
             > /tmp/act-mcp.log 2>&1 &
@@ -146,7 +148,8 @@ jobs:
           cp "$record" evidence/coverage.jsonl
           # The contract's own validator, on the record the run produced: the server checked it on the
           # way in, and this says the bytes that landed are still what the contract describes.
-          ./target/release/act-mcp validate-evidence evidence/coverage.jsonl
+          TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')
+          $TARGET_DIR/release/act-mcp validate-evidence evidence/coverage.jsonl
           awk -F: '/^LF:/ { f += $2 } /^LH:/ { h += $2 } /^BF:/ { bf += $2 } /^BH:/ { bh += $2 }
             END { printf "lines %d/%d, branches %d/%d\n", h, f, bh, bf }' evidence/lcov.info
 
@@ -231,7 +234,9 @@ jobs:
       - name: Start the MCP action runner
         run: |
           set -euo pipefail
-          nohup ./target/release/act-mcp serve \
+          TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')
+          echo "$TARGET_DIR/release/act-mcp"
+          nohup $TARGET_DIR/release/act-mcp serve \
             --workspace "$PWD" \
             --bind 127.0.0.1:8080 \
             > /tmp/act-mcp.log 2>&1 &
@@ -276,7 +281,8 @@ jobs:
             | sort -rn | cut -d' ' -f2- | head -n1)
           [[ -n $record ]] || { echo "no benchmark records under .evidence/benchmark" >&2; exit 1; }
           cp "$record" evidence/benchmark.jsonl
-          ./target/release/act-mcp validate-evidence evidence/benchmark.jsonl
+          TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')
+          $TARGET_DIR/release/act-mcp validate-evidence evidence/benchmark.jsonl
           # Re-validated on this side of the boundary: if the runner kept it and a reader would not, that
           # is a contract break, and the job says so instead of uploading a file nothing can use.
           scripts/bench.sh --validate evidence/benchmark.json
