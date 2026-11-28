@@ -1,6 +1,6 @@
 {
   "$comment": "ADR-0007's normative constants: the Maintainability Index definition act-mcp/Fathom measures. This file is the machine-readable form of docs/adr/0007-maintainability-index.md. It is the ONE spelling of the numbers and the closed enumerations: scripts/mi_reference.py loads it and is the oracle scripts/validate_mi_definition.py checks the golden vectors in tests/testdata/mi/ against, and the ADR's fenced blocks are diffed against it by that same checker. Prose that disagrees with this file is a bug in the prose. Changing anything here is a semantic change to every MI number ever written: bump the analyzer version(s) named in `analyzer` in the same commit (ADR-0006 section 6.3), or the cache will serve old numbers under new keys.",
-  "definition_version": 1,
+  "definition_version": 2,
   "adr": "ADR-0007",
   "ticket": "mact-by1.3",
   "analyzer": {
@@ -12,18 +12,19 @@
     },
     "score": {
       "id": "mi.score",
-      "version": 1,
+      "version": 2,
       "input_kind": "blob_path"
     },
     "bump_rules": {
       "tokenize": "any change to a token stream, a keyword/punctuation enumeration, a decision-point rule, a statement rule, or a lexer bug fix that moves a count",
-      "score": "any change to formula, rounding, clamping, band edges, measurability thresholds or aggregation arithmetic"
+      "score": "any change to formula, rounding, clamping, band edges, measurability thresholds, the scoring unit or aggregation arithmetic",
+      "score_v2": "v2 is the scoring unit: MI is computed per function-definition block and a file's MI is the LOC-weighted mean of its blocks (section 4.1), where v1 scored the whole file as one unit. The token stream itself did not change, so `mi.tokenize` stays 1 in this document; note that the store stamps both MI analyzers with one version (ADR-0007 section 8), so a warm store re-analyses every blob in scope on this commit, which is what a change of unit needs anyway."
     }
   },
   "formula": {
     "reference": "Coleman, DeMers, Ramani & Sweet, \"Integrating software metrics into a commercial software development environment\", IEEE Software 13(5), 1996 \u2014 the original MI, scaled by the 100/171 Microsoft published with it so the score is 0-100. This is the formula ADR-0006 line 98 points here for.",
     "halstead_volume": "V = N * log2(n)",
-    "cyclomatic": "G = 1 + decision points, counted over the whole file",
+    "cyclomatic": "G = 1 + decision points, counted over the scoring unit \u2014 one function (section 4.1); a file's own whole-file G is reported alongside as a diagnostic and is not what its MI is made of",
     "raw": "MI_raw = 171 - 5.2*ln(V) - 0.23*G - 16.2*ln(LOC)",
     "scaled": "MI = clamp(MI_raw * 100 / 171, 0, 100)",
     "a": 171.0,
@@ -34,6 +35,28 @@
     "scale_denominator": 171.0,
     "clamp_min": 0.0,
     "clamp_max": 100.0
+  },
+  "scoring_unit": {
+    "unit": "function",
+    "weight": "loc",
+    "formula": "MI_file = MI_1( sum(MI_b * LOC_b) / sum(LOC_b) ), b over the blocks of one file that produced a measurement, accumulated in source order",
+    "fallback": "file",
+    "kinds": {
+      "rust": [
+        "fn"
+      ],
+      "python": [
+        "def",
+        "async def"
+      ]
+    },
+    "block_rule": "one function-like definition and its body, outermost first. A definition inside a definition belongs to the outer one and is measured once. A declaration with no body \u2014 a Rust trait method signature, `fn f(&self) -> u32;` \u2014 contributes no block, because there is nothing to weigh. Python blocks are dedented to column zero before they are measured, because indentation is syntax there and a method body arrives indented by its class.",
+    "excluded_from_mean": "a block that produces no measurement \u2014 a one-line stub with a vocabulary of one \u2014 is excluded from its file's mean and never scored 0. The never-borrow-a-number rule of section 3.5 applies inside a file, not only across files.",
+    "module_level_code": "code outside a function belongs to no block and is not weighed: a Rust `use` and `struct` preamble, a Python script's top-level statements, a class header. A file of sixty assignments and one small `def` therefore reads green on the strength of that one function, and this document says so rather than pretending otherwise. The row carries the tell: `blocks: 1` beside `loc: 61`. The file's own `V`, `G` and `LOC` are still reported whole, so the gap between the file and the part of it that was weighed is visible, and the whole-blob fallback of `fallback` above is what a file with no function at all gets instead.",
+    "accumulation_order": "source order within the file: a float mean needs an order, and this one is as pinned as path order is one level up",
+    "stored": "the file's MI, its band and `blocks`, how many blocks fed the mean. Blocks themselves are not stored: the store keys one row per commit and path (ADR-0006 section 6.3), and a per-block row would multiply that table by a hundred to cache a diagnostic. `Analyzer::blocks_of` re-derives them on demand.",
+    "why": "MI's constants were calibrated on functions. `0.23*G` is linear in a unit's decision count while `16.2*ln(LOC)` is logarithmic in its length, so scored over a whole file the second term measures how big the file is rather than how maintainable it is, and \u00a75.2's own disclosure 1 said as much without drawing the conclusion. Scored per file at this repository's own tree the bands degenerated into a file-size sort: every file of 120+ logical lines was red, 20 of 111 clamped to exactly 0.0, and the aggregate was 8.9. Scored per function at the same commit the same tree reads 56.6 with a median file of 61.4, nothing clamped, and a tail \u2014 `build_docs_site.py::render_blocks`, 126 logical lines and 47 decision points, 26.6 \u2014 that is a finding instead of an artefact of size.",
+    "revisit_when": "a language front end that cannot delimit a definition without a parse, which is the case \u00a76.3 already priced when it refused a parser; or a store that wants per-block history, which is a schema change and not a scoring one."
   },
   "precision": {
     "arithmetic": "ieee754-binary64-every-operation",
@@ -105,8 +128,8 @@
   ],
   "bands": {
     "green_min": 50.0,
-    "amber_min": 25.0,
-    "rule": "band(mi) = red if mi < 25.0, amber if mi < 50.0, green otherwise; an exact edge belongs to the better band",
+    "amber_min": 38.0,
+    "rule": "band(mi) = red if mi < 38.0, amber if mi < 50.0, green otherwise; an exact edge belongs to the better band",
     "names": [
       "green",
       "amber",
@@ -114,18 +137,19 @@
     ],
     "names_by_threshold": {
       "amber_below": 50.0,
-      "red_below": 25.0
+      "red_below": 38.0
     },
     "edge_ownership": "better band",
     "stored_in_cache": false,
     "is_config": false,
     "note": "declared here, not invented in the view layer (ticket rule). Not stored: a band change must not invalidate a cache full of numbers that did not move. Not config: two readers of one repository must not see different traffic lights for one commit, and a per-user band would make `fathom report --json` disagree between CI and a laptop for a non-measurement reason.",
-    "calibration": "the ticket suggested < 85 amber and < 65 red, and those edges cannot be used with the formula this ticket pins. They belong to the UPDATED MI, which estimates Halstead volume from LOC instead of measuring it, so it lands 60-90 for ordinary code. With a measured volume the 5.2*ln(V) term is 25-55 points instead of ~5, and the 16.2*ln(LOC) term dominates: this ADR's own hand-counted 16-statement fixture scores 55.9, and section 5.2 shows a 1000-line file scoring 0. Bands at 85/65 would call an entire real repository red, and a band that everything fails is not a signal. The edges here are placed where the formula separates the corpus: green is a file nobody needs to argue about, amber is a file worth a look, red is a file whose size and density is the finding. Section 5.2 carries the arithmetic and the line counts each edge falls at.",
-    "provenance": "the hand-counted golden vectors in tests/testdata/mi plus the extrapolation table in ADR-0007 section 5.2, both computed from the pinned formula",
-    "revisit_when": "mact-by1.7's first full-corpus run: its histogram is attached to ADR-0007 section 5 or these two numbers are amended, in one commit. Spent by mact-by1.7: the histogram is ADR-0007 section 5.3, the edges stand, and the next trigger is a second corpus of a different shape."
+    "calibration": "the edges are the two thresholds the 1996 paper published with the formula, converted to this definition's own 100/171 scale: `MI_raw < 65` was 'difficult to maintain' and `MI_raw > 85` was 'easy', and 65*100/171 = 38.0 while 85*100/171 = 49.7, which this definition rounds to the round number it already used. The ticket's `< 85 amber, < 65 red` cannot be used as *stored* numbers: they belong to the UPDATED MI, which estimates Halstead volume from LOC instead of measuring it, lands 60-90 for ordinary code, and pays ~5 points where a measured volume pays 25-55; applied to stored values they would call an entire real repository red, and a band that everything fails is not a signal. Placed against the scoring unit of section 4.1 \u2014 a function, which is the granularity the paper's own numbers were meant for \u2014 the two literature edges separate this repository's corpus into 77% green, 16% amber and 1% red blocks (section 5.3), which is a traffic light rather than a verdict. Section 5.2 carries the arithmetic and the line counts each edge falls at.",
+    "provenance": "Coleman et al. (1996) section 'Metric Interpretation', converted by this document's own scale factor, plus the hand-counted golden vectors in tests/testdata/mi and the extrapolation table in ADR-0007 section 5.2",
+    "revisit_when": "consumed twice. mact-by1.7 published the first corpus histogram (then per file) and left 50/25. The scoring-unit correction of section 4.1 put the numbers under the paper's own thresholds: the green edge was already one of them, and the red edge moves from 25.0 to 38.0 to become the other. The next trigger is a second corpus of a different shape whose block histogram places its fiftieth percentile more than a band width from this one."
   },
   "aggregation": {
     "unit": "file",
+    "unit_note": "the aggregate is over files; a file's own MI is the mean of its scoring units, which are functions \u2014 see `scoring_unit` and ADR-0007 section 4.1. `unit` here names the population the commit number is weighted over, not the thing the formula is applied to.",
     "population": "every file in scope in the commit's tree (git ls-tree -r), not only the files the commit touched",
     "weight": "loc",
     "formula": "MI_agg = MI_1( sum(MI_i * LOC_i) / sum(LOC_i) ), i over status == ok",

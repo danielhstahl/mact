@@ -101,6 +101,7 @@ the reader and the documented reader's-view of the contract cannot drift apart q
 | `crates/act-mcp/src/**` unit tests | argument shapes, argv construction, error vocabularies, extraction, the evidence writer |
 | `crates/act-mcp/tests/boot.rs` | CLI flags, the boot gates, refusing a routable bind, what gets logged |
 | `crates/act-mcp/tests/hardening.rs` | `Host`/`Origin` allowlists, body cap, redaction, run-dir cap |
+| `crates/act-mcp/tests/workflow_guards.rs` | the repository's own `.github/workflows` files: they parse with the runtime parser, no job gates itself on a context `jobs.<id>.if` does not receive, and a job that starts the runner refuses the nested case first |
 | `crates/act-mcp/tests/protocol.rs` | the smallest useful protocol surface: a stock client can list tools, `/mcp` is the only route |
 | **`crates/act-mcp/tests/protocol_conformance.rs`** | **the full MCP Streamable HTTP conformance matrix for both revisions — see §3** |
 | `crates/act-mcp/tests/tool_schema_parity.rs` | advertised `inputSchema`/`outputSchema` == `schema/tool-contract.schema.json` |
@@ -415,6 +416,17 @@ waste. Ask the machine first; it costs two seconds:
 scripts/smoke-real-act.sh --prereq-only   # the argv check, plus the probe the server itself uses
 ```
 
+The probe half is the server's rule reproduced rather than a `docker` ping, because the two are not
+the same call and the difference is the whole diagnosis. The server runs the client under a scrubbed
+environment (PATH, HOME, `LC_ALL=C`), kills it at `DEFAULT_CONTAINER_PROBE_TIMEOUT`, and dials the
+runtime default unless `--container-daemon-socket` pinned one; a failure is then cached for
+`DEFAULT_PROBE_TTL`. So a daemon reached through `$DOCKER_HOST`, or one that answers in four seconds,
+is *unreachable* to the server while answering happily in the shell that ran the last step — and the
+refusal, `no container runtime answered (timeout)`, says neither. The pre-flight runs it both ways and
+prints the elapsed time against the deadline, so the two shapes come apart: `plain` fine and the
+probe failing is the scrub or the endpoint, and a probe that passes at three-quarters of the deadline
+is a machine that will refuse under load.
+
 If it says "nothing answered `docker info …`", stop: no flag, stub or amount of patience
 makes a real capture on this host. Either do it where a runtime exists — for this repository,
 that means the nightly's `ubuntu-24.04` runner: dispatch
@@ -559,6 +571,7 @@ temporary-root substitutions happen before the compare, so a golden never pins w
 |---|---|---|
 | the sample evidence tree | built into `$TMPDIR` (`/tmp/act-mcp-evidence-demo`) from `crates/act-mcp/tests/e2e/testdata/expected/` | `scripts/sample_evidence.py [-o OUT] [-q]` — nothing to re-record; it is derived at run time from the e2e goldens (§5) |
 | ADR-0008's 16 vectors | `crates/act-mcp/tests/testdata/metrics/{fixtures,expected}` | the fixture trees are hand-built; the `expected/` side is the **oracle's** output: `python3 scripts/metric_model_reference.py --vectors --write`, then `--vectors --diff` to confirm, then `scripts/validate_metric_model.py` |
+| ADR-0007's normative blocks (constants, bands) | `schema/mi-definition.json`, `docs/adr/0007-maintainability-index.md` | **generated, not copied**: `scripts/sync_mi_adr_blocks.py` rewrites the ADR's two fenced blocks from the JSON and `--check` fails where they differ — a constants block that has drifted from the constants is worse than none |
 | ADR-0007's MI vectors and aggregates | `crates/act-mcp/tests/testdata/mi/{src,vectors,aggregates}` | **by hand, and deliberately so**: the token tables are counted off the fixture file. `scripts/mi_reference.py --vector … --explain` re-derives every number in them; `scripts/validate_mi_definition.py` re-derives them again in 40-digit `decimal` and refuses a vector within `1e-6` of a rounding or band boundary |
 | a screen's drawn output | inline raw strings in `tests/tui_*.rs` | `FATHOM_SNAPSHOT_UPDATE=1`, above |
 | `fathom report`'s envelope | `crates/fathom/tests/golden/*.json` | `FATHOM_UPDATE_GOLDEN=1`, above |

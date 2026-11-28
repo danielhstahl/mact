@@ -678,10 +678,14 @@ def selftest(defn: Definition) -> int:
     case("top clamp is unreachable", measure(defn, Counts(1, 2, 1, 2, {}, 1)).mi <= 99.9, True)
     huge = measure(defn, Counts(9_000_000, 900_000, 9_000_000, 900_000, {"if": 40_000}, 400_000))
     case("enormous file clamps to 0", huge.mi, 0.0)
-    case("band edge 50.0 is green", band_of(defn, 50.0), "green")
-    case("band edge 49.9 is amber", band_of(defn, 49.9), "amber")
-    case("band edge 25.0 is amber", band_of(defn, 25.0), "amber")
-    case("band edge 24.9 is red", band_of(defn, 24.9), "red")
+    # Placed at the *declared* edges rather than at numbers, because an exact edge belongs to the better
+    # band and a self-test that hard-codes the numbers is a second copy of the edges.
+    amber_edge = float(defn.bands["names_by_threshold"]["amber_below"])
+    red_edge = float(defn.bands["names_by_threshold"]["red_below"])
+    case("the amber edge is green", band_of(defn, amber_edge), "green")
+    case("one tick under it is amber", band_of(defn, round_storage(defn, amber_edge - 0.1)), "amber")
+    case("the red edge is amber", band_of(defn, red_edge), "amber")
+    case("one tick under that is red", band_of(defn, round_storage(defn, red_edge - 0.1)), "red")
 
     # ln(0) is undefined: no number, and never 0
     zero_loc = Counts(12, 6, 20, 11, {"if": 1}, 0)
@@ -711,9 +715,12 @@ def selftest(defn: Definition) -> int:
     case("empty population is not 0", "aggregate" in empty and empty["aggregate"] is None, True)
 
     # delta and the watchlist transitions
+    # Both parents sit above the red edge but below green, so the transition is a *transition*: big.rs
+    # falls into the watchlist by getting worse and old.rs leaves it by going away. Numbers here are
+    # relative to the edges for the same reason the band cases above are.
     parent = [
-        {"path": "src/big.rs", "status": "ok", "loc": 900, "mi": 30.0},
-        {"path": "src/old.rs", "status": "ok", "loc": 40, "mi": 20.0},
+        {"path": "src/big.rs", "status": "ok", "loc": 900, "mi": red_edge + 5.0},
+        {"path": "src/old.rs", "status": "ok", "loc": 40, "mi": red_edge - 1.0},
     ]
     row = commit_row(defn, files, parent)
     case("delta vs parent", row["delta_vs_parent"], round_storage(defn, agg["aggregate"] - commit_row(defn, parent, None)["aggregate"]))

@@ -20,26 +20,69 @@ on:
 # YAML file is a claim; this is the check.
 #
 # Why the producer jobs are in other files (`coverage.yml`, `benchmarks.yml`) and hand-triggered: a job
-# that starts a runner must never be a job a runner runs. act-mcp refuses that case itself with
-# `act_in_container` (ADR-0006 §10.1), and the `!env.ACT` guard below means that if someone does ask the
-# runner for one of these jobs, it exits without building anything instead of failing after four minutes
-# of container work — the same belt `dogfood-local.yml` uses for its own fathom steps.
+# that starts a runner must never be a job a runner runs, and nothing downstream of this file will notice
+# if one is. `act-mcp` has no nested-run refusal — its act-related failure vocabulary is `act_missing`,
+# `act_spawn_failed` and `act_crashed` (schema/tool-contract.schema.json), and a job that starts a second
+# runner inside the first is none of those; it is a job that works, slowly, inside a container that has no
+# docker socket, which is why it used to fail after four minutes of build rather than in four seconds. So
+# the `Refuse a nested runner` step at the top of each job is the whole guard, not a belt on top of one.
+#
+# It is a **step** and not a job-level `if`, which is a GitHub rule rather than a style choice: the `env`
+# context is not among the contexts `jobs.<id>.if` receives (`github`, `needs`, `vars`, `inputs`), so
+# `if: ${{ !env.ACT }}` — what this file used to carry — does not error. It reads `env` as empty, `!''` is
+# true, and the job runs every time with the guard silently doing nothing. Step `run` blocks and step-level
+# `if`s do see `env`. A gate job feeding a `needs` output was the other candidate and is worse here: the
+# runner invokes act with `--job <id>` (`crates/act-mcp/src/runner/argv.rs`), so under act the gate job
+# would not reliably run at all. `crates/act-mcp/tests/workflow_guards.rs` fails the build if either shape
+# comes back, and if this shape is ever copied, copy the step.
 #
 # No toolchain action and no pnpm here: rustup reads `rust-toolchain.toml`, which is the pin (the same
 # reasoning `ci.yml` gives), and the MCP client in this path is `curl` and `python3`, not an inspector.
 jobs:
   coverage-run:
     name: Coverage through the runner
-    if: ${{ !env.ACT }}
     runs-on: ubuntu-24.04
     env:
       # Keep in step with `nightly-real-act.yml`'s `act_version`: one repository, one act, and a bump
       # in both files at once is a reviewable change rather than two silent versions.
       ACT_VERSION: '0.2.97'
+      # NOT a build-speed measure. act-mcp passes `--bind` (ADR-0003 §7.2), which is what makes the
+      # container's workspace path *equal* the host's (F8) — so the producer job this job asks for is
+      # building in this checkout, through the same directory, with its own `CARGO_BUILD_TARGET`
+      # (`coverage.yml` names a triple) and its own `actions/cache` restore and `actions/checkout` clean
+      # over `target/`. A release binary left in `./target` is not shared with the run, it is *inside* the
+      # run, and it gets replaced: the step that needs it later finds `.fingerprint`, `build` and `deps`
+      # where its own binary was. Outside the workspace the producer cannot reach it, and every step here
+      # still finds it. Same reason `dogfood-local.yml` pins its target dir; docs/ci.md §1's SIGBUS note
+      # is the second one.
+      CARGO_TARGET_DIR: /var/tmp/mcp-evidence-target
     steps:
+      # act sets `ACT` inside every container it starts, so a non-empty `ACT` means this job is already
+      # inside the runner it is about to start. It comes first, before `toolchain`, `Install act` and the
+      # release build, because the thing being refused is four minutes of work that cannot succeed; the
+      # file's header says why it is a step and not a job-level `if`.
+      - name: Refuse a nested runner
+        run: |
+          set -euo pipefail
+          if [[ -n "${ACT:-}" ]]; then
+            echo "::error::this job starts the MCP action runner, and the runner is what is running it (ACT=${ACT})"
+            echo "ask the runner for the producer job instead — coverage.yml#coverage, benchmarks.yml#benchmark —"
+            echo "or run this workflow on GitHub, where ACT is unset"
+            exit 1
+          fi
+          echo "ACT is unset: this is GitHub, and starting a runner here is the point of the job"
+
       - uses: actions/checkout@v4
       - name: toolchain
         run: rustup show
+
+      - name: Act config
+        run: |
+          mkdir -p ~/.config/act
+          cat > ~/.config/act/actrc <<'EOF'
+          -P ubuntu-latest=catthehacker/ubuntu:act-latest
+          -P ubuntu-24.04=catthehacker/ubuntu:act-latest
+          EOF
 
       # Pinned and checksum-verified, exactly the way the nightly does it: this job runs workflows in
       # containers on a runner that has a docker daemon, and the version of act decides which log fields
@@ -58,7 +101,31 @@ jobs:
           act --version
 
       - name: Build
-        run: cargo build --release --bin act-mcp --bin fathom
+        run: |
+          set -euo pipefail
+          cargo build --release --bin act-mcp --bin fathom
+          # Here, not in the step that needs them forty minutes from now: this is the last moment the two
+          # binaries are certainly still there, because the act run has not started yet.
+          ls -l "${CARGO_TARGET_DIR:?}/release/act-mcp" "${CARGO_TARGET_DIR:?}/release/fathom"
+      # The runner gates every run on a `docker info` it runs itself — scrubbed environment, a
+      # three-second deadline, no `DOCKER_*` passed through — and its refusal says only `no container
+      # runtime answered`. That is a stricter question than "is docker installed on this runner", and
+      # the two come apart in exactly the three ways this prints: the scrub, the deadline (measured
+      # against the real constant, read out of the source rather than copied), and the endpoint it
+      # dials. Here rather than in the refusal because the refusal cannot say any of it, and here
+      # rather than after the fact because a run that cannot start still costs an image pull to find
+      # out. --prereq-only is the script's own two-second mode; it wants the binary, so it follows the
+      # build.
+      - name: Ask the runtime the way the runner will
+        # Deliberately not gating. A diagnostic that can fail a job which would otherwise pass is a
+        # second gate nobody designed, and if the runtime really is unreachable the run below says so
+        # with the contract's own error code. What this step owes the reader is the numbers.
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')
+          scripts/smoke-real-act.sh --prereq-only --bin "$TARGET_DIR/release/act-mcp"
+
 
       # `serve` binds loopback and has no authentication, so there is nothing else to configure: no
       # `--allow-host`, no non-loopback bind. act resolves it from PATH. There is no tool allowlist in
@@ -66,7 +133,9 @@ jobs:
       - name: Start the MCP action runner
         run: |
           set -euo pipefail
-          nohup ./target/release/act-mcp serve \
+          TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')
+          echo "$TARGET_DIR/release/act-mcp"
+          nohup $TARGET_DIR/release/act-mcp serve \
             --workspace "$PWD" \
             --bind 127.0.0.1:8080 \
             > /tmp/act-mcp.log 2>&1 &
@@ -77,6 +146,14 @@ jobs:
             fi
             sleep 2
           done
+          # If it never came up, say so now and show why: `serve` refuses to boot rather than serve a
+          # workspace it cannot check (no `act` on PATH, a routable bind, an unreadable workspace), and
+          # without this the next step spends its whole endpoint budget talking to a dead port.
+          if ! scripts/mcp_call.sh -u http://127.0.0.1:8080/mcp list_tasks '{}' >/dev/null 2>&1; then
+            echo "::error::act-mcp never answered list_tasks; its log is below"
+            cat /tmp/act-mcp.log || true
+            exit 1
+          fi
           mkdir -p "$HOME/.config/act-mcp"
           printf 'http://127.0.0.1:8080/mcp\n' >"$HOME/.config/act-mcp/endpoint"
 
@@ -113,7 +190,9 @@ jobs:
           cp "$record" evidence/coverage.jsonl
           # The contract's own validator, on the record the run produced: the server checked it on the
           # way in, and this says the bytes that landed are still what the contract describes.
-          ./target/release/act-mcp validate-evidence evidence/coverage.jsonl
+          TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')
+          ls -la $TARGET_DIR/release/
+          $TARGET_DIR/release/act-mcp validate-evidence evidence/coverage.jsonl
           awk -F: '/^LF:/ { f += $2 } /^LH:/ { h += $2 } /^BF:/ { bf += $2 } /^BH:/ { bh += $2 }
             END { printf "lines %d/%d, branches %d/%d\n", h, f, bh, bf }' evidence/lcov.info
 
@@ -130,17 +209,17 @@ jobs:
       - name: Fathom report
         if: always()
         continue-on-error: true
-        run: ./target/release/fathom report .
+        run: "${CARGO_TARGET_DIR:-target}/release/fathom report ."
 
       - name: Fathom report (tsv)
         if: always()
         continue-on-error: true
-        run: ./target/release/fathom report . --format tsv
+        run: "${CARGO_TARGET_DIR:-target}/release/fathom report . --format tsv"
 
       - name: Fathom doctor
         if: always()
         continue-on-error: true
-        run: ./target/release/fathom doctor .
+        run: "${CARGO_TARGET_DIR:-target}/release/fathom doctor ."
 
       - name: Show the runner's log
         if: failure()
@@ -148,14 +227,46 @@ jobs:
 
   benchmark-run:
     name: Benchmark through the runner
-    if: ${{ !env.ACT }}
     runs-on: ubuntu-24.04
     env:
       ACT_VERSION: '0.2.97'
+      # NOT a build-speed measure. act-mcp passes `--bind` (ADR-0003 §7.2), which is what makes the
+      # container's workspace path *equal* the host's (F8) — so the producer job this job asks for is
+      # building in this checkout, through the same directory, with its own `CARGO_BUILD_TARGET`
+      # (`coverage.yml` names a triple) and its own `actions/cache` restore and `actions/checkout` clean
+      # over `target/`. A release binary left in `./target` is not shared with the run, it is *inside* the
+      # run, and it gets replaced: the step that needs it later finds `.fingerprint`, `build` and `deps`
+      # where its own binary was. Outside the workspace the producer cannot reach it, and every step here
+      # still finds it. Same reason `dogfood-local.yml` pins its target dir; docs/ci.md §1's SIGBUS note
+      # is the second one.
+      CARGO_TARGET_DIR: /var/tmp/mcp-evidence-target
     steps:
+      # act sets `ACT` inside every container it starts, so a non-empty `ACT` means this job is already
+      # inside the runner it is about to start. It comes first, before `toolchain`, `Install act` and the
+      # release build, because the thing being refused is four minutes of work that cannot succeed; the
+      # file's header says why it is a step and not a job-level `if`.
+      - name: Refuse a nested runner
+        run: |
+          set -euo pipefail
+          if [[ -n "${ACT:-}" ]]; then
+            echo "::error::this job starts the MCP action runner, and the runner is what is running it (ACT=${ACT})"
+            echo "ask the runner for the producer job instead — coverage.yml#coverage, benchmarks.yml#benchmark —"
+            echo "or run this workflow on GitHub, where ACT is unset"
+            exit 1
+          fi
+          echo "ACT is unset: this is GitHub, and starting a runner here is the point of the job"
+
       - uses: actions/checkout@v4
       - name: toolchain
         run: rustup show
+
+      - name: Act config
+        run: |
+          mkdir -p ~/.config/act
+          cat > ~/.config/act/actrc <<'EOF'
+          -P ubuntu-latest=catthehacker/ubuntu:act-latest
+          -P ubuntu-24.04=catthehacker/ubuntu:act-latest
+          EOF
 
       - name: Install act ${{ env.ACT_VERSION }}
         run: |
@@ -171,12 +282,38 @@ jobs:
           act --version
 
       - name: Build
-        run: cargo build --release --bin act-mcp --bin fathom
+        run: |
+          set -euo pipefail
+          cargo build --release --bin act-mcp --bin fathom
+          # Here, not in the step that needs them forty minutes from now: this is the last moment the two
+          # binaries are certainly still there, because the act run has not started yet.
+          ls -l "${CARGO_TARGET_DIR:?}/release/act-mcp" "${CARGO_TARGET_DIR:?}/release/fathom"
+      # The runner gates every run on a `docker info` it runs itself — scrubbed environment, a
+      # three-second deadline, no `DOCKER_*` passed through — and its refusal says only `no container
+      # runtime answered`. That is a stricter question than "is docker installed on this runner", and
+      # the two come apart in exactly the three ways this prints: the scrub, the deadline (measured
+      # against the real constant, read out of the source rather than copied), and the endpoint it
+      # dials. Here rather than in the refusal because the refusal cannot say any of it, and here
+      # rather than after the fact because a run that cannot start still costs an image pull to find
+      # out. --prereq-only is the script's own two-second mode; it wants the binary, so it follows the
+      # build.
+      - name: Ask the runtime the way the runner will
+        # Deliberately not gating. A diagnostic that can fail a job which would otherwise pass is a
+        # second gate nobody designed, and if the runtime really is unreachable the run below says so
+        # with the contract's own error code. What this step owes the reader is the numbers.
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')
+          scripts/smoke-real-act.sh --prereq-only --bin "$TARGET_DIR/release/act-mcp"
+
 
       - name: Start the MCP action runner
         run: |
           set -euo pipefail
-          nohup ./target/release/act-mcp serve \
+          TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')
+          echo "$TARGET_DIR/release/act-mcp"
+          nohup $TARGET_DIR/release/act-mcp serve \
             --workspace "$PWD" \
             --bind 127.0.0.1:8080 \
             > /tmp/act-mcp.log 2>&1 &
@@ -187,6 +324,14 @@ jobs:
             fi
             sleep 2
           done
+          # If it never came up, say so now and show why: `serve` refuses to boot rather than serve a
+          # workspace it cannot check (no `act` on PATH, a routable bind, an unreadable workspace), and
+          # without this the next step spends its whole endpoint budget talking to a dead port.
+          if ! scripts/mcp_call.sh -u http://127.0.0.1:8080/mcp list_tasks '{}' >/dev/null 2>&1; then
+            echo "::error::act-mcp never answered list_tasks; its log is below"
+            cat /tmp/act-mcp.log || true
+            exit 1
+          fi
           mkdir -p "$HOME/.config/act-mcp"
           printf 'http://127.0.0.1:8080/mcp\n' >"$HOME/.config/act-mcp/endpoint"
 
@@ -221,7 +366,9 @@ jobs:
             | sort -rn | cut -d' ' -f2- | head -n1)
           [[ -n $record ]] || { echo "no benchmark records under .evidence/benchmark" >&2; exit 1; }
           cp "$record" evidence/benchmark.jsonl
-          ./target/release/act-mcp validate-evidence evidence/benchmark.jsonl
+          TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')
+          ls -la $TARGET_DIR/release/
+          $TARGET_DIR/release/act-mcp validate-evidence evidence/benchmark.jsonl
           # Re-validated on this side of the boundary: if the runner kept it and a reader would not, that
           # is a contract break, and the job says so instead of uploading a file nothing can use.
           scripts/bench.sh --validate evidence/benchmark.json
@@ -239,17 +386,17 @@ jobs:
       - name: Fathom report
         if: always()
         continue-on-error: true
-        run: ./target/release/fathom report .
+        run: "${CARGO_TARGET_DIR:-target}/release/fathom report ."
 
       - name: Fathom report (tsv)
         if: always()
         continue-on-error: true
-        run: ./target/release/fathom report . --format tsv
+        run: "${CARGO_TARGET_DIR:-target}/release/fathom report . --format tsv"
 
       - name: Fathom doctor
         if: always()
         continue-on-error: true
-        run: ./target/release/fathom doctor .
+        run: "${CARGO_TARGET_DIR:-target}/release/fathom doctor ."
 
       - name: Show the runner's log
         if: failure()

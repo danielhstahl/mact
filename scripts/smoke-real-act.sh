@@ -308,6 +308,69 @@ check_tool() {
     return 1
 }
 
+
+# ─────────────────────────────────────────────────────────────────────────────────────────
+# THE CONTAINER RUNTIME, PROBED THE WAY THE SERVER PROBES IT
+#
+# The plain `docker info` in a shell and the server's `docker info` are not the same call, and the
+# difference is the difference between "docker works on this machine" and "act-mcp will run a job":
+#
+#   * environment  the server runs the client under `env_clear()` plus PATH, HOME and LC_ALL=C
+#                  (crates/act-mcp/src/workspace/environment.rs). DOCKER_HOST, DOCKER_CONTEXT,
+#                  DOCKER_CERT_PATH and friends are NOT passed, so a daemon reached through them is
+#                  unreachable to the server while answering fine in this shell.
+#   * deadline     the server kills the call at DEFAULT_CONTAINER_PROBE_TIMEOUT. A daemon that
+#                  answers in four seconds is, to the server, no daemon at all — and it caches that
+#                  verdict for DEFAULT_PROBE_TTL, so one slow moment fails the calls after it too.
+#   * endpoint     the server dials the runtime default unless --container-daemon-socket pinned one.
+#
+# So all three are reproduced here, and the timing is printed against the deadline: a call that
+# succeeds in 2.9s of a 3s budget is a finding, not a pass.
+# ─────────────────────────────────────────────────────────────────────────────────────────
+
+# The deadline read out of the source, so a bump there is a bump here on the same commit rather than
+# a script that quietly stops describing the code.
+probe_deadline_secs() {
+    local secs
+    secs=$(sed -n \
+        's/^pub const DEFAULT_CONTAINER_PROBE_TIMEOUT: Duration = Duration::from_secs(\([0-9]\+\)).*/\1/p' \
+        "$repo_root/crates/act-mcp/src/workspace/environment.rs" 2>/dev/null | head -n1 || true)
+    [[ -n $secs ]] || secs=3
+    printf '%s' "$secs"
+}
+
+now_ms() {
+    local t
+    t=$(date +%s%N 2>/dev/null)
+    case $t in
+        *N*) python3 -c 'import time;print(int(time.time()*1000))' ;;
+        *) printf '%s' $((t / 1000000)) ;;
+    esac
+}
+
+# The server's probe, run from here. Reports through globals rather than stdout, because the exit
+# status and the elapsed time both matter and only one of them fits in a return value: PROBE_OUT is
+# the first line the client printed, PROBE_RC its status (124 meaning it outlived the deadline, which
+# is `timeout`'s own verdict and the difference between "nothing is there" and "something is slow"),
+# and PROBE_MS how long it took against probe_deadline_secs.
+probe_as_server() {
+    local deadline=$1 start end
+    PROBE_OUT="" PROBE_RC=0 PROBE_MS=0
+    start=$(now_ms)
+    if command -v timeout >/dev/null 2>&1; then
+        PROBE_OUT=$(env -i PATH="$PATH" HOME="${HOME:-/}" LC_ALL=C \
+            timeout -k 1 "$deadline" docker info --format '{{.ServerVersion}}' 2>&1) \
+            && PROBE_RC=0 || PROBE_RC=$?
+    else
+        note "no timeout(1) here, so the server's deadline could not be enforced in this check"
+        PROBE_OUT=$(env -i PATH="$PATH" HOME="${HOME:-/}" LC_ALL=C \
+            docker info --format '{{.ServerVersion}}' 2>&1) && PROBE_RC=0 || PROBE_RC=$?
+    fi
+    end=$(now_ms)
+    PROBE_MS=$((end - start))
+    PROBE_OUT=$(printf '%s' "$PROBE_OUT" | head -n1)
+}
+
 step_prerequisites() {
     local ok=0
     [[ -x "$BIN" ]] || { note "no act-mcp binary; build one (cargo build) or pass --bin PATH"; return 1; }
@@ -350,17 +413,43 @@ step_prerequisites() {
     # error that looks like a failing workflow.
     check_argv || return 1
 
-    # The runtime, probed the way the server probes it (ADR-0001 §5.3): `docker info` through
-    # the client on PATH. If this fails every run_workflow would answer docker_unreachable,
-    # so say it here rather than twenty seconds and one image pull later.
-    local runtime_version
-    runtime_version=$(docker info --format '{{.ServerVersion}}' 2>/dev/null || true)
-    if [[ -z "$runtime_version" ]]; then
-        detail "nothing answered \`docker info --format '{{.ServerVersion}}'\` (DOCKER_HOST=${DOCKER_HOST:-unset})"
-        note "start docker, or a podman socket at the docker path — or use --stub to exercise this script without one"
+    # The runtime, probed the way the server probes it (ADR-0001 §5.3) — see the block above this
+    # function: same scrub, same deadline, same endpoint. If this fails, every run_workflow answers
+    # docker_unreachable, so say it here rather than one image pull and twenty seconds later. The
+    # plain call is still made, because the *difference* between the two is the diagnosis: a refusal
+    # that reads "no container runtime" next to a docker that plainly works is almost always one of
+    # the three differences, and this says which.
+    local plain_version deadline
+    deadline=$(probe_deadline_secs)
+    plain_version=$(docker info --format '{{.ServerVersion}}' 2>/dev/null || true)
+    probe_as_server "$deadline"
+    local budget_ms=$((deadline * 1000))
+    detail "the server's probe: ${PROBE_MS}ms against its ${deadline}s deadline (a failure is then cached 30s)"
+    if ((PROBE_RC == 0)); then
+        detail "container runtime → docker $PROBE_OUT, through the server's own probe"
+        if ((PROBE_MS * 5 > budget_ms * 3)); then
+            note "that is over three-quarters of the server's deadline; a slower moment and every run"
+            note "in the next 30s (DEFAULT_PROBE_TTL) is refused as docker_unreachable"
+        fi
+    else
+        detail "the server's probe failed (exit $PROBE_RC, ${PROBE_MS}ms): $PROBE_OUT"
+        if [[ -n "$plain_version" ]]; then
+            local seen
+            seen=$(env | grep '^DOCKER' | cut -c1-70 | tr '\n' ' ' || true)
+            note "docker answers in this shell ($plain_version) but NOT the way the server asks, which is"
+            note "the one difference that makes a working docker look like a broken one. In the order they"
+            note "are usually the answer:"
+            note "  1. DOCKER_* set here: ${seen:-none}. The server runs the client with PATH, HOME and"
+            note "     LC_ALL only, so it cannot see them; --container-daemon-socket pins the endpoint"
+            note "     into the server itself instead."
+            note "  2. the deadline: exit 124 means it ran out of ${deadline}s, not that nothing is there."
+            note "  3. the endpoint: the server dials the runtime default unless one was pinned."
+        else
+            detail "nothing answered \`docker info --format '{{.ServerVersion}}'\` plainly either (DOCKER_HOST=${DOCKER_HOST:-unset})"
+            note "start docker, or a podman socket at the docker path — or use --stub to exercise this script without one"
+        fi
         return 1
     fi
-    detail "container runtime → docker $runtime_version (the server's own probe)"
     if [[ $MODE != stub ]]; then
         detail "images present locally: $(docker images -q 2>/dev/null | sort -u | wc -l | tr -d ' ') — act pulls on first use"
         local rc_file

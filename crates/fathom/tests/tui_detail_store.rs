@@ -566,12 +566,15 @@ fn the_hotspots_pane_is_the_cached_analysis_with_its_inputs_and_its_stamp() {
     );
 
     let footer = view.footer(Pane::Hotspots, &palette());
-    for want in [
-        "analyzers mi.aggregate v1,mi.score v1",
-        "aggregate",
-        "4 file(s)",
-        "tree ",
-    ] {
+    // The stamp line is the analyzer identity as the store spells it, and its versions come from the
+    // definition rather than a literal here: a bump must move the footer, not break this test.
+    let stamp = fathom::mi::Definition::embedded().stamp();
+    let stamp_line = format!(
+        "analyzers mi.aggregate v{v},mi.score v{v}",
+        v = stamp.version
+    );
+    assert_eq!(stamp.score, "mi.score", "the footer names the scorer's id");
+    for want in [stamp_line.as_str(), "aggregate", "4 file(s)", "tree "] {
         assert!(footer.contains(want), "footer is missing {want}: {footer}");
     }
     assert!(

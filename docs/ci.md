@@ -100,7 +100,10 @@ that needs a container daemon belongs behind `#[ignore]` with the reason in its
    `scripts/validate_mi_definition.py`,
    `scripts/validate_metric_model.py` and
    `scripts/validate_fathom_docs.py` — the eight
-   ADR↔contract checkers docs/testing.md calls CI's: ADR-0001's tool contract, ADR-0004's run
+   ADR↔contract checkers docs/testing.md calls CI's (plus
+   `scripts/sync_mi_adr_blocks.py --check`, which is not a checker of the same kind but a generator: it
+   rewrites ADR-0007's two normative blocks from `schema/mi-definition.json` and fails the build where the
+   committed ADR has drifted, so the schema and the ADR cannot land in separate commits): ADR-0001's tool contract, ADR-0004's run
    lifecycle, ADR-0003's isolation protocol, ADR-0005's crate layout, ADR-0006's `.fathom`
    workspace layout, ADR-0007's Maintainability Index, ADR-0008's per-commit metric model, each checked against the
    artifact that implements it (a `schema/*.json` for the first three, `Cargo.toml`/`Cargo.lock` for
@@ -217,12 +220,15 @@ Three files, split on purpose:
 | `benchmarks.yml` | the runner (`act -j benchmark`), or a human | run `scripts/bench.sh`, which writes `$ACTMCP_EVIDENCE_OUT/benchmark.json` |
 | `mcp-evidence.yml` | GitHub, on every push and pull request | start `act-mcp serve`, ask it over MCP to run each producer, assert what came back |
 
-* **Why the producers are separate files.** A job that starts a runner must not be a job a runner runs.
-  `run_workflow` refuses the nested case itself with `act_in_container` (ADR-0006 §10.1), and the
-  `if: ${{ !env.ACT }}` guard on each driver job means that if someone does ask for one, it exits in
-  seconds instead of after a release build. The producers are `workflow_dispatch`-only for the mirror
-  image of the same reason: GitHub never runs them on a push, so the act run is the only run, and the
-  evidence it writes is the evidence the commit gets.
+* **Why the producers are separate files.** A job that starts a runner must not be a job a runner runs,
+  and nothing in `act-mcp` refuses that nested case — there is no `act_in_container` refusal in the contract
+  or the code, so a driver job asked for by the runner would simply *run*, inside a container with no docker
+  socket, and fail after a release build instead of after a toolchain install. Each driver job in
+  `mcp-evidence.yml` therefore opens with a `Refuse a nested runner` step that exits 1 when act's own `ACT`
+  marker is set, and `crates/act-mcp/tests/workflow_guards.rs` fails the build if a job ever starts the
+  server without one. The producers are `workflow_dispatch`-only for the mirror image of the same reason:
+  GitHub never runs them on a push, so the act run is the only run, and the evidence it writes is the
+  evidence the commit gets.
 * **Why the job names are not free-form.** ADR-0002 §3.1 derives a job's category from the *whole words*
   in the job id and its `name:` — `coverage`, and `benchmark` in the singular. So `name: Coverage` and
   `name: Benchmark` are load-bearing: rename the benchmark job to `Benchmarks` and the plural is not the

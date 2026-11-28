@@ -578,6 +578,10 @@ step_schema() {
     #    named in a page and absent from the binary. Hence the fathom build here and not just act-mcp:
     #    the checker reads the binary, not clap's source.
     echo "--- ADR <-> schema checkers ($py)"
+    # The ADR's two normative blocks (constants, bands) are generated from schema/mi-definition.json by
+    # scripts/sync_mi_adr_blocks.py, because a constants block that has drifted from the constants is
+    # worse than none. --check refuses the drift, so the schema and the ADR cannot land apart.
+    "$py" scripts/sync_mi_adr_blocks.py --check
     "$py" scripts/validate_tool_contract.py
     "$py" scripts/validate_run_lifecycle.py
     "$py" scripts/validate_isolation.py

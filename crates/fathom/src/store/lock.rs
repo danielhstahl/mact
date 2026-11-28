@@ -215,11 +215,46 @@ pub enum LockError {
     Busy(String),
 }
 
+/// When the last run that ended published its finish, or `None` when nothing has finished here — the
+/// single spelling of "what does `run.json` say", shared by [`live_body`], [`acquire`] and `doctor`.
+///
+/// The ordering that makes a body comparable to it is the writer's: `build()` publishes `run.json`
+/// and only then drops the lock, so any body written by a *later* run has a `started_utc` after this
+/// value, and a body at or before it belongs to the run that published it.
+#[must_use]
+pub fn last_finished_utc(root: &Path) -> Option<i64> {
+    super::Runbook::read(&root.join(super::INDEX_DIR)).map(|book| book.last.finished_utc)
+}
+
+/// The same, but only for a run that ended *cleanly*: a run that published `run.json` while reporting
+/// itself `interrupted` published a report of a death, not proof that it finished.
+fn clean_finish_utc(root: &Path) -> Option<i64> {
+    let book = super::Runbook::read(&root.join(super::INDEX_DIR))?;
+    (!book.last.interrupted && book.last.status == "ok").then_some(book.last.finished_utc)
+}
+
+/// Whether a leftover body is evidence that a holder *died*, as opposed to the trace a run leaves
+/// behind when it ends (§10.3).
+///
+/// This needs both halves because neither alone is the answer. `fathom.lock` is never unlinked
+/// (§9 L3) and releasing it does not clear the body, so every cache root ever indexed carries the body
+/// of its last run and that run's pid is dead by the time anyone reads it: [`LockBody::names_dead_local_pid`]
+/// on its own calls every successful index a death, which is a warning that fires once per commit and
+/// teaches nobody anything. And [`LockBody::names_finished_run`] on its own cannot clear a body from a
+/// run that is *still going* on a host this process cannot see.
+///
+/// A run that published `run.json` saying `interrupted` is a death, not a finish: the next index *is*
+/// completing what it left, which is what the warning says.
+fn names_a_death(root: &Path, body: &LockBody) -> bool {
+    body.names_dead_local_pid() && !body.names_finished_run(clean_finish_utc(root))
+}
+
 /// Take the lock for `root`, fail-fast (§9 L1–L2).
 ///
 /// `stale` is the body of a holder that had already died: taking the lock *is* breaking its stale
 /// lock, because `flock` went with the process, and saying so is the difference between an
-/// unexplained rebuild and an explained one.
+/// unexplained rebuild and an explained one. The body of a run that *finished* is not stale and is
+/// not reported; `names_a_death` below is the test, and it is the reason this reads `run.json`.
 ///
 /// # Errors
 ///
@@ -296,7 +331,7 @@ pub fn acquire(root: &Path) -> Result<(CacheLock, Option<LockBody>), LockError> 
         file,
     };
     held.set_progress(Phase::Walk, 0);
-    Ok((held, previous.filter(LockBody::names_dead_local_pid)))
+    Ok((held, previous.filter(|body| names_a_death(root, body))))
 }
 
 /// Read the body without taking the lock — what `fathom index --status` and `doctor` do (§9 L4:
@@ -316,8 +351,14 @@ fn read_body_at(path: &Path) -> Option<LockBody> {
 /// unlinked (§9 L3), so every cache root ever indexed carries a body forever, and a reader that took it
 /// at face value would claim an index in progress for the rest of the session. This is §10.3's own
 /// definition of a stale body used the other way round: ours, local, and no longer running is history.
-/// A body from another host cannot be probed from here and stays live, which is the conservative answer
-/// on a shared mount and the one `acquire` gives when it reports a dead holder.
+///
+/// A body from another host cannot be probed with `kill(2)` from here, and used to stay live forever on
+/// that account — which is the shape a shared mount has after a container indexed the tree and exited.
+/// `run.json` is the other half of the answer and the only one available across hosts: a body no newer
+/// than the last published finish belongs to the run that published it, so it is history too. Same
+/// caveat as [`LockBody::names_finished_run`]: the comparison is at second granularity, so a run that
+/// starts in the second an earlier one finished is retired a few seconds early — the cost is a missing
+/// note, never a phantom "indexing" line.
 ///
 /// A present-tense `flock` probe would answer more exactly and is deliberately not used: a reader that
 /// briefly takes `LOCK_SH` to look can turn a writer's `index_busy` refusal true, and a reader must
@@ -325,7 +366,10 @@ fn read_body_at(path: &Path) -> Option<LockBody> {
 #[must_use]
 pub fn live_body(root: &Path) -> Option<LockBody> {
     let body = read_body(root)?;
-    (!body.names_dead_local_pid()).then_some(body)
+    if body.names_dead_local_pid() || body.names_finished_run(last_finished_utc(root)) {
+        return None;
+    }
+    Some(body)
 }
 
 /// Whether a pid exists. `kill(pid, 0)` is the probe: `ESRCH` means no such process, `EPERM` means it
@@ -462,6 +506,145 @@ mod tests {
             !body.names_finished_run(None),
             "no run.json is not evidence of a finish; stay loud"
         );
+    }
+
+    #[test]
+    fn a_run_that_finished_is_not_reported_as_a_death() {
+        // The state a *successful* index leaves behind, which is the case the writer used to get wrong:
+        // the lock file survives (§9 L3), its pid has exited, and `run.json` was published before the
+        // lock was dropped. `names_dead_local_pid` alone reads that as a corpse, so every re-index
+        // warned about the index before it — a warning that fires once per commit and means nothing.
+        let dir = tempfile::tempdir().expect("scratch");
+        plant(
+            dir.path(),
+            &LockBody {
+                pid: u32::MAX - 1,
+                started_utc: 1_700_000_000,
+                ..LockBody::now(Phase::Prune, 114)
+            },
+        );
+        publish_finish(dir.path(), 1_700_000_000);
+        let (_held, stale) = acquire(dir.path()).expect("the root is free");
+        assert!(
+            stale.is_none(),
+            "a body no newer than the published finish is that run's own trace: {stale:?}"
+        );
+    }
+
+    #[test]
+    fn a_holder_that_died_before_publishing_is_still_reported() {
+        // The warning has to stay for the case it was written for: `kill -9`, an OOM, a terminal closed
+        // mid-walk. Those never reach the run.json publish, so the last finish predates the body — or
+        // there is no finish at all.
+        let dir = tempfile::tempdir().expect("scratch");
+        let dead = LockBody {
+            pid: u32::MAX - 1,
+            started_utc: 1_700_000_000,
+            ..LockBody::now(Phase::Walk, 3)
+        };
+        plant(dir.path(), &dead);
+        publish_finish(dir.path(), 1_699_999_940);
+        let stale = {
+            let (_held, stale) = acquire(dir.path()).expect("the root is free");
+            stale
+        };
+        assert_eq!(
+            stale.as_ref().map(|body| (body.pid, body.phase.as_str())),
+            Some((u32::MAX - 1, "walk")),
+            "the last finish predates this body, so this run died"
+        );
+
+        // And with nothing published ever: absence is not evidence of a finish. Stay loud.
+        std::fs::remove_dir_all(dir.path().join(super::super::INDEX_DIR)).expect("drop run.json");
+        plant(dir.path(), &dead);
+        assert!(
+            acquire(dir.path()).expect("still free").1.is_some(),
+            "no run.json is not a finish"
+        );
+    }
+
+    #[test]
+    fn a_run_that_published_its_own_interruption_is_still_a_death() {
+        // An injected publish failure gets as far as `run.json` and writes `interrupted: true` into it
+        // (§10.2). That is a report of a death, not evidence that the run finished, so the next writer
+        // still says so: the run it is completing is real.
+        let dir = tempfile::tempdir().expect("scratch");
+        plant(
+            dir.path(),
+            &LockBody {
+                pid: u32::MAX - 1,
+                started_utc: 1_700_000_000,
+                ..LockBody::now(Phase::Rows, 2)
+            },
+        );
+        let index = dir.path().join(super::super::INDEX_DIR);
+        std::fs::create_dir_all(&index).expect("index dir");
+        let book = super::super::Runbook {
+            last: super::super::Run {
+                finished_utc: 1_700_000_000,
+                interrupted: true,
+                status: "error".to_owned(),
+                ..Default::default()
+            },
+            previous: super::super::Run::default(),
+        };
+        std::fs::write(
+            index.join(super::super::RUN_FILE),
+            serde_json::to_vec(&book).expect("a runbook serialises"),
+        )
+        .expect("publish run.json");
+        let (_held, stale) = acquire(dir.path()).expect("the root is free");
+        assert!(
+            stale.is_some(),
+            "a run that said it was interrupted did not finish: {stale:?}"
+        );
+    }
+
+    #[test]
+    fn live_body_lets_a_finished_run_on_another_host_go() {
+        // The shared-mount case that `names_dead_local_pid` cannot answer: the pid is somewhere this
+        // process cannot `kill(2)`. Before `run.json` was consulted here, a container's finished run
+        // kept a reader answering "an index is in progress" for as long as the mount was shared.
+        let dir = tempfile::tempdir().expect("scratch");
+        let foreign = LockBody {
+            pid: 63040,
+            hostname: "somewhere-else.local".to_owned(),
+            started_utc: 1_700_000_000,
+            ..LockBody::now(Phase::Rows, 40)
+        };
+        plant(dir.path(), &foreign);
+        assert!(
+            live_body(dir.path()).is_some(),
+            "with no finish published since, it may still be running"
+        );
+        publish_finish(dir.path(), 1_700_000_030);
+        assert!(
+            live_body(dir.path()).is_none(),
+            "once that run reports itself finished it is history, not a live index"
+        );
+    }
+
+    /// Write a body as if some other process had published it.
+    fn plant(root: &Path, body: &LockBody) {
+        std::fs::write(root.join(LOCK_FILE_NAME), body.to_text().as_bytes()).expect("plant a body");
+    }
+
+    /// Publish `index/run.json` with the given finish, the way a run that ended does.
+    fn publish_finish(root: &Path, finished_utc: i64) {
+        let index = root.join(super::super::INDEX_DIR);
+        std::fs::create_dir_all(&index).expect("index dir");
+        let book = super::super::Runbook {
+            last: super::super::Run {
+                finished_utc,
+                ..Default::default()
+            },
+            previous: super::super::Run::default(),
+        };
+        std::fs::write(
+            index.join(super::super::RUN_FILE),
+            serde_json::to_vec(&book).expect("a runbook serialises"),
+        )
+        .expect("publish run.json");
     }
 
     #[test]

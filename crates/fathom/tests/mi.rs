@@ -454,10 +454,10 @@ fn the_aggregation_rules_hold_as_properties() {
     let red = definition.sub_threshold_below();
     let rows = [
         ("a.rs", 10u64, 10.0f64),
-        ("b.rs", 20, 24.9),
-        ("c.rs", 30, 25.0),
-        ("d.rs", 40, 49.9),
-        ("e.rs", 50, 50.0),
+        ("b.rs", 20, red - 0.1),
+        ("c.rs", 30, red),
+        ("d.rs", 40, amber - 0.1),
+        ("e.rs", 50, amber),
         ("f.rs", 60, 99.0),
     ];
     let files: Vec<FileMetrics> = rows
@@ -468,8 +468,10 @@ fn the_aggregation_rules_hold_as_properties() {
         .collect();
     let row = mi::aggregate(&definition, &files);
 
-    // The watchlist is exactly the set below the red edge, and amber is the set below the amber edge:
-    // edges belong to the better band, so 25.0 is amber and 50.0 is green.
+    // The watchlist is exactly the set below the red edge, and amber is the set below the amber edge.
+    // The rows are placed at the *declared* edges rather than at numbers, because an exact edge
+    // belongs to the better band: `red` itself is amber, and `amber` itself is green. Hard-coding the
+    // numbers here would have been a second copy of the edges, which is what §5.1 refuses.
     assert_eq!(
         row.sub_threshold_set,
         vec!["a.rs".to_owned(), "b.rs".to_owned()]
@@ -481,7 +483,9 @@ fn the_aggregation_rules_hold_as_properties() {
             "b.rs".to_owned(),
             "c.rs".to_owned(),
             "d.rs".to_owned()
-        ]
+        ],
+        "`amber_paths` is every path below the amber edge, the red ones included: the view greys the\n\
+         whole set and does not re-derive a band"
     );
     assert!(red < amber);
     // Hotspots are worst-first, at most the declared N, and tie-broken by LOC descending then path.
@@ -737,8 +741,11 @@ fn repository_sources(groups: &[(&str, &[&str])]) -> Vec<(String, Vec<u8>)> {
 }
 
 /// The sanity run the ticket asks for: this repository's own source, which is not a golden because
-/// the tree moves, and which prints the histogram ADR-0007 §5's `revisit_when` asks the first
-/// corpus run to publish. Run with `cargo test -- --nocapture` to read it.
+/// the tree moves, and which prints the histograms ADR-0007 §5.3 publishes. Run with
+/// `cargo test -- --nocapture` to read them. What the assertions pin changed when §4.1 made the
+/// scoring unit a function: the shape this test used to assert — small files outscoring big ones — was
+/// the *bug* wearing a property's clothes, and a corpus that clamps to 0.0 at the bottom of the scale
+/// is the failure it is here to notice.
 #[test]
 fn the_repositorys_own_source_measures_plausibly() {
     let analyzer = Analyzer::default();
@@ -805,14 +812,77 @@ fn the_repositorys_own_source_measures_plausibly() {
         row.unanalysed_paths, 0,
         "nothing here should be unanalysable"
     );
-    assert!(
-        measured.iter().any(|file| file.mi.unwrap_or(0.0) >= 60.0),
-        "nothing in the tree reaches green, which would mean the scale is broken, not the code"
-    );
 
-    // The one shape assertion that survives the granularity caveat: MI falls as a file grows, so the
-    // small files in a real tree must outscore the big ones. If they do not, the lexer is counting
-    // something it should not.
+    // Everything the corrected scoring unit is asserted on. Each of these was false, or was a
+    // tautology, under per-file scoring.
+    let clamped: Vec<&str> = measured
+        .iter()
+        .filter(|file| file.mi.unwrap_or(1.0) == 0.0)
+        .map(|file| file.path.as_str())
+        .collect();
+    assert!(
+        clamped.is_empty(),
+        "{} files sit on the floor of the scale, which is what scoring a whole file as one unit did:\n{}",
+        clamped.len(),
+        clamped.join("\n")
+    );
+    let by_block = measured
+        .iter()
+        .filter(|file| file.unit == Some(fathom::mi::Unit::Block))
+        .count();
+    assert!(
+        by_block * 10 >= measured.len() * 9,
+        "only {by_block} of {} measurable files are scored by function blocks; the splitter is\n\
+         failing to find definitions it should find",
+        measured.len()
+    );
+    // Every block-scored file's MI must be exactly the mean of the blocks `blocks_of` reports, which
+    // is the difference between a documented rule and a number nobody can re-derive.
+    for file in measured
+        .iter()
+        .filter(|f| f.unit == Some(fathom::mi::Unit::Block))
+    {
+        let bytes = sources
+            .iter()
+            .find(|(path, _)| path == &file.path)
+            .map(|(_, bytes)| bytes.as_slice())
+            .expect("the corpus came from these sources");
+        let blocks = analyzer
+            .blocks_of(&file.path, bytes)
+            .expect("a measurable file has blocks");
+        // The same fold `score_units` does: a block with no MI is out of the mean *and* out of its
+        // weight — it is a block that was not measured, not a block that measured zero.
+        let mut weighted = 0_f64;
+        let mut weight = 0_f64;
+        for block in &blocks {
+            let (Some(mi), Some(loc)) = (block.mi, block.loc) else {
+                continue;
+            };
+            weighted += mi * definition.unit_weight(loc);
+            weight += definition.unit_weight(loc);
+        }
+        assert_eq!(
+            file.mi,
+            Some(fathom::mi::round_storage(&definition, weighted / weight)),
+            "{}: the file's MI is not the mean of its own blocks",
+            file.path
+        );
+        for block in &blocks {
+            assert!(
+                block.mi.is_none() || (0.0..=100.0).contains(&block.mi.unwrap()),
+                "{}::{} has MI {:?}",
+                file.path,
+                block.name,
+                block.mi
+            );
+        }
+    }
+
+    // The one size relation worth keeping, stated as the weak thing it is: a tree of small, plain
+    // functions must outscore a tree of big ones. Under §4.1 the relation is a tendency and not a
+    // law — a 40-line file of one dense function is worse than a 400-line file of forty plain ones —
+    // so it is printed rather than asserted, and the assertion below is the one that actually means
+    // something: the unit must span the bands, or the bands describe nothing.
     let mean = |mi_values: &[f64]| {
         fathom::mi::round_storage(
             &definition,
@@ -831,14 +901,46 @@ fn the_repositorys_own_source_measures_plausibly() {
         .collect();
     let (small, large) = (mean(&smalls), mean(&larges));
     assert!(
-        small > large,
-        "files under 60 lines mean {}, files of 300+ mean {}",
-        small,
-        large
+        (30.0..=90.0).contains(&aggregate),
+        "a whole repository at {aggregate} reads as a verdict rather than a measurement: the scale\n\
+         has drifted, check the unit rule of §4.1 before blaming the code"
     );
 
-    // The histogram ADR-0007 §5 asks the first corpus run to publish, on stdout for whoever runs the
-    // suite with --nocapture. It is also the evidence behind the `revisit_when` note this work adds.
+    // Every scoring unit in the tree, which is the population §5.3 publishes and §5.1's edges are
+    // calibrated against.
+    let mut units: Vec<f64> = Vec::new();
+    for file in &files {
+        let bytes = sources
+            .iter()
+            .find(|(path, _)| path == &file.path)
+            .map(|(_, bytes)| bytes.as_slice())
+            .unwrap_or_default();
+        if let Some(blocks) = analyzer.blocks_of(&file.path, bytes) {
+            units.extend(blocks.iter().filter_map(|block| block.mi));
+        }
+    }
+    units.sort_by(|a, b| a.partial_cmp(b).expect("an MI is ordered"));
+    let percentile = |q: f64| units[((units.len() as f64 - 1.0) * q).round() as usize];
+    assert!(
+        units.len() > 1000,
+        "only {} scoring units across the corpus?",
+        units.len()
+    );
+    let units_below = |edge: f64| units.iter().filter(|mi| **mi < edge).count();
+    assert!(
+        units_below(definition.bands.red_below) > 0,
+        "no scoring unit in the corpus is red: the red band describes nothing, so §5.1 is stale"
+    );
+    assert!(
+        units
+            .iter()
+            .filter(|mi| **mi >= definition.bands.amber_below)
+            .count()
+            > units.len() / 2,
+        "most of the corpus is not green: the scale has moved under the edges"
+    );
+
+    // The histograms ADR-0007 §5.3 publishes, on stdout for whoever runs the suite with --nocapture.
     let tally = mi::band_tally(&files);
     let mut deciles: BTreeMap<usize, u64> = BTreeMap::new();
     for file in &measured {
@@ -868,6 +970,23 @@ fn the_repositorys_own_source_measures_plausibly() {
         smalls.len(),
         large,
         larges.len()
+    );
+    println!(
+        "  scoring units: {} blocks, MI p05 {} p25 {} p50 {} p75 {} p95 {}; bands green {} / amber {} / red {}",
+        units.len(),
+        percentile(0.05),
+        percentile(0.25),
+        percentile(0.50),
+        percentile(0.75),
+        percentile(0.95),
+        units.len() - units.iter().filter(|mi| **mi < definition.bands.amber_below).count(),
+        units_below(definition.bands.amber_below) - units_below(definition.bands.red_below),
+        units_below(definition.bands.red_below)
+    );
+    println!(
+        "  {} of {} measurable files are scored by blocks, the rest as a whole file",
+        by_block,
+        measured.len()
     );
     println!(
         "  clamped to 0.0: {} files",
@@ -905,11 +1024,245 @@ fn the_repositorys_own_source_measures_plausibly() {
             "#".repeat((*count as usize * 40 / usize::try_from(width).unwrap_or(1)).max(1))
         );
     }
-    println!("  worst hotspots:");
+    println!("  worst hotspots (files, by MI):");
     for hotspot in &row.hotspots {
         println!(
             "    {:>6} loc {:>5}  {}",
             hotspot.mi, hotspot.loc, hotspot.path
         );
     }
+    // The ten worst *scoring units*, which is what ADR-0007 §5.3 publishes as the table of findings:
+    // a hotspot list names files, and the thing a reader can act on is a function.
+    let mut worst: Vec<(f64, u64, String, String)> = Vec::new();
+    for file in &measured {
+        let bytes = sources
+            .iter()
+            .find(|(path, _)| path == &file.path)
+            .map(|(_, bytes)| bytes.as_slice())
+            .unwrap_or_default();
+        if let Some(blocks) = analyzer.blocks_of(&file.path, bytes) {
+            for block in blocks {
+                if let (Some(mi), Some(loc)) = (block.mi, block.loc) {
+                    worst.push((mi, loc, file.path.clone(), block.name));
+                }
+            }
+        }
+    }
+    worst.sort_by(|a, b| a.0.partial_cmp(&b.0).expect("an MI is ordered"));
+    println!("  densest scoring units:");
+    for (mi, loc, path, name) in worst.into_iter().take(10) {
+        println!("    {mi:>6} loc {loc:>5}  {path}::{name}");
+    }
+}
+
+/// The scoring unit is a function, and a file's MI is the LOC-weighted mean of its blocks
+/// (ADR-0007 §4.1). This is the shape that scored 0.0 — the bottom of the scale, a pile rather than a
+/// tail — when the whole file was the unit: one plain accessor next to one dense function, which is
+/// what most of a real module looks like.
+#[test]
+fn a_file_is_the_mean_of_its_function_blocks() {
+    let analyzer = Analyzer::default();
+    let definition = Definition::embedded();
+    let source = concat!(
+        "impl Gate {\n",
+        "    pub fn name(&self) -> &str {\n",
+        "        self.name.as_str()\n",
+        "    }\n",
+        "}\n",
+        "\n",
+        "fn classify(raw: &str, flags: u8) -> Kind {\n",
+        "    let mut kind = Kind::Other;\n",
+        "    if raw.is_empty() {\n",
+        "        return Kind::Empty;\n",
+        "    }\n",
+        "    for line in raw.lines() {\n",
+        "        if line.starts_with('#') {\n",
+        "            continue;\n",
+        "        } else if line.starts_with(\"//\") {\n",
+        "            continue;\n",
+        "        }\n",
+        "        if flags & 1 != 0 && line.len() > 3 {\n",
+        "            kind = Kind::Header;\n",
+        "        } else if flags & 2 != 0 || line.is_ascii() {\n",
+        "            kind = Kind::Body;\n",
+        "        }\n",
+        "        match kind {\n",
+        "            Kind::Header => break,\n",
+        "            Kind::Body => {}\n",
+        "            Kind::Empty => return Kind::Other,\n",
+        "            Kind::Other => {}\n",
+        "        }\n",
+        "    }\n",
+        "    kind\n",
+        "}\n",
+    );
+    let blocks = analyzer
+        .blocks_of("src/two.rs", source.as_bytes())
+        .expect("rust has a front end");
+    let names: Vec<&str> = blocks.iter().map(|block| block.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["name", "classify"],
+        "one block per function, in source order"
+    );
+    let metrics = analyzer.analyse("src/two.rs", source.as_bytes());
+    assert_eq!(metrics.status, Status::Ok);
+    assert_eq!(metrics.unit, Some(fathom::mi::Unit::Block));
+    assert_eq!(metrics.blocks, Some(2));
+
+    let mut weighted = 0_f64;
+    let mut weight = 0_f64;
+    for block in &blocks {
+        let (mi, loc) = (
+            block.mi.expect("a real function measures"),
+            block.loc.unwrap(),
+        );
+        weighted += mi * definition.unit_weight(loc);
+        weight += definition.unit_weight(loc);
+    }
+    let mean = fathom::mi::round_storage(&definition, weighted / weight);
+    assert_eq!(
+        metrics.mi,
+        Some(mean),
+        "the file's MI is its blocks' mean, to the stored digit"
+    );
+
+    // The old rule, run beside the new one on the same bytes: scoring the file as one unit was not a
+    // little off, it was a different metric — the dense function's decision count and the file's size
+    // both charged against the whole file.
+    let (_, whole) = analyzer
+        .measure_blob("src/two.rs", source.as_bytes())
+        .expect("the same blob measures as a whole");
+    assert!(
+        whole.mi.unwrap_or(100.0) < mean,
+        "whole-file {:?} vs per-function {mean}: scoring the file as one unit is a different and\
+         lower metric, because it charges the dense function's decisions against the whole file's\n\
+         length",
+        whole.mi
+    );
+
+    // The file's own `loc`, `V` and `G` stay whole-file facts: they are what the reader inspects and
+    // what §4.3 weights the mean by. Only `mi` changed provenance.
+    assert_eq!(
+        metrics.loc, whole.loc,
+        "`loc` is still the file's logical LOC"
+    );
+    assert_eq!(metrics.halstead_volume, whole.volume);
+    assert_eq!(metrics.cyclomatic, whole.cyclomatic);
+}
+
+/// A block that does not measure is excluded from its file's mean rather than scored 0 — §3.5's
+/// never-borrow-a-number rule, one level down. A one-line `fn` with nothing in it is the case: its
+/// vocabulary is one operator, so `ln(n)` has no answer.
+#[test]
+fn an_unmeasurable_block_is_out_of_the_mean_and_not_in_it_as_zero() {
+    let analyzer = Analyzer::default();
+    let source = "fn stub() {}\n\nfn real(a: u8) -> u8 {\n    a + 1\n}\n";
+    let blocks = analyzer
+        .blocks_of("src/stub.rs", source.as_bytes())
+        .expect("blocks");
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(
+        blocks[0].status,
+        Status::Vacuous,
+        "`fn stub() {{}}` has no vocabulary to take a log of"
+    );
+    assert_eq!(blocks[0].mi, None, "and so no MI, and never 0.0");
+    let metrics = analyzer.analyse("src/stub.rs", source.as_bytes());
+    assert_eq!(metrics.blocks, Some(1), "one block fed the mean, not two");
+    assert_eq!(
+        metrics.mi, blocks[1].mi,
+        "and the mean of one block is that block"
+    );
+}
+
+/// A blob that declares no function is its own scoring unit, and says which rule produced its number
+/// rather than pretending every number comes from the same place.
+#[test]
+fn a_blob_with_no_function_is_its_own_unit() {
+    let analyzer = Analyzer::default();
+    let types = "pub struct Point {\n    pub x: u32,\n    pub y: u32,\n}\n\npub enum Kind {\n    A,\n    B,\n    C,\n}\n";
+    let metrics = analyzer.analyse("src/types.rs", types.as_bytes());
+    assert_eq!(
+        metrics.status,
+        Status::Ok,
+        "a module of types is still measurable"
+    );
+    assert_eq!(metrics.unit, Some(fathom::mi::Unit::File));
+    assert_eq!(
+        metrics.blocks, None,
+        "no blocks fed a mean, so there is no count to report"
+    );
+    let (_, whole) = analyzer
+        .measure_blob("src/types.rs", types.as_bytes())
+        .expect("measures");
+    assert_eq!(
+        metrics.mi, whole.mi,
+        "and the number is the whole-blob one, not a mean of nothing"
+    );
+
+    let script =
+        "import sys\n\ntotal = 0\nfor arg in sys.argv[1:]:\n    total += len(arg)\nprint(total)\n";
+    let metrics = analyzer.analyse("scripts/count.py", script.as_bytes());
+    assert_eq!(
+        metrics.unit,
+        Some(fathom::mi::Unit::File),
+        "a Python script of top-level statements has no function to score"
+    );
+    assert!(metrics.mi.is_some(), "and it is a measurement, not a gap");
+}
+
+/// The unit rule must not put `cargo fmt` on a trend line: reformatting a function moves its logical
+/// lines not at all, and moves its block boundaries not at all, so the file's MI must not move.
+#[test]
+fn a_reformatted_file_scores_identically_under_the_unit_rule() {
+    let analyzer = Analyzer::default();
+    let tight =
+        "fn f(a: u8) -> u8 {\n    if a > 1 { a } else { 0 }\n}\nfn g() -> bool {\n    true\n}\n";
+    let loose = "fn f(a: u8) -> u8 {\n\n    if a > 1 {\n        a\n    } else {\n        0\n    }\n\n}\n\nfn g() -> bool {\n    // a comment costs nothing either\n    true\n}\n";
+    let before = analyzer.analyse("src/f.rs", tight.as_bytes());
+    let after = analyzer.analyse("src/f.rs", loose.as_bytes());
+    assert_eq!(
+        before.mi, after.mi,
+        "the same two functions, wrapped differently: {:?} vs {:?}",
+        before.mi, after.mi
+    );
+    assert_eq!(before.blocks, after.blocks);
+}
+
+/// The disclosure §4.1 has to carry: a file's MI is the mean of its *functions*, so code that is not
+/// inside one is not weighed. A Python script that is mostly top-level assignments with one small `def`
+/// is the shape this rule cannot see, and the honest answer is that the row says so — one block beside
+/// sixty statements, which is a tell on the screen — rather than that the rule notices.
+#[test]
+fn module_level_code_is_not_weighed_and_the_row_says_so() {
+    let analyzer = Analyzer::default();
+    let definition = Definition::embedded();
+    let mut script = String::new();
+    for index in 0..60 {
+        script.push_str(&format!("SETTING_{index} = {index}\n"));
+    }
+    script.push_str("def go() -> int:\n    return 1\n");
+    let metrics = analyzer.analyse("scripts/mostly_data.py", script.as_bytes());
+    assert_eq!(metrics.status, Status::Ok);
+    assert_eq!(metrics.unit, Some(fathom::mi::Unit::Block));
+    assert_eq!(metrics.blocks, Some(1), "one `def` in six dozen statements");
+    let blocks = analyzer
+        .blocks_of("scripts/mostly_data.py", script.as_bytes())
+        .expect("blocks");
+    let weighed = blocks[0].loc.expect("the `def` measured");
+    assert!(
+        metrics.loc.unwrap() > 3 * weighed,
+        "the file is far bigger than the code that was weighed: {:?} logical lines vs {weighed}",
+        metrics.loc
+    );
+    assert_eq!(
+        metrics.mi, blocks[0].mi,
+        "and the file's number *is* that one function's"
+    );
+    assert!(
+        metrics.mi.unwrap_or(0.0) >= definition.bands.amber_below,
+        "it reads green, which is the disclosure and not a surprise: {:?}",
+        metrics.mi
+    );
 }

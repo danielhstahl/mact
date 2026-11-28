@@ -644,6 +644,34 @@ fn a_killed_index_leaves_a_usable_store_that_the_next_run_completes() {
 }
 
 #[test]
+fn a_finished_index_is_not_a_dead_holder_for_the_next_one() {
+    let scratch = tempfile::tempdir().expect("scratch");
+    let fixture = Fixture::new(scratch.path(), "finished-then-warm");
+    touch(&fixture.repo, "one", &["src/a.py"]);
+    fixture.indexer().run().expect("the cold index");
+
+    // What a successful run leaves behind: the lock file and its body (§9 L3), a pid that has since
+    // exited, and a published finish. Read as a death, that is a warning printed on every re-index —
+    // which is what the TUI did on every commit, since the warm run that HEAD movement triggers is
+    // precisely the run that reads the body of the run before it.
+    assert!(
+        lock::read_body(&fixture.cache).is_some(),
+        "the body survives the run that wrote it"
+    );
+    let (held, stale) = lock::acquire(&fixture.cache).expect("the root is free again");
+    assert!(
+        stale.is_none(),
+        "nothing died: a finished run left a trace: {stale:?}"
+    );
+    drop(held);
+
+    // The warm run itself — the one that used to open with the warning — completes normally.
+    touch(&fixture.repo, "two", &["src/b.py"]);
+    let warm = fixture.indexer().run().expect("the warm index");
+    assert_eq!(warm.commits_added, 1, "and it did the new commit");
+}
+
+#[test]
 fn a_second_fathom_on_the_same_cache_root_is_refused_without_waiting() {
     let scratch = tempfile::tempdir().expect("scratch");
     let fixture = Fixture::new(scratch.path(), "busy");
