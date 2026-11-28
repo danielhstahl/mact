@@ -11,7 +11,25 @@ jobs:
   integration-test-with-workflow:
     name: Run integration tests against MCP
     runs-on: ubuntu-latest
+    env:
+      # Not a speed measure. act-mcp passes `--bind`, which makes the container's workspace path equal
+      # this checkout's (ADR-0003 F8), so the workflow this job asks the runner to run builds *in*
+      # ./target and replaces what this job built there. Build where the run cannot reach, and resolve
+      # the binary from the same place every time. See `mcp-evidence.yml` and `crates/act-mcp/tests/
+      # workflow_guards.rs` R3.
+      CARGO_TARGET_DIR: /var/tmp/integration-target
     steps:
+      # act sets ACT inside every container it starts, so a non-empty ACT means the runner is already
+      # running this job — and this job starts a runner. Refused before the build, not after it.
+      - name: Refuse a nested runner
+        run: |
+          set -euo pipefail
+          if [[ -n "${ACT:-}" ]]; then
+            echo "::error::this job starts the MCP action runner, and the runner is what is running it (ACT=${ACT})"
+            exit 1
+          fi
+          echo "ACT is unset: starting a runner here is the point of the job"
+
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
@@ -27,8 +45,15 @@ jobs:
 
       - name: Start mcp
         run: |
+          set -euo pipefail
           cargo build --release -p act-mcp --bin act-mcp
-          ./target/release/act-mcp serve --act-binary $(pwd)/bin/act > /tmp/act-mcp.log 2>&1 & # nohup
+          # `act` from the install step above, resolved rather than assumed: act-mcp refuses to boot
+          # without it, and a boot refusal looks like a port that never opens. There is no ./bin/act in
+          # this repository, which is what the `--act-binary $(pwd)/bin/act` this replaced could only
+          # ever have been.
+          command -v act >&2
+          ls -l "$CARGO_TARGET_DIR/release/act-mcp"
+          "$CARGO_TARGET_DIR/release/act-mcp" serve --workspace "$PWD" > /tmp/act-mcp.log 2>&1 & # nohup
 
       - name: Wait for port 8080
         run: |

@@ -46,6 +46,16 @@ jobs:
       # Keep in step with `nightly-real-act.yml`'s `act_version`: one repository, one act, and a bump
       # in both files at once is a reviewable change rather than two silent versions.
       ACT_VERSION: '0.2.97'
+      # NOT a build-speed measure. act-mcp passes `--bind` (ADR-0003 §7.2), which is what makes the
+      # container's workspace path *equal* the host's (F8) — so the producer job this job asks for is
+      # building in this checkout, through the same directory, with its own `CARGO_BUILD_TARGET`
+      # (`coverage.yml` names a triple) and its own `actions/cache` restore and `actions/checkout` clean
+      # over `target/`. A release binary left in `./target` is not shared with the run, it is *inside* the
+      # run, and it gets replaced: the step that needs it later finds `.fingerprint`, `build` and `deps`
+      # where its own binary was. Outside the workspace the producer cannot reach it, and every step here
+      # still finds it. Same reason `dogfood-local.yml` pins its target dir; docs/ci.md §1's SIGBUS note
+      # is the second one.
+      CARGO_TARGET_DIR: /var/tmp/mcp-evidence-target
     steps:
       # act sets `ACT` inside every container it starts, so a non-empty `ACT` means this job is already
       # inside the runner it is about to start. It comes first, before `toolchain`, `Install act` and the
@@ -91,7 +101,12 @@ jobs:
           act --version
 
       - name: Build
-        run: cargo build --release --bin act-mcp --bin fathom
+        run: |
+          set -euo pipefail
+          cargo build --release --bin act-mcp --bin fathom
+          # Here, not in the step that needs them forty minutes from now: this is the last moment the two
+          # binaries are certainly still there, because the act run has not started yet.
+          ls -l "${CARGO_TARGET_DIR:?}/release/act-mcp" "${CARGO_TARGET_DIR:?}/release/fathom"
       # The runner gates every run on a `docker info` it runs itself — scrubbed environment, a
       # three-second deadline, no `DOCKER_*` passed through — and its refusal says only `no container
       # runtime answered`. That is a stricter question than "is docker installed on this runner", and
@@ -194,17 +209,17 @@ jobs:
       - name: Fathom report
         if: always()
         continue-on-error: true
-        run: ./target/release/fathom report .
+        run: "${CARGO_TARGET_DIR:-target}/release/fathom report ."
 
       - name: Fathom report (tsv)
         if: always()
         continue-on-error: true
-        run: ./target/release/fathom report . --format tsv
+        run: "${CARGO_TARGET_DIR:-target}/release/fathom report . --format tsv"
 
       - name: Fathom doctor
         if: always()
         continue-on-error: true
-        run: ./target/release/fathom doctor .
+        run: "${CARGO_TARGET_DIR:-target}/release/fathom doctor ."
 
       - name: Show the runner's log
         if: failure()
@@ -215,6 +230,16 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       ACT_VERSION: '0.2.97'
+      # NOT a build-speed measure. act-mcp passes `--bind` (ADR-0003 §7.2), which is what makes the
+      # container's workspace path *equal* the host's (F8) — so the producer job this job asks for is
+      # building in this checkout, through the same directory, with its own `CARGO_BUILD_TARGET`
+      # (`coverage.yml` names a triple) and its own `actions/cache` restore and `actions/checkout` clean
+      # over `target/`. A release binary left in `./target` is not shared with the run, it is *inside* the
+      # run, and it gets replaced: the step that needs it later finds `.fingerprint`, `build` and `deps`
+      # where its own binary was. Outside the workspace the producer cannot reach it, and every step here
+      # still finds it. Same reason `dogfood-local.yml` pins its target dir; docs/ci.md §1's SIGBUS note
+      # is the second one.
+      CARGO_TARGET_DIR: /var/tmp/mcp-evidence-target
     steps:
       # act sets `ACT` inside every container it starts, so a non-empty `ACT` means this job is already
       # inside the runner it is about to start. It comes first, before `toolchain`, `Install act` and the
@@ -257,7 +282,12 @@ jobs:
           act --version
 
       - name: Build
-        run: cargo build --release --bin act-mcp --bin fathom
+        run: |
+          set -euo pipefail
+          cargo build --release --bin act-mcp --bin fathom
+          # Here, not in the step that needs them forty minutes from now: this is the last moment the two
+          # binaries are certainly still there, because the act run has not started yet.
+          ls -l "${CARGO_TARGET_DIR:?}/release/act-mcp" "${CARGO_TARGET_DIR:?}/release/fathom"
       # The runner gates every run on a `docker info` it runs itself — scrubbed environment, a
       # three-second deadline, no `DOCKER_*` passed through — and its refusal says only `no container
       # runtime answered`. That is a stricter question than "is docker installed on this runner", and
@@ -356,17 +386,17 @@ jobs:
       - name: Fathom report
         if: always()
         continue-on-error: true
-        run: ./target/release/fathom report .
+        run: "${CARGO_TARGET_DIR:-target}/release/fathom report ."
 
       - name: Fathom report (tsv)
         if: always()
         continue-on-error: true
-        run: ./target/release/fathom report . --format tsv
+        run: "${CARGO_TARGET_DIR:-target}/release/fathom report . --format tsv"
 
       - name: Fathom doctor
         if: always()
         continue-on-error: true
-        run: ./target/release/fathom doctor .
+        run: "${CARGO_TARGET_DIR:-target}/release/fathom doctor ."
 
       - name: Show the runner's log
         if: failure()

@@ -16,8 +16,17 @@
 //!   failure vocabulary is `act_missing`, `act_spawn_failed`, `act_crashed`), so a driver job the runner
 //!   asks for would run, fail with no docker socket, and cost a build to say so. A third driver job written
 //!   without the refusal would nest quietly; this says no.
+//! * **R3** — every job that starts the runner must build **outside the checkout**. act-mcp passes
+//!   `--bind` (ADR-0003 §7.2), whose whole point is that the container's workspace path *equals* the
+//!   host's (F8), so the producer job being asked for runs against this same directory: it cleans and
+//!   cache-restores `target/` and builds into it with its own `CARGO_BUILD_TARGET`. Anything this job
+//!   built there is not shared with the run, it is *inside* the run, and it gets replaced — which is how
+//!   `mcp-evidence` came to report a missing `act-mcp` while showing `.fingerprint`, `build` and `deps`
+//!   in the directory its binary had been in. `CARGO_TARGET_DIR` pinned outside the workspace is the
+//!   fix, and a step that hardcodes `./target/` is the same bug in the other direction: wrong the
+//!   moment the pin exists.
 //!
-//! Both rules are also run against a broken fixture, so neither can pass by matching nothing.
+//! All three rules are also run against a broken fixture, so none can pass by matching nothing.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -52,14 +61,31 @@ fn jobs(text: &str) -> Vec<Job> {
     let mut inside_jobs = false;
     for (index, line) in text.lines().enumerate() {
         let trimmed = line.trim_end();
+        // A blank line is not a boundary. A workflow body is full of them — between steps, and inside
+        // every `run: |` block — and treating one as the end of `jobs:` silently truncated every job
+        // to the lines before its first blank, which made both rules below vacuous on the real files
+        // while still passing on the fixtures, where nothing is blank. That is the failure mode of a
+        // line scanner nobody checks against the file it is for.
+        if trimmed.trim().is_empty() {
+            if let Some(job) = current.as_mut() {
+                job.body.push('\n');
+            }
+            continue;
+        }
         if !inside_jobs {
             inside_jobs = trimmed == "jobs:";
             continue;
         }
         let indent = trimmed.len() - trimmed.trim_start().len();
         if indent <= 2 {
-            if indent < 2 || trimmed.trim_start().starts_with('#') || !trimmed.contains(':') {
-                // Anything at or above the jobs key that is not another job key ends the block.
+            let is_job_key =
+                indent == 2 && trimmed.contains(':') && !trimmed.trim_start().starts_with('#');
+            if !is_job_key {
+                // A comment at the job indent belongs to whatever job follows it; anything else at or
+                // above the jobs key — a top-level key, a comment at column 0 — ends the block.
+                if indent == 2 && trimmed.trim_start().starts_with('#') {
+                    continue;
+                }
                 inside_jobs = false;
                 continue;
             }
@@ -180,6 +206,56 @@ fn nested_runner_problems(file: &str, text: &str) -> Vec<String> {
     problems
 }
 
+/// R3.
+fn shared_target_problems(file: &str, text: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    for job in jobs(text) {
+        if !job.body.contains("act-mcp serve") {
+            continue;
+        }
+
+        let pin = job.body.lines().find_map(|line| {
+            line.trim()
+                .strip_prefix("CARGO_TARGET_DIR:")
+                .map(|value| value.trim().trim_matches('\'').trim_matches('"'))
+        });
+        match pin {
+            None => problems.push(format!(
+                "{file}: job `{}` starts the action runner without pinning CARGO_TARGET_DIR outside the \
+                 checkout: `--bind` means the job it asks for builds in this same `target/` and replaces \
+                 what this job built there. Point CARGO_TARGET_DIR at a path outside the workspace \
+                 (`/var/tmp/…`), as `dogfood-local.yml` does.",
+                job.id
+            )),
+            Some(value) => {
+                if !value.starts_with('/')
+                    || value.contains("github.workspace")
+                    || value.contains("runner.workspace")
+                {
+                    problems.push(format!(
+                        "{file}: job `{}` pins CARGO_TARGET_DIR to `{value}`, which is the checkout or \
+                         relative to it — the producer job reaches it there, which is the whole problem.",
+                        job.id
+                    ));
+                }
+            }
+        }
+
+        for (index, line) in job.body.lines().enumerate() {
+            if line.contains("./target/") {
+                problems.push(format!(
+                    "{file}: job `{}` hardcodes `./target/` at `{}` — with CARGO_TARGET_DIR pinned (as \
+                     this rule requires) that path is not where the binary is.",
+                    job.id,
+                    line.trim()
+                ));
+                let _ = index;
+            }
+        }
+    }
+    problems
+}
+
 fn workflow_files() -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(workflows_dir())
         .unwrap_or_else(|error| panic!("no workflows at {}: {error}", workflows_dir().display()))
@@ -209,6 +285,7 @@ fn every_workflow_parses_and_sits_inside_the_two_rules() {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         problems.extend(job_level_if_violations(&name, &text));
         problems.extend(nested_runner_problems(&name, &text));
+        problems.extend(shared_target_problems(&name, &text));
     }
     assert!(
         problems.is_empty(),
@@ -253,6 +330,31 @@ jobs:
         1,
         "a job that serves without refusing must be caught"
     );
+    let shared = shared_target_problems("broken.yml", broken);
+    assert!(
+        shared.iter().any(|p| p.contains("CARGO_TARGET_DIR"))
+            && shared.iter().any(|p| p.contains("./target/")),
+        "serving without a pin, and hardcoding ./target, must both be caught: {shared:?}"
+    );
+
+    // A pin that points back into the checkout is the same hole with a variable named on it.
+    let circular = r#"name: Circular
+on: push
+jobs:
+  driver:
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - name: Start the MCP action runner
+        run: "$CARGO_TARGET_DIR/release/act-mcp serve" &
+"#;
+    let circular_problems = shared_target_problems("circular.yml", circular);
+    assert_eq!(
+        circular_problems.len(),
+        1,
+        "a pin inside the workspace must be refused: {circular_problems:?}"
+    );
 }
 
 /// And the shape that replaced it must pass, including the two legal things it sits next to: a step-level
@@ -267,6 +369,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       ACT_VERSION: '0.2.97'
+      CARGO_TARGET_DIR: /var/tmp/guard-target
     steps:
       - name: Refuse a nested runner
         run: if [[ -n "${ACT:-}" ]]; then exit 1; fi
@@ -277,10 +380,15 @@ jobs:
         run: echo installing
       - name: Start the MCP action runner
         if: ${{ env.ACT }}
-        run: ./target/release/act-mcp serve &
+        run: "$CARGO_TARGET_DIR/release/act-mcp serve" &
 "#;
     assert!(job_level_if_violations("fixed.yml", fixed).is_empty());
     assert!(nested_runner_problems("fixed.yml", fixed).is_empty());
+    assert!(
+        shared_target_problems("fixed.yml", fixed).is_empty(),
+        "{:?}",
+        shared_target_problems("fixed.yml", fixed)
+    );
 }
 
 /// `jobs()` keys on the `jobs:` block. A line scanner's favourite mistake is reading a top-level key —

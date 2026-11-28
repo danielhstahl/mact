@@ -416,6 +416,17 @@ waste. Ask the machine first; it costs two seconds:
 scripts/smoke-real-act.sh --prereq-only   # the argv check, plus the probe the server itself uses
 ```
 
+The probe half is the server's rule reproduced rather than a `docker` ping, because the two are not
+the same call and the difference is the whole diagnosis. The server runs the client under a scrubbed
+environment (PATH, HOME, `LC_ALL=C`), kills it at `DEFAULT_CONTAINER_PROBE_TIMEOUT`, and dials the
+runtime default unless `--container-daemon-socket` pinned one; a failure is then cached for
+`DEFAULT_PROBE_TTL`. So a daemon reached through `$DOCKER_HOST`, or one that answers in four seconds,
+is *unreachable* to the server while answering happily in the shell that ran the last step — and the
+refusal, `no container runtime answered (timeout)`, says neither. The pre-flight runs it both ways and
+prints the elapsed time against the deadline, so the two shapes come apart: `plain` fine and the
+probe failing is the scrub or the endpoint, and a probe that passes at three-quarters of the deadline
+is a machine that will refuse under load.
+
 If it says "nothing answered `docker info …`", stop: no flag, stub or amount of patience
 makes a real capture on this host. Either do it where a runtime exists — for this repository,
 that means the nightly's `ubuntu-24.04` runner: dispatch
